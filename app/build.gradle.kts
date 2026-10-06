@@ -50,8 +50,11 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // Nome distinto para não confundir com o app release (que recebe as atualizações).
+            resValue("string", "app_name", "LicitaIA Dev")
         }
         release {
+            resValue("string", "app_name", "LicitaIA")
             if (!signingPath.isNullOrBlank()) signingConfig = signingConfigs.getByName("personalRelease")
             isMinifyEnabled = true
             isShrinkResources = true
