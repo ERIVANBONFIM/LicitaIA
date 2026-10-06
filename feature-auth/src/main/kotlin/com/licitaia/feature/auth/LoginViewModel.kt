@@ -91,7 +91,7 @@ class LoginViewModel @Inject constructor(
                 is GoogleSignInResult.Success -> completeGoogleLogin(result.identity)
                 GoogleSignInResult.Cancelled -> _state.update { it.copy(googleLoading = false, info = "Entrada com Google cancelada.") }
                 GoogleSignInResult.NoAccount -> _state.update {
-                    it.copy(googleLoading = false, generalError = "Nenhuma conta Google disponível. Adicione uma conta Google nas configurações do Android e tente de novo.")
+                    it.copy(googleLoading = false, generalError = "O Google não ofereceu nenhuma conta para este app. Verifique se há uma conta Google no aparelho e se este build (pacote e SHA-1 da assinatura) está cadastrado como cliente OAuth Android no Google Cloud.")
                 }
                 GoogleSignInResult.NotConfigured -> _state.update {
                     it.copy(googleLoading = false, generalError = "Login Google não está configurado neste build.")
