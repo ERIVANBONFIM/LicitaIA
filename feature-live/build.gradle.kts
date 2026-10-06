@@ -15,6 +15,9 @@ dependencies {
     implementation(project(":connector-api"))
     implementation(libs.androidx.browser)
     implementation("androidx.webkit:webkit:1.11.0")
+    // "Manter sessão ativa": FGS só com o app em primeiro plano + inicialização via App Startup.
+    implementation(libs.androidx.lifecycle.process)
+    implementation("androidx.startup:startup-runtime:1.1.1")
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)

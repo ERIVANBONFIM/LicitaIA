@@ -39,7 +39,11 @@ import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.model.AppSettings
 import com.licitaia.domain.model.PortalConnectionStatus
+import com.licitaia.feature.live.web.keepAliveHonestText
+import com.licitaia.feature.settings.OptionChips
+import com.licitaia.feature.settings.SwitchRow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -88,7 +92,21 @@ fun PortalsScreen(vm: PortalsViewModel = hiltViewModel()) {
                         busy = row.portal in state.signingOut,
                         onOpen = { navigator.navigate(Routes.portalWeb(row.portal)) },
                         onSignOut = { vm.askSignOut(row.portal) },
+                        keepAliveMinutes = state.keepAliveMinutes,
+                        onKeepAlive = { vm.setKeepAlive(row.portal, it) },
                     )
+                }
+                if (state.rows.any { it.requiresLogin }) {
+                    LicitaCard(Modifier.fillMaxWidth()) {
+                        OptionChips(
+                            title = "Intervalo do \"Manter sessão ativa\"",
+                            description = "De quanto em quanto tempo o app recarrega sua página do portal (só nos portais com a opção ligada).",
+                            options = AppSettings.PORTAL_KEEP_ALIVE_OPTIONS,
+                            selected = state.keepAliveMinutes,
+                            label = { "$it min" },
+                            onSelect = vm::setKeepAliveMinutes,
+                        )
+                    }
                 }
                 Text(
                     "O app não vê sua senha; a sessão fica nos cookies do navegador interno deste aparelho e pode expirar pelo portal. " +
@@ -103,7 +121,15 @@ fun PortalsScreen(vm: PortalsViewModel = hiltViewModel()) {
 }
 
 @Composable
-private fun PortalCard(row: PortalRow, canManage: Boolean, busy: Boolean, onOpen: () -> Unit, onSignOut: () -> Unit) {
+private fun PortalCard(
+    row: PortalRow,
+    canManage: Boolean,
+    busy: Boolean,
+    onOpen: () -> Unit,
+    onSignOut: () -> Unit,
+    keepAliveMinutes: Int,
+    onKeepAlive: (Boolean) -> Unit,
+) {
     val (label, tone) = when {
         !row.requiresLogin -> "Consulta pública" to Tone.INFO
         row.status == PortalConnectionStatus.CONECTADO -> "Sessão aberta" to Tone.SUCCESS
@@ -137,6 +163,15 @@ private fun PortalCard(row: PortalRow, canManage: Boolean, busy: Boolean, onOpen
         row.capabilities?.limitations?.takeIf { it.isNotEmpty() }?.let { limits ->
             Spacer(Modifier.height(4.dp))
             Text(limits.joinToString(" "), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+        }
+        if (row.requiresLogin) {
+            SwitchRow(
+                title = "Manter sessão ativa",
+                description = keepAliveHonestText(keepAliveMinutes) +
+                    if (row.keepAliveOn && row.status != PortalConnectionStatus.CONECTADO) " Volta a funcionar quando você entrar no portal." else "",
+                checked = row.keepAliveOn,
+                onCheckedChange = onKeepAlive,
+            )
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

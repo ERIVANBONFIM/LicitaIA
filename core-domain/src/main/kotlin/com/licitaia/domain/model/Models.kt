@@ -616,8 +616,19 @@ data class AppSettings(
     val rememberSession: Boolean = true,
     val activeAiProvider: AiProviderType = AiProviderType.MOCK,
     val showBottomBar: Boolean = true,
+    /** Intervalo (min) do "Manter sessão ativa" dos portais: 5, 8, 12 ou 15. */
+    val portalKeepAliveMinutes: Int = 8,
+    /**
+     * Portais com "Manter sessão ativa" ligado (opt-in), por empresa: chaves de [portalKeepAliveKey]
+     * ("<companyId>:<PORTAL>"). Padrão vazio = desligado.
+     */
+    val portalKeepAlive: Set<String> = emptySet(),
 ) {
+    fun isPortalKeepAliveOn(companyId: Long, portal: Portal): Boolean = portalKeepAliveKey(companyId, portal) in portalKeepAlive
+
     companion object {
         val CAPTCHA_REPEAT_OPTIONS = listOf(1, 3, 5, 10, 15, 0)
+        val PORTAL_KEEP_ALIVE_OPTIONS = listOf(5, 8, 12, 15)
+        fun portalKeepAliveKey(companyId: Long, portal: Portal) = "$companyId:${portal.name}"
     }
 }

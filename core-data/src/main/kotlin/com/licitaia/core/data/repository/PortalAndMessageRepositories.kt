@@ -89,6 +89,8 @@ class PortalRepositoryImpl @Inject constructor(
             val sessionKey = sessionKey(companyId, portal)
             // Compatibilidade: remove qualquer segredo legado do cofre (o fluxo atual não grava nenhum).
             runCatching { secretStore.remove(secretKey(sessionKey)) }
+            // "Sair do portal" também esquece a última página visitada (reabre no login oficial).
+            runCatching { secretStore.remove(lastUrlKey(sessionKey)) }
             val existing = portalSessionDao.get(companyId, portal)
             val entity = (existing ?: PortalSessionEntity(
                 companyId = companyId, portal = portal, username = "", status = PortalConnectionStatus.DESCONECTADO,
@@ -135,12 +137,34 @@ class PortalRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun lastWebUrl(companyId: Long, portal: Portal): String? = withContext(Dispatchers.IO) {
+        if (!access.owns(companyId)) return@withContext null
+        runCatching { secretStore.get(lastUrlKey(sessionKey(companyId, portal))) }.getOrNull()?.takeIf { it.startsWith("https://") }
+    }
+
+    override suspend fun saveLastWebUrl(companyId: Long, portal: Portal, url: String) {
+        withContext(Dispatchers.IO) {
+            if (!access.owns(companyId) || !url.startsWith("https://") || url.length > MAX_URL) return@withContext
+            // Cofre cifrado (Keystore): a URL pode conter identificadores de processos da empresa.
+            runCatching { secretStore.put(lastUrlKey(sessionKey(companyId, portal)), url) }
+        }
+    }
+
+    override suspend fun auditKeepAlive(companyId: Long, portal: Portal, details: String) {
+        withContext(Dispatchers.IO) {
+            if (!access.owns(companyId)) return@withContext
+            audit.record(AuditAction.CONEXAO_PORTAL, portal = portal, details = details)
+        }
+    }
+
     private fun capabilityLabel(portal: Portal): String =
         if (runCatching { registry.get(portal).capabilities.isMock }.getOrDefault(true)) "simulação" else "conector real"
 
     companion object {
         fun sessionKey(companyId: Long, portal: Portal) = "portal_${companyId}_${portal.name}"
         fun secretKey(sessionKey: String) = "portal.secret.$sessionKey"
+        fun lastUrlKey(sessionKey: String) = "portal.lastUrl.$sessionKey"
+        private const val MAX_URL = 2048
     }
 }
 

@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.licitaia.domain.model.AiProviderType
 import com.licitaia.domain.model.AppSettings
 import com.licitaia.domain.repository.SettingsRepository
@@ -31,6 +32,9 @@ private object Keys {
     val remember = booleanPreferencesKey("remember_session")
     val activeAi = stringPreferencesKey("active_ai_provider")
     val bottomBar = booleanPreferencesKey("show_bottom_bar")
+    // "Manter sessão ativa" dos portais (opt-in por empresa+portal) e intervalo em minutos.
+    val portalKeepAliveMinutes = intPreferencesKey("portal_keep_alive_minutes")
+    val portalKeepAlive = stringSetPreferencesKey("portal_keep_alive")
 
     val rememberedUser = longPreferencesKey("session_user_id")
     val rememberedCompany = longPreferencesKey("session_company_id")
@@ -55,6 +59,9 @@ private fun Preferences.toSettings(): AppSettings {
         activeAiProvider = this[Keys.activeAi]?.let { name -> AiProviderType.entries.firstOrNull { it.name == name } }
             ?: defaults.activeAiProvider,
         showBottomBar = this[Keys.bottomBar] ?: defaults.showBottomBar,
+        portalKeepAliveMinutes = (this[Keys.portalKeepAliveMinutes] ?: defaults.portalKeepAliveMinutes)
+            .takeIf { it in AppSettings.PORTAL_KEEP_ALIVE_OPTIONS } ?: defaults.portalKeepAliveMinutes,
+        portalKeepAlive = this[Keys.portalKeepAlive] ?: defaults.portalKeepAlive,
     )
 }
 
@@ -83,6 +90,8 @@ class SettingsRepositoryImpl @Inject constructor(
             prefs[Keys.remember] = next.rememberSession
             prefs[Keys.activeAi] = next.activeAiProvider.name
             prefs[Keys.bottomBar] = next.showBottomBar
+            prefs[Keys.portalKeepAliveMinutes] = next.portalKeepAliveMinutes
+            prefs[Keys.portalKeepAlive] = next.portalKeepAlive
         }
     }
 }

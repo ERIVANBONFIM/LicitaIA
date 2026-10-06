@@ -222,6 +222,16 @@ interface PortalRepository {
     /** "Sair do portal": status DESCONECTADO + auditoria. Os cookies são removidos pela camada web. */
     suspend fun clearWebSession(companyId: Long, portal: Portal)
     fun capabilities(portal: Portal): ConnectorCapabilities
+
+    /**
+     * Última URL da área logada do portal (já sanitizada pela camada web, sem tokens), por empresa+portal,
+     * para reabrir o navegador interno onde o usuário estava. null = nenhuma. Apagada em [clearWebSession].
+     */
+    suspend fun lastWebUrl(companyId: Long, portal: Portal): String? = null
+    suspend fun saveLastWebUrl(companyId: Long, portal: Portal, url: String) {}
+
+    /** Auditoria CONEXAO_PORTAL de "Manter sessão ativa" (ligar/desligar/queda). Nunca inclui URLs. */
+    suspend fun auditKeepAlive(companyId: Long, portal: Portal, details: String) {}
 }
 
 interface MessageRepository {

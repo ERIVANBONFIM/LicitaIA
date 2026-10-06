@@ -177,6 +177,152 @@ class PortalWebPolicyTest {
     }
 }
 
+class PortalContentAndResumeTest {
+    private val p = Portal.COMPRAS_GOV
+    private val conn = PortalConnectionStatus.CONECTADO
+    private val disc = PortalConnectionStatus.DESCONECTADO
+    private val exp = PortalConnectionStatus.SESSAO_EXPIRADA
+    private val area = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra="
+
+    private val naoAutorizado = """
+        Não autorizado
+        Sua sessão pode ter expirado ou suas permissões não permitem o acesso ao recurso solicitado.
+        Efetuar Login
+    """.trimIndent()
+
+    // ------------------------------------------------------------ marcadores de conteúdo
+
+    @Test
+    fun `compras gov - pagina nao autorizado do cnetmobile indica sessao encerrada`() {
+        assertTrue(PortalWebPolicy.contentIndicatesExpired(p, naoAutorizado))
+        assertTrue(PortalWebPolicy.contentIndicatesExpired(p, "NÃO AUTORIZADO   ...   efetuar   login"))
+        assertTrue(PortalWebPolicy.contentIndicatesExpired(p, "Nao autorizado. Sua sessao pode ter expirado"))
+        assertTrue(PortalWebPolicy.contentIndicatesExpired(p, "Sua sessão expirou. Entre novamente."))
+    }
+
+    @Test
+    fun `compras gov - paginas normais e de login nao batem`() {
+        assertFalse(PortalWebPolicy.contentIndicatesExpired(p, "Compras eletrônicas · Minhas participações · Pregão 90001/2026"))
+        // "Não autorizado" sozinho (ex.: item de lista) não basta: precisa do complemento.
+        assertFalse(PortalWebPolicy.contentIndicatesExpired(p, "Status: não autorizado pelo órgão"))
+        // Tela de login do gov.br: "Efetuar Login"/"Acesse sua Conta" sem "Não autorizado".
+        assertFalse(PortalWebPolicy.contentIndicatesExpired(p, "Acesse sua Conta gov.br · Efetuar Login · Número do CPF"))
+        assertFalse(PortalWebPolicy.contentIndicatesExpired(p, ""))
+    }
+
+    @Test
+    fun `marcadores por portal - genericos e PNCP sem marcadores`() {
+        assertTrue(PortalWebPolicy.contentIndicatesExpired(Portal.BLL, "Sua sessão expirou, faça login novamente"))
+        assertFalse(PortalWebPolicy.contentIndicatesExpired(Portal.BLL, "Faça login para continuar"))
+        assertTrue(PortalWebPolicy.contentIndicatesExpired(Portal.LICITANET, "Sessão expirada"))
+        assertTrue(PortalWebPolicy.contentIndicatesExpired(Portal.PORTAL_COMPRAS_PUBLICAS, "Sessão encerrada por inatividade"))
+        // BLL não usa a regra específica do Compras.gov.br.
+        assertFalse(PortalWebPolicy.contentIndicatesExpired(Portal.BLL, naoAutorizado.replace("Sua sessão pode ter expirado ou ", "")))
+        assertFalse(PortalWebPolicy.contentIndicatesExpired(Portal.PNCP, "Sua sessão expirou"))
+        assertFalse(PortalWebPolicy.hasContentMarkers(Portal.PNCP))
+        assertTrue(PortalWebPolicy.hasContentMarkers(p))
+    }
+
+    @Test
+    fun `probe script devolve so booleano e nao toca em inputs nem cookies`() {
+        val js = PortalWebPolicy.contentProbeScript(p)
+        assertTrue(js.contains("nao autorizado"))
+        assertTrue(js.contains("efetuar login"))
+        assertFalse(js.contains("cookie", ignoreCase = true))
+        assertFalse(js.contains("input", ignoreCase = true))
+        assertFalse(js.contains(".value"))
+        assertFalse(js.contains("form", ignoreCase = true))
+        assertTrue(PortalWebPolicy.parseProbeResult("true"))
+        assertFalse(PortalWebPolicy.parseProbeResult("false"))
+        assertFalse(PortalWebPolicy.parseProbeResult("null"))
+        assertFalse(PortalWebPolicy.parseProbeResult(null))
+    }
+
+    // ------------------------------------------------------------ evaluate com sinal de conteúdo
+
+    @Test
+    fun `area logada com aviso de sessao encerrada enquanto CONECTADO expira`() {
+        assertEquals(Signal.EXPIRED, PortalWebPolicy.evaluate(p, area, true, previousWasLoginPage = false, currentStatus = conn, contentExpired = true))
+        assertEquals(Signal.EXPIRED, PortalWebPolicy.evaluate(p, area, true, previousWasLoginPage = null, currentStatus = conn, contentExpired = true))
+        // Sem aviso: segue aberta.
+        assertEquals(Signal.NONE, PortalWebPolicy.evaluate(p, area, true, false, conn, contentExpired = false))
+    }
+
+    @Test
+    fun `aviso de conteudo nunca conecta e nao alerta de novo quando ja desconectado ou expirado`() {
+        // Vindo do login com cookies, mas a página diz "Não autorizado": não é login bem-sucedido.
+        assertEquals(Signal.NONE, PortalWebPolicy.evaluate(p, area, true, previousWasLoginPage = true, currentStatus = disc, contentExpired = true))
+        assertEquals(Signal.NONE, PortalWebPolicy.evaluate(p, area, true, previousWasLoginPage = false, currentStatus = exp, contentExpired = true))
+    }
+
+    @Test
+    fun `fluxo de login nao gera alerta - acesse sua conta e selecao de empresa`() {
+        val sso = "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br"
+        val selec = "https://www.comprasnet.gov.br/seguro/loginFornecedorSelecEmpresa.asp"
+        listOf(disc, exp).forEach { st ->
+            listOf(true, false, null).forEach { prev ->
+                listOf(true, false).forEach { content ->
+                    assertEquals("$st $prev $content", Signal.NONE, PortalWebPolicy.evaluate(p, sso, true, prev, st, content))
+                    assertEquals("$st $prev $content", Signal.NONE, PortalWebPolicy.evaluate(p, selec, true, prev, st, content))
+                }
+            }
+        }
+        // Mesmo CONECTADO, dentro do fluxo (veio de página de login), o conteúdo não expira.
+        assertEquals(Signal.NONE, PortalWebPolicy.evaluate(p, selec, true, previousWasLoginPage = true, currentStatus = conn, contentExpired = true))
+    }
+
+    // ------------------------------------------------------------ última URL (voltar para onde estava)
+
+    @Test
+    fun `sanitizacao da ultima url`() {
+        // cnetmobile sem token: URL inteira.
+        assertEquals(area, PortalWebPolicy.sanitizeResumeUrl(p, area))
+        assertEquals(
+            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=90001",
+            PortalWebPolicy.sanitizeResumeUrl(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=90001&access_token=abc&code=x&state=y"),
+        )
+        // Fragmento com token é descartado; jsessionid na matriz do caminho também.
+        assertEquals(
+            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/participacoes",
+            PortalWebPolicy.sanitizeResumeUrl(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/participacoes;jsessionid=ABC#id_token=zzz"),
+        )
+        // Login, outro host (portal com homeUrl), HTTP e fora da allowlist: não guarda.
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://sso.acesso.gov.br/login?client_id=x"))
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://www.comprasnet.gov.br/intro.htm"))
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "http://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/"))
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://evil.com/comprasnet-web/"))
+        // Portal sem homeUrl: qualquer página não-login da allowlist, sem parâmetros sensíveis.
+        assertEquals(
+            "https://bllcompras.com/Process/List?page=2",
+            PortalWebPolicy.sanitizeResumeUrl(Portal.BLL, "https://bllcompras.com/Process/List?page=2&Token=1&senha=x&SessionId=9"),
+        )
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(Portal.BLL, "https://bllcompras.com/home/login?ReturnUrl=x"))
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(Portal.PNCP, "https://pncp.gov.br/app/editais"))
+    }
+
+    @Test
+    fun `url de abertura e do keep-alive`() {
+        val last = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/participacoes"
+        assertEquals(last, PortalWebPolicy.openUrl(p, conn, last))
+        assertEquals(PortalWebPolicy.rules(p).homeUrl, PortalWebPolicy.openUrl(p, conn, null))
+        assertEquals(PortalWebPolicy.startUrl(p), PortalWebPolicy.openUrl(p, exp, last))
+        assertEquals(PortalWebPolicy.startUrl(p), PortalWebPolicy.openUrl(p, disc, last))
+        // URL guardada inválida é revalidada e ignorada.
+        assertEquals(PortalWebPolicy.rules(p).homeUrl, PortalWebPolicy.openUrl(p, conn, "https://sso.acesso.gov.br/login"))
+        assertEquals(PortalWebPolicy.startUrl(Portal.BLL), PortalWebPolicy.openUrl(Portal.BLL, conn, null))
+        assertEquals(last, PortalWebPolicy.keepAliveUrl(p, last))
+        assertEquals(PortalWebPolicy.rules(p).homeUrl, PortalWebPolicy.keepAliveUrl(p, null))
+        assertNull(PortalWebPolicy.keepAliveUrl(Portal.BLL, null))
+    }
+
+    @Test
+    fun `parametros sensiveis`() {
+        listOf("token", "access_token", "id_token", "code", "state", "SESSIONID", "JSESSIONID", "senha", "password", "client_secret", "ticket")
+            .forEach { assertTrue(it, PortalWebPolicy.isSensitiveParam(it)) }
+        listOf("compra", "page", "uasg", "numero", "ReturnUrl").forEach { assertFalse(it, PortalWebPolicy.isSensitiveParam(it)) }
+    }
+}
+
 class ComprasGovFlowTest {
     private val conn = com.licitaia.domain.model.PortalConnectionStatus.CONECTADO
     private val none = com.licitaia.domain.model.PortalConnectionStatus.DESCONECTADO

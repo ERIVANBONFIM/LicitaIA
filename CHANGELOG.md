@@ -1,7 +1,17 @@
-# Changelog — LicitaIA
+﻿# Changelog — LicitaIA
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.4.1-personal] — 2026-10-06
+
+### Corrigido
+- Portais: a página "Não autorizado — sua sessão pode ter expirado" do Compras.gov.br agora marca "Sessão expirada"
+  (detecção pelo texto visível, sem ler formulários nem cookies); sem falso "expirada" durante o login.
+
+### Adicionado
+- Portais voltam para a última página da área logada (ex.: Compras eletrônicas / Minhas participações).
+- **"Manter sessão ativa"** (opcional, por portal): recarrega a sua página em segundo plano a cada 5/8/12/15 min para
+  evitar queda por inatividade; se o portal encerrar a sessão, envia um alerta único com atalho para entrar de novo.
 ## [0.4.0-personal] — 2026-10-06
 
 ### Adicionado

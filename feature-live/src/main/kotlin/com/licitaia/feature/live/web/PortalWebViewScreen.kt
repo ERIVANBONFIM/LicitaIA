@@ -48,7 +48,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -88,7 +91,8 @@ import com.licitaia.domain.util.Formatters
  *
  * O app nunca lê, guarda ou preenche usuário/senha (o preenchimento, se houver, é do Autofill do
  * próprio Android); não contorna CAPTCHA/MFA; não executa ações no portal. Reconhece a sessão
- * apenas por URL + existência de cookies ([PortalWebPolicy]).
+ * por URL + existência de cookies + um booleano de "aviso de sessão encerrada" calculado na página
+ * ([PortalWebPolicy.contentProbeScript]; nenhum texto, input ou cookie é lido pelo app).
  */
 @Composable
 fun PortalWebViewScreen(vm: PortalWebViewModel = hiltViewModel()) {
@@ -116,11 +120,11 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     val context = LocalContext.current
     val navigator = LocalAppNavigator.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    // Com sessão já aberta, vai direto à área de trabalho (se o portal tiver uma); senão, à página de login.
-    val startUrl = remember(portal) {
-        if (state.status == PortalConnectionStatus.CONECTADO) PortalWebPolicy.rules(portal).homeUrl ?: PortalWebPolicy.startUrl(portal)
-        else PortalWebPolicy.startUrl(portal)
-    }
+    // Com sessão já aberta, volta para a última página da área logada (ou à área de trabalho); senão, à página de login.
+    val startUrl = remember(portal) { PortalWebPolicy.openUrl(portal, state.status, state.lastUrl) }
+    val loginUrl = remember(portal) { PortalWebPolicy.startUrl(portal) }
+    val probeScript = remember(portal) { PortalWebPolicy.contentProbeScript(portal) }
+    val checkContent = remember(portal) { PortalWebPolicy.hasContentMarkers(portal) }
 
     var webView by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember { mutableStateOf(startUrl) }
@@ -138,6 +142,26 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
         fileCallback = null
+    }
+
+    /**
+     * Checagem de conteúdo (SPA): o script devolve só true/false calculado na página. Roda agora e de novo
+     * [PROBE_DELAY_MS] depois, desde que a aba continue na mesma URL.
+     */
+    fun probeContent(view: WebView, url: String) {
+        if (!checkContent) return
+        val run = Runnable {
+            if (webView !== view || view.url != url) return@Runnable
+            runCatching {
+                view.evaluateJavascript(probeScript) { raw ->
+                    if (webView === view && PortalWebPolicy.parseProbeResult(raw)) {
+                        latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), contentExpired = true)
+                    }
+                }
+            }
+        }
+        run.run()
+        view.postDelayed(run, PROBE_DELAY_MS)
     }
 
     fun openExternally(url: String) {
@@ -166,7 +190,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             message = "Os cookies deste portal serão removidos do navegador interno deste aparelho e o status voltará a \"Sem sessão\". Você precisará fazer login novamente no portal.",
             onConfirm = {
                 confirmSignOut = false
-                vm.signOut { webView?.loadUrl(startUrl) }
+                vm.signOut { webView?.loadUrl(loginUrl) }
             },
             onDismiss = { confirmSignOut = false },
             confirmLabel = "Sair do portal", tone = Tone.DANGER, icon = Icons.AutoMirrored.Outlined.Logout,
@@ -236,6 +260,26 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                     Text("sem login", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
                 }
             }
+            if (state.requiresLogin) {
+                // "Manter sessão ativa" (opt-in): recarga periódica da página do usuário em segundo plano.
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Manter sessão ativa", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary)
+                        Text(
+                            if (state.keepAliveOn) keepAliveHonestText(state.keepAliveMinutes)
+                            else "Recarrega sua página a cada ${state.keepAliveMinutes} min enquanto ligado.",
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary,
+                            maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = state.keepAliveOn,
+                        onCheckedChange = { vm.setKeepAlive(it) },
+                        modifier = Modifier.semantics { contentDescription = "Manter sessão ativa" },
+                    )
+                }
+            }
             if (!isolatedProfile && state.requiresLogin) {
                 Text(
                     "Este aparelho não separa cookies por empresa no navegador interno: ao trocar de empresa, saia do portal antes.",
@@ -299,6 +343,8 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                     currentUrl = url
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
                                     latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url))
+                                    // Troca de rota da SPA (pushState) não dispara onPageFinished: checa o conteúdo depois.
+                                    if (checkContent) view.postDelayed({ probeContent(view, url) }, PROBE_DELAY_MS)
                                 }
 
                                 override fun onPageFinished(view: WebView, url: String) {
@@ -309,6 +355,9 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                     // Login recém-detectado: leva uma única vez à área de trabalho do fornecedor.
                                     if (signal == PortalWebPolicy.Signal.CONNECTED) {
                                         PortalWebPolicy.postLoginRedirect(portal, url)?.let { view.loadUrl(it) }
+                                    } else if (signal != PortalWebPolicy.Signal.BLOCKED) {
+                                        // Aviso de sessão encerrada exibido pela própria página (SPA na área logada).
+                                        probeContent(view, url)
                                     }
                                 }
 
@@ -361,6 +410,14 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
         }
     }
 }
+
+/** Espera para a 2ª checagem de conteúdo (SPA termina de renderizar depois do onPageFinished). */
+private const val PROBE_DELAY_MS = 2_000L
+
+/** Texto honesto do "Manter sessão ativa" (tela do portal e card em Portais). */
+fun keepAliveHonestText(minutes: Int): String =
+    "Mantém a sessão ativa recarregando sua página a cada $minutes min enquanto ligado. " +
+        "O portal ainda pode encerrar a sessão pelo tempo máximo dele; nesse caso você recebe um alerta."
 
 private fun sessionBadge(status: PortalConnectionStatus): Pair<String, Tone> = when (status) {
     PortalConnectionStatus.CONECTADO -> "Sessão aberta" to Tone.SUCCESS
