@@ -2,6 +2,29 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.4.0-personal] — 2026-10-06
+
+### Adicionado
+- **Entrar com ChatGPT** (Sign in with ChatGPT, fluxo oficial da OpenAI para apps pessoais/open-source): OAuth 2.0 +
+  PKCE S256 com registro dinâmico (`dynamic_agent_client` → `client_id` emitido), `ext_agent_host_id`, retorno em
+  `http://127.0.0.1:<porta>/auth/callback` dentro do app com Custom Tab e serviço em 1º plano durante o login,
+  id_token validado pelo JWKS, escopo `chatgpt.tokens.use.direct` obrigatório, chamadas na Responses API com a
+  assinatura do usuário, renovação automática e "Desconectar" com revogação. Chave de API continua disponível.
+- **Modo demonstração isolado** ("Explorar demonstração"): empresa e dados de exemplo separados, selo
+  "DEMONSTRAÇÃO", sair/reiniciar; nunca mistura com dados reais.
+- **Vínculo Google ↔ conta local** com confirmação da senha local.
+- **Chaves de IA por empresa** com fallback "padrão do aparelho" (migration 5→6).
+- **Banco de dados cifrado (SQLCipher)** com chave no Android Keystore; migração automática do banco existente com
+  cópia verificada (contagem de linhas + integridade) antes de substituir — nada é apagado em caso de falha.
+- **Serviço em primeiro plano** mantém cronômetro e alertas dos pregões assistidos com o app em segundo plano.
+- Alertas de vencimento de documentos sem exigir rede; atalho "Acompanhar pregão" na licitação; tela de IA sem
+  botões desabilitados; URLs oficiais de login da Licitanet e do Portal de Compras Públicas.
+- Restauração de backup preserva o tipo dos anexos e re-encadeia a auditoria.
+
+### Decisão documentada
+- Sem certificate pinning: os certificados dos portais e provedores rotacionam e o pinning quebraria o app; o
+  app usa HTTPS obrigatório com as autoridades do sistema.
+
 ## [0.3.0-personal] — 2026-10-06
 
 ### Adicionado

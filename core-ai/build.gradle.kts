@@ -18,7 +18,12 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // Google Identity Services (AuthorizationClient): "Entrar com conta Google" para a API Gemini (OAuth 2.0).
     implementation("com.google.android.gms:play-services-auth:21.2.0")
+    // "Entrar com ChatGPT": Foreground Service (NotificationCompat/ServiceCompat).
+    implementation(libs.androidx.core.ktx)
+    // Autorização da OpenAI aberta numa Chrome Custom Tab.
+    implementation(libs.androidx.browser)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

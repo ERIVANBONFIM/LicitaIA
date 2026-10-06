@@ -225,17 +225,19 @@ enum class AuditResult(val label: String) {
 /**
  * Como o app se autentica no provedor de IA.
  * - [API_KEY]: chave colada pelo usuário, cifrada no Keystore.
- * - [OAUTH]: "Entrar com conta" (hoje só Google/Gemini — token de acesso OAuth 2.0 com escopo
- *   `cloud-platform`, renovado silenciosamente; cota e cobrança no projeto Google Cloud do usuário).
+ * - [OAUTH]: "Entrar com conta": Google/Gemini (token OAuth 2.0 `cloud-platform`, cota no projeto Google
+ *   Cloud do usuário) ou OpenAI "Entrar com ChatGPT" (OAuth 2.0 + PKCE com retorno em 127.0.0.1; usa o
+ *   plano do ChatGPT do usuário — liberado pela OpenAI para apps open-source/pessoais locais).
  */
 enum class AiAuthMode(val label: String) {
     API_KEY("Chave de API"),
-    OAUTH("Conta Google"),
+    OAUTH("Login com conta"),
 }
 
 /**
- * @property supportsOAuth true só para provedores com OAuth público para apps de terceiros (Gemini).
- *   OpenAI ("Sign in with ChatGPT") está em beta restrito a parceiros e Anthropic só oferece chave de API.
+ * @property supportsOAuth true para provedores com login de conta para apps de terceiros:
+ *   Gemini (conta Google) e OpenAI ("Entrar com ChatGPT", uso pessoal/open-source). Anthropic e
+ *   API personalizada só aceitam chave de API.
  * @property apiKeyUrl página oficial onde o usuário gera a própria chave (abre no navegador).
  */
 enum class AiProviderType(
@@ -246,7 +248,7 @@ enum class AiProviderType(
     val apiKeyUrl: String? = null,
 ) {
     MOCK("IA Demonstração (offline)", "mock-1", ""),
-    OPENAI("OpenAI / ChatGPT", "gpt-6-luna", "https://api.openai.com/", apiKeyUrl = "https://platform.openai.com/api-keys"),
+    OPENAI("OpenAI / ChatGPT", "gpt-6-luna", "https://api.openai.com/", supportsOAuth = true, apiKeyUrl = "https://platform.openai.com/api-keys"),
     ANTHROPIC("Anthropic / Claude", "claude-sonnet-5-5", "https://api.anthropic.com/", apiKeyUrl = "https://console.anthropic.com/settings/keys"),
     GEMINI(
         "Google Gemini", "gemini-3.8-flash", "https://generativelanguage.googleapis.com/",

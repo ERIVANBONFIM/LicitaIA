@@ -6,6 +6,7 @@ import com.licitaia.core.ai.AiCredentials
 import com.licitaia.core.ai.AiEndpoint
 import com.licitaia.core.ai.AiSecretKeys
 import com.licitaia.core.ai.AiSettingsSource
+import com.licitaia.core.ai.ChatGptAuthorizer
 import com.licitaia.core.ai.GoogleAiAuthorizer
 import com.licitaia.core.data.db.AiConfigDao
 import com.licitaia.core.data.db.AiConfigEntity
@@ -46,6 +47,7 @@ class AiConfigRepositoryImpl @Inject constructor(
     private val gateway: AiGateway,
     private val credentials: AiCredentials,
     private val googleAuth: GoogleAiAuthorizer,
+    private val chatGpt: ChatGptAuthorizer,
     private val audit: AuditRepository,
     private val holder: SessionHolder,
     private val access: RepositoryAccess,
@@ -102,6 +104,18 @@ class AiConfigRepositoryImpl @Inject constructor(
 
     private fun scopeLabel(scope: Long): String = if (scope == AiSecretKeys.DEVICE_SCOPE) "padrão do aparelho" else "esta empresa"
 
+    /** Nome da conta OAuth do provedor, para mensagens e auditoria. */
+    private fun accountLabel(provider: AiProviderType): String = if (provider == AiProviderType.OPENAI) "Conta ChatGPT" else "Conta Google"
+
+    /** Revoga (melhor esforço) e apaga as credenciais OAuth do provedor no escopo. */
+    private suspend fun revokeOAuth(provider: AiProviderType, scope: Long) {
+        when (provider) {
+            AiProviderType.OPENAI -> chatGpt.revoke(scope)
+            AiProviderType.GEMINI -> googleAuth.revoke(scope)
+            else -> Unit
+        }
+    }
+
     // ------------------------------------------------------------------ alterações
 
     override suspend fun setAuthMode(provider: AiProviderType, mode: AiAuthMode, deviceDefault: Boolean) {
@@ -128,7 +142,7 @@ class AiConfigRepositoryImpl @Inject constructor(
             aiConfigDao.upsert(
                 row.copy(
                     authMode = AiAuthMode.OAUTH,
-                    oauthAccount = account.trim().lowercase().ifEmpty { "conta Google" },
+                    oauthAccount = account.trim().lowercase().ifEmpty { accountLabel(provider).lowercase() },
                     cloudProject = cloudProject?.trim()?.takeIf { it.isNotEmpty() },
                 ),
             )
@@ -136,7 +150,7 @@ class AiConfigRepositoryImpl @Inject constructor(
             // Só o e-mail e o projeto vão para a auditoria — nunca o token.
             audit.record(
                 AuditAction.CONFIGURACAO, newValue = "${provider.label} · ${account.trim().lowercase()}",
-                details = "Conta Google autorizada para a IA (${scopeLabel(scope)})" + (cloudProject?.trim()?.takeIf { it.isNotEmpty() }?.let { " (projeto $it)" } ?: ""),
+                details = "${accountLabel(provider)} autorizada para a IA (${scopeLabel(scope)})" + (cloudProject?.trim()?.takeIf { it.isNotEmpty() }?.let { " (projeto $it)" } ?: ""),
             )
         }
     }
@@ -146,12 +160,12 @@ class AiConfigRepositoryImpl @Inject constructor(
         withContext(Dispatchers.IO) {
             val row = aiConfigDao.get(provider, scope)
             val previous = row?.oauthAccount
-            googleAuth.revoke(scope)
+            revokeOAuth(provider, scope)
             if (row != null) aiConfigDao.upsert(row.copy(authMode = AiAuthMode.API_KEY, oauthAccount = null))
             keyVersion.value++
             audit.record(
                 AuditAction.CONFIGURACAO, previousValue = previous, newValue = provider.label,
-                details = "Conta Google desconectada da IA (token removido do cofre; ${scopeLabel(scope)})",
+                details = "${accountLabel(provider)} desconectada da IA (token removido do cofre; ${scopeLabel(scope)})",
             )
         }
     }
@@ -201,7 +215,7 @@ class AiConfigRepositoryImpl @Inject constructor(
         val scope = session.activeCompany.id
         withContext(Dispatchers.IO) {
             val row = aiConfigDao.get(provider, scope)
-            if (row?.oauthAccount != null) googleAuth.revoke(scope)
+            if (row?.oauthAccount != null || provider == AiProviderType.OPENAI) revokeOAuth(provider, scope)
             secretStore.remove(AiSecretKeys.apiKey(provider, scope))
             secretStore.remove(AiSecretKeys.oauthToken(provider, scope))
             secretStore.remove(AiSecretKeys.oauthExpiry(provider, scope))
@@ -222,7 +236,7 @@ class AiConfigRepositoryImpl @Inject constructor(
         val row = aiConfigDao.resolve(provider, session.activeCompany.id)
         if (!credentials.isConfigured(provider)) {
             val message = if (row?.authMode == AiAuthMode.OAUTH && provider.supportsOAuth) {
-                "Entre com sua conta Google antes de testar."
+                if (provider == AiProviderType.OPENAI) "Entre com o ChatGPT antes de testar." else "Entre com sua conta Google antes de testar."
             } else {
                 "Configure a chave de API${if (provider == AiProviderType.CUSTOM) ", a URL e o modelo" else ""} antes de testar."
             }
@@ -236,7 +250,9 @@ class AiConfigRepositoryImpl @Inject constructor(
             onSuccess = {
                 val ms = System.currentTimeMillis() - started
                 audit.record(AuditAction.CONFIGURACAO, newValue = provider.label, details = "Teste de conexão OK (${ms} ms)")
-                val via = if (row?.authMode == AiAuthMode.OAUTH && provider.supportsOAuth) " via conta Google" else ""
+                val via = if (row?.authMode == AiAuthMode.OAUTH && provider.supportsOAuth) {
+                    if (provider == AiProviderType.OPENAI) " via conta ChatGPT" else " via conta Google"
+                } else ""
                 Result.success("Conexão OK com ${provider.label} (modelo $model)$via em ${ms} ms.")
             },
             onFailure = { error ->

@@ -50,11 +50,28 @@ object AiSecretKeys {
     fun oauthToken(type: AiProviderType, companyId: Long = DEVICE_SCOPE): String = "ai.oauth.access_token.${type.name}${suffix(companyId)}"
     /** Instante (epoch ms) em que o token OAuth expira. */
     fun oauthExpiry(type: AiProviderType, companyId: Long = DEVICE_SCOPE): String = "ai.oauth.expires_at.${type.name}${suffix(companyId)}"
+
+    /**
+     * Sessão "Entrar com ChatGPT" do escopo: JSON único (access, refresh, expiração, id_token, client_id, escopos,
+     * sub/e-mail) para que access/refresh/expiração sejam trocados juntos. Usa o mesmo nome de [oauthToken]
+     * (OPENAI) para que "há conta autorizada" continue sendo `contains(oauthToken(...))`.
+     */
+    fun chatGptSession(companyId: Long = DEVICE_SCOPE): String = oauthToken(AiProviderType.OPENAI, companyId)
+
+    /**
+     * Registro do app na conta ChatGPT do escopo (client_id emitido `oaiapp_…`, sub, e-mail e último id_token
+     * para `id_token_hint`). Sobrevive a tokens inutilizados (para entrar de novo reaproveitando o client_id);
+     * é apagado em "Desconectar".
+     */
+    fun chatGptRegistration(companyId: Long = DEVICE_SCOPE): String = "ai.oauth.chatgpt.registration${suffix(companyId)}"
+
+    /** `ext_agent_host_id` (`urn:uuid:…`) desta instalação: gerado uma vez e nunca apagado. */
+    const val CHATGPT_HOST_ID = "ai.oauth.chatgpt.host_id"
 }
 
 /**
  * Credencial resolvida no momento da chamada. Em [AiAuthMode.OAUTH] a [apiKey] é vazia e o
- * provedor obtém o token de acesso via [GoogleAiAuthorizer].
+ * provedor obtém o token de acesso via [GoogleAiAuthorizer] (Gemini) ou [ChatGptAuthorizer] (OpenAI).
  */
 internal data class ResolvedAi(
     val model: String,
@@ -72,12 +89,20 @@ class AiCredentials @Inject constructor(
     private val settings: AiSettingsSource,
     private val secrets: SecretStore,
     private val googleAuth: GoogleAiAuthorizer,
+    private val chatGpt: ChatGptAuthorizer,
 ) {
+    /** Há conta autorizada no escopo para o provedor (Google para Gemini; ChatGPT para OpenAI). */
+    private suspend fun hasAccount(type: AiProviderType, companyId: Long): Boolean = when (type) {
+        AiProviderType.OPENAI -> chatGpt.hasAuthorization(companyId)
+        AiProviderType.GEMINI -> googleAuth.hasAuthorization(companyId)
+        else -> false
+    }
+
     suspend fun isConfigured(type: AiProviderType): Boolean {
         if (type == AiProviderType.MOCK) return true
         val endpoint = settings.endpoint(type)
         val hasCredential = when (endpoint.authMode) {
-            AiAuthMode.OAUTH -> type.supportsOAuth && googleAuth.hasAuthorization(endpoint.companyId)
+            AiAuthMode.OAUTH -> type.supportsOAuth && hasAccount(type, endpoint.companyId)
             AiAuthMode.API_KEY -> !secrets.get(AiSecretKeys.apiKey(type, endpoint.companyId)).isNullOrBlank()
         }
         if (!hasCredential) return false
@@ -97,11 +122,16 @@ class AiCredentials @Inject constructor(
         if (!oauth && key.isEmpty()) {
             throw AiProviderException("Chave de API do provedor ${type.label} não configurada. Cadastre-a em Configurações > IA.")
         }
-        if (oauth && !googleAuth.hasAuthorization(endpoint.companyId)) {
-            throw AiProviderException("Conta Google não autorizada para ${type.label}. Toque em 'Entrar com conta Google' em Configurações > IA.")
+        if (oauth && !hasAccount(type, endpoint.companyId)) {
+            throw AiProviderException(
+                if (type == AiProviderType.OPENAI) ChatGptSessionStore.NOT_CONNECTED
+                else "Conta Google não autorizada para ${type.label}. Toque em 'Entrar com conta Google' em Configurações > IA.",
+            )
         }
         val model = endpoint.model.trim().ifEmpty { type.defaultModel }
-        val baseUrl = endpoint.baseUrl.trim().ifEmpty { type.defaultBaseUrl }
+        // O token da conta ChatGPT tem audiência https://api.openai.com/v1: nunca vai para URL/proxy configurado.
+        val baseUrl = if (oauth && type == AiProviderType.OPENAI) ChatGptOAuthClient.DEFAULT_API_BASE
+        else endpoint.baseUrl.trim().ifEmpty { type.defaultBaseUrl }
         if (model.isEmpty()) throw AiProviderException("Informe o modelo do provedor ${type.label} em Configurações > IA.")
         if (baseUrl.isEmpty()) throw AiProviderException("Informe a URL base do provedor ${type.label} em Configurações > IA.")
         if (!baseUrl.startsWith("https://", ignoreCase = true)) {

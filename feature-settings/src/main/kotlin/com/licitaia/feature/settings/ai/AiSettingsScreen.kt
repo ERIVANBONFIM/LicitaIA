@@ -57,6 +57,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -88,6 +89,9 @@ import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.core.ai.ChatGptAccountInfo
+import com.licitaia.core.ai.ChatGptLoginState
+import kotlinx.coroutines.delay
 import com.licitaia.domain.model.AiAuthMode
 import com.licitaia.domain.model.AiConfig
 import com.licitaia.domain.model.AiProviderType
@@ -110,14 +114,20 @@ private fun AiProviderType.color(): Color = when (this) {
 
 private fun AiProviderType.description(): String = when (this) {
     AiProviderType.MOCK -> "Respostas simuladas, offline e sem custo. Ideal para demonstração e testes."
-    AiProviderType.OPENAI -> "Modelos GPT via API da OpenAI. Requer chave de API própria."
+    AiProviderType.OPENAI -> "Modelos GPT da OpenAI: com chave de API própria ou entrando com a sua conta do ChatGPT."
     AiProviderType.ANTHROPIC -> "Modelos Claude via API da Anthropic. Requer chave de API própria."
     AiProviderType.GEMINI -> "Modelos Gemini via Google AI. Use uma chave de API ou entre com sua conta Google (cota no seu projeto Google Cloud)."
     AiProviderType.CUSTOM -> "Endpoint compatível com o formato OpenAI (servidor próprio, proxy corporativo ou modelo local)."
 }
 
-/** Linha informativa exibida nos provedores sem OAuth público (OpenAI, Anthropic, Custom). */
+/** Linha informativa exibida nos provedores sem OAuth público (Anthropic, Custom). */
 private const val OAUTH_UNAVAILABLE = "Login com conta: não oferecido por este provedor para apps de terceiros"
+
+/** Aviso obrigatório do "Entrar com ChatGPT" (disponibilidade definida pela OpenAI). */
+private const val CHATGPT_NOTICE = "Usa a sua assinatura do ChatGPT. Disponível para uso pessoal; para distribuir a clientes a OpenAI exige aprovação."
+
+/** Página oficial para o usuário acompanhar/gerenciar o uso do plano pelo app. */
+private const val CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage"
 
 /** Abre a página oficial no navegador; sem navegador, informa em vez de travar. */
 private fun openUrl(context: Context, url: String, onError: (String) -> Unit) {
@@ -136,6 +146,12 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
     val navigator = LocalAppNavigator.current
     val context = LocalContext.current
     LaunchedEffect(Unit) { viewModel.events.collect { navigator.showMessage(it) } }
+
+    // "Entrar com ChatGPT": servidor de retorno pronto → abre a autorização numa Custom Tab desta Activity.
+    val chatGptLogin = state.chatGptLogin
+    LaunchedEffect(chatGptLogin) {
+        if (chatGptLogin is ChatGptLoginState.OpenBrowser) viewModel.openChatGptBrowser(context)
+    }
 
     // Tela de consentimento/seleção de conta do Google (PendingIntent do AuthorizationClient).
     val consentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
@@ -184,7 +200,8 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
                         val oauth = state.config(state.active).authMode == AiAuthMode.OAUTH
                         AlertBanner(
                             "${state.active.label} está ativo sem ${if (oauth) "conta autorizada" else "chave"}",
-                            if (oauth) "Entre com sua conta Google para habilitar a análise. Falhas de conexão serão informadas."
+                            if (oauth && state.active == AiProviderType.OPENAI) "Entre com o ChatGPT para habilitar a análise. Falhas de conexão serão informadas."
+                            else if (oauth) "Entre com sua conta Google para habilitar a análise. Falhas de conexão serão informadas."
                             else "Configure sua chave para habilitar a análise. Falhas de conexão serão informadas.",
                             Tone.WARNING,
                         )
@@ -217,6 +234,11 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
                             onAuthMode = { viewModel.setAuthMode(provider, it) },
                             onConnectGoogle = { viewModel.connectGoogle(provider, it) },
                             onDisconnectGoogle = { viewModel.disconnectGoogle(provider) },
+                            chatGptLogin = state.chatGptLogin,
+                            chatGptAccount = state.chatGptAccount,
+                            chatGptModels = state.chatGptModels,
+                            onConnectChatGpt = viewModel::connectChatGpt,
+                            onCancelChatGpt = viewModel::cancelChatGpt,
                             onOpenUrl = { url -> openUrl(context, url) { navigator.showMessage(it) } },
                         )
                     }
@@ -246,6 +268,11 @@ private fun ProviderCard(
     onAuthMode: (AiAuthMode) -> Unit,
     onConnectGoogle: (cloudProject: String) -> Unit,
     onDisconnectGoogle: () -> Unit,
+    chatGptLogin: ChatGptLoginState,
+    chatGptAccount: ChatGptAccountInfo?,
+    chatGptModels: List<String>,
+    onConnectChatGpt: () -> Unit,
+    onCancelChatGpt: () -> Unit,
     onOpenUrl: (String) -> Unit,
 ) {
     var expanded by rememberSaveable(provider) { mutableStateOf(isActive && provider != AiProviderType.MOCK) }
@@ -263,7 +290,9 @@ private fun ProviderCard(
     val oauthMode = config.authMode == AiAuthMode.OAUTH && provider.supportsOAuth
     val dirty = model != config.model || baseUrl != config.baseUrl || apiKey.isNotBlank() ||
         (oauthMode && cloudProject.trim() != config.cloudProject.orEmpty())
-    val authBusy = oauth == OAuthFlowState.Loading
+    val isChatGpt = provider == AiProviderType.OPENAI
+    val chatGptBusy = isChatGpt && (chatGptLogin is ChatGptLoginState.Starting || chatGptLogin is ChatGptLoginState.OpenBrowser || chatGptLogin is ChatGptLoginState.Waiting)
+    val authBusy = oauth == OAuthFlowState.Loading || chatGptBusy
 
     LicitaCard(Modifier.fillMaxWidth().animateContentSize(), accent = if (isActive) color else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -276,7 +305,7 @@ private fun ProviderCard(
                     if (isActive) StatusBadge("ATIVO", Tone.SUCCESS)
                     when {
                         isMock -> StatusBadge("MOCK", Tone.INFO)
-                        oauthMode && config.hasOAuth -> StatusBadge("conta Google ✓", Tone.SUCCESS)
+                        oauthMode && config.hasOAuth -> StatusBadge(if (isChatGpt) "ChatGPT ✓" else "conta Google ✓", Tone.SUCCESS)
                         oauthMode -> StatusBadge("sem conta", Tone.NEUTRAL)
                         config.hasApiKey -> StatusBadge("chave configurada ✓", Tone.SUCCESS)
                         else -> StatusBadge("sem chave", Tone.NEUTRAL)
@@ -320,7 +349,8 @@ private fun ProviderCard(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    OutlinedTextField(
+                    // No modo conta ChatGPT o token só vai para https://api.openai.com/v1: a URL base não se aplica.
+                    if (!(oauthMode && isChatGpt)) OutlinedTextField(
                         value = baseUrl, onValueChange = { baseUrl = it.take(300) },
                         label = { Text(if (provider == AiProviderType.CUSTOM) "URL base (obrigatória)" else "URL base") },
                         placeholder = { Text(provider.defaultBaseUrl.ifBlank { "https://servidor.exemplo.com/v1/" }) },
@@ -330,7 +360,20 @@ private fun ProviderCard(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    if (oauthMode) {
+                    if (oauthMode && isChatGpt) {
+                        ChatGptAccountSection(
+                            config = config,
+                            account = chatGptAccount,
+                            models = chatGptModels,
+                            login = chatGptLogin,
+                            flow = oauth,
+                            canConfigure = canConfigure,
+                            onConnect = onConnectChatGpt,
+                            onCancel = onCancelChatGpt,
+                            onDisconnect = { confirmDisconnect = true },
+                            onOpenUrl = onOpenUrl,
+                        )
+                    } else if (oauthMode) {
                         GoogleAccountSection(
                             config = config,
                             cloudProject = cloudProject,
@@ -452,8 +495,12 @@ private fun ProviderCard(
     }
     if (confirmDisconnect) {
         ConfirmDialog(
-            title = "Desconectar conta Google de ${provider.label}?",
-            message = "O token de acesso será apagado do Keystore e a autorização revogada. O provedor volta ao modo \"Chave de API\"; se estiver ativo, o app usará a IA de demonstração até você configurar uma credencial.",
+            title = if (isChatGpt) "Desconectar a conta ChatGPT?" else "Desconectar conta Google de ${provider.label}?",
+            message = if (isChatGpt) {
+                "O acesso será revogado na OpenAI e os tokens apagados do Keystore deste aparelho. O provedor volta ao modo \"Chave de API\"; se estiver ativo, o app usará a IA de demonstração até você configurar uma credencial."
+            } else {
+                "O token de acesso será apagado do Keystore e a autorização revogada. O provedor volta ao modo \"Chave de API\"; se estiver ativo, o app usará a IA de demonstração até você configurar uma credencial."
+            },
             confirmLabel = "Desconectar", tone = Tone.DANGER,
             onConfirm = { confirmDisconnect = false; onDisconnectGoogle() },
             onDismiss = { confirmDisconnect = false },
@@ -521,7 +568,7 @@ private fun AuthModeSelector(
                     enabled = enabled,
                     shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                     icon = { SegmentedButtonDefaults.Icon(active = mode == AiAuthMode.OAUTH) { Icon(Icons.Outlined.AccountCircle, contentDescription = null, modifier = Modifier.size(SegmentedButtonDefaults.IconSize)) } },
-                ) { Text("Entrar com conta") }
+                ) { Text(if (provider == AiProviderType.OPENAI) "Entrar com ChatGPT" else "Entrar com conta", maxLines = 1) }
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -535,6 +582,113 @@ private fun AuthModeSelector(
                 Text(OAUTH_UNAVAILABLE, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
             }
         }
+    }
+}
+
+/**
+ * Bloco do modo "Entrar com ChatGPT": aviso de disponibilidade, botão de entrada, estados do fluxo (abrindo o
+ * navegador / aguardando com contagem de 5 min e Cancelar / conectado / erro) e "Desconectar".
+ */
+@Composable
+private fun ChatGptAccountSection(
+    config: AiConfig,
+    account: ChatGptAccountInfo?,
+    models: List<String>,
+    login: ChatGptLoginState,
+    flow: OAuthFlowState,
+    canConfigure: Boolean,
+    onConnect: () -> Unit,
+    onCancel: () -> Unit,
+    onDisconnect: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.Top) {
+        Icon(Icons.Outlined.Info, contentDescription = null, tint = LicitaColors.TextMuted, modifier = Modifier.size(14.dp).padding(top = 1.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(CHATGPT_NOTICE, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary)
+    }
+    when (login) {
+        is ChatGptLoginState.Starting, is ChatGptLoginState.OpenBrowser -> Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("Abrindo o navegador…", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f))
+            TextButton(onClick = onCancel) { Text("Cancelar") }
+        }
+        is ChatGptLoginState.Waiting -> {
+            var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+            LaunchedEffect(login.deadlineMs) {
+                while (true) {
+                    now = System.currentTimeMillis()
+                    delay(1_000)
+                }
+            }
+            val remaining = ((login.deadlineMs - now) / 1000).coerceAtLeast(0)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Aguardando autorização no navegador…", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextPrimary)
+                    Text(
+                        "Tempo restante: %d:%02d. Conclua a entrada na página da OpenAI e volte ao app.".format(remaining / 60, remaining % 60),
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                    )
+                }
+                TextButton(onClick = onCancel) { Text("Cancelar", color = LicitaColors.Red) }
+            }
+        }
+        else -> if (config.hasOAuth) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.AccountCircle, contentDescription = null, tint = LicitaColors.Green, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(account?.email ?: config.oauthAccount ?: "conta ChatGPT", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextPrimary)
+                    val plan = account?.planType?.takeIf { it.isNotBlank() }?.let { " (plano $it)" }.orEmpty()
+                    Text(
+                        if (account == null || account.planShared) "Usando o plano do ChatGPT$plan — uso liberado para o LicitaIA. O acesso é renovado automaticamente."
+                        else "O uso do plano não está liberado para o LicitaIA.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (account == null || account.planShared) LicitaColors.TextMuted else LicitaColors.Yellow,
+                    )
+                }
+                if (canConfigure) {
+                    TextButton(onClick = onDisconnect) { Text("Desconectar", color = LicitaColors.Red) }
+                }
+            }
+            if (models.isNotEmpty()) {
+                Text(
+                    "Modelos da sua conta: " + models.take(8).joinToString(", ") + if (models.size > 8) "…" else "",
+                    style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                )
+            }
+            TextButton(onClick = { onOpenUrl(CHATGPT_USAGE_URL) }) {
+                Icon(Icons.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Gerenciar uso no ChatGPT")
+            }
+        } else {
+            SecondaryButton(
+                "Entrar com ChatGPT", onConnect, Modifier.fillMaxWidth(),
+                enabled = canConfigure, icon = Icons.Outlined.Login,
+            )
+            Text(
+                "Abre a página oficial da OpenAI no navegador. O LicitaIA nunca vê sua senha; os tokens ficam cifrados no Keystore deste aparelho.",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+            )
+        }
+    }
+    when (flow) {
+        OAuthFlowState.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("Desconectando…", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+        }
+        OAuthFlowState.Cancelled -> Text("Entrada cancelada.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.Yellow)
+        is OAuthFlowState.Error -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Lock, contentDescription = null, tint = LicitaColors.Red, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(flow.message, style = MaterialTheme.typography.bodySmall, color = LicitaColors.RedBright)
+        }
+        OAuthFlowState.Idle -> Unit
     }
 }
 

@@ -35,12 +35,17 @@ private fun chatCompletionsText(label: String, response: JsonObject): String {
     return message?.str("content") ?: throw AiProviderException("$label não devolveu conteúdo na resposta.")
 }
 
-/** OpenAI — `POST /v1/chat/completions` com `Authorization: Bearer`. */
+/**
+ * OpenAI. Chave de API: `POST /v1/chat/completions` com `Authorization: Bearer <chave>`.
+ * Conta ChatGPT ("Entrar com ChatGPT"): Responses API `POST https://api.openai.com/v1/responses` com o access
+ * token OAuth (renovado com margem de 60 s; uma nova tentativa após 401; até 2 novas tentativas em 5xx).
+ */
 @Singleton
 class OpenAiProvider @Inject constructor(
     client: OkHttpClient,
     json: Json,
     private val credentials: AiCredentials,
+    private val chatGpt: ChatGptAuthorizer,
 ) : LlmBackedProvider(json) {
     private val http by lazy { client.forLlm() }
     override val type = AiProviderType.OPENAI
@@ -48,6 +53,7 @@ class OpenAiProvider @Inject constructor(
 
     override suspend fun complete(system: String, user: String, expectJson: Boolean): String {
         val cfg = credentials.resolve(type)
+        if (cfg.authMode == AiAuthMode.OAUTH) return completeWithChatGpt(cfg, system, user)
         val response = http.postJson(
             providerLabel = displayName,
             url = "${cfg.baseUrl}/v1/chat/completions",
@@ -56,6 +62,37 @@ class OpenAiProvider @Inject constructor(
             json = json,
         )
         return chatCompletionsText(displayName, response)
+    }
+
+    private suspend fun completeWithChatGpt(cfg: ResolvedAi, system: String, user: String): String {
+        val url = "${cfg.baseUrl}/v1/responses"
+        val body = ChatGptResponses.requestBody(cfg.model, system, user)
+        var token = chatGpt.accessToken(cfg.companyId)
+        var refreshed = false
+        var attempt = 0
+        while (true) {
+            try {
+                return ChatGptResponses.call(http, url, token, body, json)
+            } catch (e: AiProviderException) {
+                val status = e.httpStatus
+                when {
+                    status == 401 && !refreshed -> {
+                        refreshed = true
+                        token = chatGpt.refreshAfterRejection(cfg.companyId, token)
+                    }
+                    status != null && status in 500..599 && attempt < SERVER_RETRIES -> {
+                        attempt++
+                        kotlinx.coroutines.delay(attempt * RETRY_BACKOFF_MS)
+                    }
+                    else -> throw e
+                }
+            }
+        }
+    }
+
+    private companion object {
+        const val SERVER_RETRIES = 2
+        const val RETRY_BACKOFF_MS = 2_000L
     }
 }
 
