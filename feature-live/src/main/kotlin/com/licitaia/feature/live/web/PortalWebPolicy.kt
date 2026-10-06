@@ -1,0 +1,151 @@
+package com.licitaia.feature.live.web
+
+import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.PortalConnectionStatus
+import java.net.URI
+
+/**
+ * Regras puras (sem Android) do navegador interno de portais:
+ * allowlist de hosts por portal, URL inicial, identificação de página de login e
+ * heurística de "sessão aberta" — tudo sem ler, guardar ou injetar credenciais.
+ *
+ * A heurística NÃO inspeciona conteúdo da página nem cookies individuais: usa só a URL
+ * (host/caminho) e o fato de existirem cookies para o domínio.
+ */
+object PortalWebPolicy {
+
+    /** Regras de um portal. Hosts são comparados por igualdade ou sufixo ".host". */
+    data class Rules(
+        val portal: Portal,
+        /** Página oficial de login (ou pública, para portal sem login). */
+        val startUrl: String,
+        /** Domínios permitidos (o próprio e todos os subdomínios). */
+        val allowedDomains: List<String>,
+        /** Hosts inteiramente dedicados a autenticação (qualquer caminho = página de login). */
+        val loginHosts: List<String> = emptyList(),
+        /** Trechos de caminho (minúsculos) que identificam página de login/SSO. */
+        val loginPathMarkers: List<String> = emptyList(),
+        /** false = portal público (PNCP): nunca marca sessão. */
+        val requiresLogin: Boolean = true,
+    )
+
+    private val commonMarkers = listOf("login", "signin", "sign-in", "logon", "/sso", "/auth", "autenticacao", "autenticação")
+
+    private val rules: Map<Portal, Rules> = listOf(
+        Rules(
+            portal = Portal.PNCP,
+            startUrl = "https://pncp.gov.br/app/editais",
+            allowedDomains = listOf("pncp.gov.br"),
+            requiresLogin = false,
+        ),
+        Rules(
+            portal = Portal.COMPRAS_GOV,
+            // URL oficial de login já usada pela tela de portais. A área do fornecedor é alcançada após o login gov.br.
+            startUrl = "https://www.gov.br/compras/pt-br/login",
+            allowedDomains = listOf("gov.br"), // cobre www.gov.br, acesso.gov.br, sso.acesso.gov.br, comprasnet.gov.br, cnetmobile.estaleiro.serpro.gov.br
+            loginHosts = listOf("acesso.gov.br", "sso.acesso.gov.br"),
+            // "acesso" só como marcador de host (acesso.gov.br): no gov.br o caminho "acesso-a-informacao" é página pública.
+            loginPathMarkers = commonMarkers + listOf("loginportal", "/seguro/login"),
+        ),
+        Rules(
+            portal = Portal.BLL,
+            startUrl = "https://bllcompras.com/home/login",
+            allowedDomains = listOf("bll.org.br", "bllcompras.com"),
+            loginPathMarkers = commonMarkers + listOf("/acesso"),
+        ),
+        Rules(
+            portal = Portal.LICITANET,
+            // URL pública de login específica não confirmada: usa a página oficial do portal.
+            startUrl = "https://licitanet.com.br",
+            allowedDomains = listOf("licitanet.com.br"),
+            loginPathMarkers = commonMarkers + listOf("/acesso"),
+        ),
+        Rules(
+            portal = Portal.PORTAL_COMPRAS_PUBLICAS,
+            // URL pública de login específica não confirmada: usa a página oficial do portal.
+            startUrl = "https://www.portaldecompraspublicas.com.br",
+            allowedDomains = listOf("portaldecompraspublicas.com.br"),
+            loginPathMarkers = commonMarkers + listOf("/acesso"),
+        ),
+    ).associateBy { it.portal }
+
+    fun rules(portal: Portal): Rules = rules.getValue(portal)
+
+    fun startUrl(portal: Portal): String = rules(portal).startUrl
+
+    /** Host (minúsculo) da URL ou null se inválida. */
+    fun host(url: String): String? = runCatching { URI(url).host?.lowercase()?.trimEnd('.') }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    fun isHttps(url: String): Boolean = runCatching { URI(url).scheme?.equals("https", ignoreCase = true) == true }.getOrDefault(false)
+
+    private fun hostMatches(host: String, domain: String): Boolean {
+        val d = domain.lowercase()
+        return host == d || host.endsWith(".$d")
+    }
+
+    /** true se a URL é HTTPS e o host pertence à allowlist do portal. */
+    fun isAllowed(portal: Portal, url: String): Boolean {
+        if (!isHttps(url)) return false
+        val h = host(url) ?: return false
+        return rules(portal).allowedDomains.any { hostMatches(h, it) }
+    }
+
+    /** true se a URL é uma página de login/SSO do portal (host dedicado ou caminho com marcador). */
+    fun isLoginPage(portal: Portal, url: String): Boolean {
+        val r = rules(portal)
+        if (!r.requiresLogin) return false
+        val h = host(url) ?: return false
+        if (r.loginHosts.any { hostMatches(h, it) }) return true
+        val path = runCatching { URI(url).rawPath.orEmpty() }.getOrDefault("").lowercase()
+        return r.loginPathMarkers.any { marker -> path.contains(marker) }
+    }
+
+    /** Resultado da avaliação de uma navegação concluída. */
+    enum class Signal {
+        /** Fora da allowlist: bloquear e oferecer navegador externo. */
+        BLOCKED,
+        /** Login detectado (saiu de página de login para área do portal com cookies). */
+        CONNECTED,
+        /** Estava CONECTADO e o portal devolveu a página de login. */
+        EXPIRED,
+        /** Nada a registrar. */
+        NONE,
+    }
+
+    /**
+     * Heurística de sessão. Pura e idempotente.
+     * @param hasCookies CookieManager.getCookie(url) não vazio para esta URL.
+     * @param previousWasLoginPage a URL anterior (nesta aba) era página de login/SSO do portal;
+     *        null = primeira navegação da aba (a URL inicial costuma ser a própria página de login).
+     * @param currentStatus status persistido no app.
+     */
+    fun evaluate(
+        portal: Portal,
+        url: String,
+        hasCookies: Boolean,
+        previousWasLoginPage: Boolean?,
+        currentStatus: PortalConnectionStatus,
+    ): Signal {
+        if (!isAllowed(portal, url)) return Signal.BLOCKED
+        if (!rules(portal).requiresLogin) return Signal.NONE
+        val login = isLoginPage(portal, url)
+        return when {
+            // O portal devolveu a página de login depois de estarmos numa página normal → sessão caiu.
+            // (Na primeira carga ou dentro do fluxo de SSO não há o que concluir.)
+            login && currentStatus == PortalConnectionStatus.CONECTADO && previousWasLoginPage == false -> Signal.EXPIRED
+            login -> Signal.NONE
+            // Área logada só é reconhecida ao vir da página de login com cookies: evita falso positivo
+            // ao abrir a home pública (que também grava cookies de analytics).
+            hasCookies && previousWasLoginPage == true && currentStatus != PortalConnectionStatus.CONECTADO -> Signal.CONNECTED
+            else -> Signal.NONE
+        }
+    }
+
+    /**
+     * URLs base para as quais os cookies do portal devem ser expirados em "Sair do portal":
+     * cada domínio da allowlist e seu "www.".
+     */
+    fun cookieUrls(portal: Portal): List<String> = rules(portal).allowedDomains.flatMap { d ->
+        listOf("https://$d/", "https://www.$d/")
+    }.distinct()
+}

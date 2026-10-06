@@ -1,0 +1,214 @@
+package com.licitaia.connector.pncp
+
+import com.licitaia.domain.model.Modality
+import com.licitaia.domain.model.Opportunity
+import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.Segment
+import com.licitaia.domain.scoring.SegmentAffinity
+import com.licitaia.domain.scoring.TextMatch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
+
+/**
+ * Número de controle PNCP: `<cnpj 14 dígitos>-1-<sequencial 6 dígitos>/<ano>`
+ * (ex.: "20918579000183-1-000016/2025", observado na resposta real da API).
+ * Ele identifica a contratação nos endpoints `/orgaos/{cnpj}/compras/{ano}/{sequencial}`.
+ */
+data class PncpControlNumber(val cnpj: String, val ano: Int, val sequencial: Int) {
+    val raw: String get() = "$cnpj-1-${sequencial.toString().padStart(6, '0')}/$ano"
+    val opportunityId: String get() = "${Portal.PNCP.name}:$raw"
+    /** Página pública da contratação no portal web do PNCP. */
+    val publicPageUrl: String get() = "https://pncp.gov.br/app/editais/$cnpj/$ano/$sequencial"
+
+    companion object {
+        private val PATTERN = Regex("""^(\d{14})-1-(\d{1,6})/(\d{4})$""")
+
+        fun parse(raw: String?): PncpControlNumber? {
+            val m = PATTERN.matchEntire(raw?.trim().orEmpty()) ?: return null
+            return PncpControlNumber(m.groupValues[1], m.groupValues[3].toInt(), m.groupValues[2].toInt())
+        }
+
+        /** Aceita tanto o número de controle puro quanto o id interno "PNCP:<número>". */
+        fun fromOpportunityId(id: String): PncpControlNumber? = parse(id.removePrefix("${Portal.PNCP.name}:"))
+    }
+}
+
+/**
+ * Códigos de modalidade da API do PNCP. Confirmados por respostas reais de
+ * `/v1/contratacoes/publicacao?codigoModalidadeContratacao=N` em 06/10/2026:
+ * 4 "Concorrência - Eletrônica", 5 "Concorrência - Presencial", 6 "Pregão - Eletrônico",
+ * 7 "Pregão - Presencial", 8 "Dispensa", 9 "Inexigibilidade", 12 "Credenciamento".
+ * O OpenAPI não lista a tabela de domínio; códigos não observados não são usados.
+ */
+object PncpModalities {
+    const val CONCORRENCIA_ELETRONICA = 4
+    const val CONCORRENCIA_PRESENCIAL = 5
+    const val PREGAO_ELETRONICO = 6
+    const val PREGAO_PRESENCIAL = 7
+    const val DISPENSA = 8
+    const val INEXIGIBILIDADE = 9
+    const val CREDENCIAMENTO = 12
+
+    /** Código usado nas consultas para cada modalidade do app. */
+    fun codeOf(modality: Modality): Int = when (modality) {
+        Modality.PREGAO_ELETRONICO -> PREGAO_ELETRONICO
+        Modality.DISPENSA_ELETRONICA -> DISPENSA
+        Modality.CONCORRENCIA -> CONCORRENCIA_ELETRONICA
+        Modality.CREDENCIAMENTO -> CREDENCIAMENTO
+    }
+
+    /** Códigos consultados quando o filtro não fixa modalidade (só os que o app representa). */
+    val SEARCHED_CODES: List<Int> = listOf(PREGAO_ELETRONICO, DISPENSA, CONCORRENCIA_ELETRONICA, CREDENCIAMENTO)
+
+    /** Modalidade do app para um código da API; null = não representada (presencial, inexigibilidade, leilão...). */
+    fun modalityOf(code: Long?): Modality? = when (code?.toInt()) {
+        PREGAO_ELETRONICO -> Modality.PREGAO_ELETRONICO
+        DISPENSA -> Modality.DISPENSA_ELETRONICA
+        CONCORRENCIA_ELETRONICA, CONCORRENCIA_PRESENCIAL -> Modality.CONCORRENCIA
+        CREDENCIAMENTO -> Modality.CREDENCIAMENTO
+        else -> null
+    }
+}
+
+/** Conversão DTO → domínio. Lógica pura e testável. */
+internal object PncpMapper {
+
+    /** O PNCP publica datas sem fuso ("2025-09-12T15:15:04"); são horários de Brasília. */
+    val ZONE: ZoneId = ZoneId.of("America/Sao_Paulo")
+    val QUERY_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
+
+    fun queryDate(epochMillis: Long): String = Instant.ofEpochMilli(epochMillis).atZone(ZONE).toLocalDate().format(QUERY_DATE)
+
+    fun parseDate(text: String?): Long? {
+        val t = text?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return try {
+            LocalDateTime.parse(t.take(19)).atZone(ZONE).toInstant().toEpochMilli()
+        } catch (_: DateTimeParseException) {
+            try {
+                LocalDate.parse(t.take(10)).atStartOfDay(ZONE).toInstant().toEpochMilli()
+            } catch (_: DateTimeParseException) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Devolve null quando a contratação não pode ser representada (sem número de controle válido
+     * ou modalidade fora das suportadas pelo app). Nada é inventado: campos ausentes ficam vazios/0.
+     */
+    fun toOpportunity(dto: PncpContratacao): Opportunity? {
+        val ref = PncpControlNumber.parse(dto.numeroControlePNCP) ?: return null
+        val modality = PncpModalities.modalityOf(dto.modalidadeId) ?: return null
+
+        val published = parseDate(dto.dataPublicacaoPncp) ?: parseDate(dto.dataInclusao) ?: 0L
+        val opening = parseDate(dto.dataAberturaProposta)
+        val closing = parseDate(dto.dataEncerramentoProposta)
+        val deadline = closing ?: opening ?: published
+
+        val objeto = dto.objetoCompra?.trim().orEmpty()
+        val unidade = dto.unidadeOrgao
+        val agencyName = dto.orgaoEntidade?.razaoSocial?.trim().orEmpty().ifEmpty { "Órgão não informado" }
+        val unitName = unidade?.nomeUnidade?.trim().orEmpty()
+        val agency = if (unitName.isNotEmpty() && !unitName.contains("única", ignoreCase = true) && !agencyName.contains(unitName, true)) {
+            "$agencyName — $unitName"
+        } else {
+            agencyName
+        }
+
+        val keywords = buildList {
+            dto.modalidadeNome?.let(::add)
+            dto.tipoInstrumentoConvocatorioNome?.let(::add)
+            if (dto.srp == true) add("registro de preços")
+            dto.amparoLegal?.nome?.let(::add)
+            dto.processo?.takeIf { it.isNotBlank() }?.let { add("processo $it") }
+            dto.informacaoComplementar?.takeIf { it.isNotBlank() }?.let { add(it.take(200)) }
+            add(ref.raw)
+        }.distinct()
+
+        return Opportunity(
+            id = ref.opportunityId,
+            portal = Portal.PNCP,
+            number = dto.numeroCompra?.trim()?.takeIf { it.isNotEmpty() }?.let { n -> dto.anoCompra?.let { "$n/$it" } ?: n } ?: ref.raw,
+            agency = agency,
+            objectDescription = objeto.ifEmpty { "Objeto não informado pelo órgão" },
+            modality = modality,
+            segment = inferSegment(objeto),
+            uf = unidade?.ufSigla?.trim()?.uppercase().orEmpty(),
+            city = unidade?.municipioNome?.trim().orEmpty(),
+            estimatedValue = dto.valorTotalEstimado ?: 0.0,
+            publishedAt = published,
+            proposalDeadline = deadline,
+            // O PNCP não publica data da sessão de disputa: usa-se o fim do recebimento de propostas.
+            sessionAt = deadline,
+            requiresLocalSupport = false,
+            keywords = keywords,
+            editalUrl = ref.publicPageUrl,
+        )
+    }
+
+    /** Descrição legível de um item da contratação. */
+    fun describeItem(item: PncpItem): String = buildString {
+        append("Item ").append(item.numeroItem ?: "?")
+        append(" — ").append(item.descricao?.trim()?.ifEmpty { "sem descrição" } ?: "sem descrição")
+        val qty = item.quantidade
+        if (qty != null) {
+            append(" (").append(formatQuantity(qty))
+            item.unidadeMedida?.takeIf { it.isNotBlank() }?.let { append(' ').append(it.trim()) }
+            if (item.orcamentoSigiloso == true) append(", orçamento sigiloso")
+            else item.valorUnitarioEstimado?.let { append(", R$ ").append(formatMoney(it)).append(" unit.") }
+            append(')')
+        }
+    }
+
+    private fun formatQuantity(q: Double): String =
+        if (q % 1.0 == 0.0) q.toLong().toString() else String.format(java.util.Locale("pt", "BR"), "%.2f", q)
+
+    private fun formatMoney(v: Double): String = String.format(java.util.Locale("pt", "BR"), "%,.2f", v)
+
+    // ------------------------------------------------------------------ segmento (heurística declarada)
+
+    /** Termos genéricos demais para indicar segmento (aparecem em objetos de qualquer área). */
+    private val genericTerms = setOf("aquisicao", "rede", "infraestrutura", "sistema", "gestao", "implantacao", "equipamento", "aplicativo", "servico")
+
+    private val specificVocabulary: Map<Segment, List<String>> = mapOf(
+        Segment.TELECOM_ISP to SegmentAffinity.defaultKeywords(Segment.TELECOM_ISP) + listOf(
+            "telefonia", "link de internet", "acesso a internet", "provedor", "fibra optica", "radio", "voip", "pabx",
+            "comunicacao de dados", "satelite", "lan-to-lan", "mpls", "sip", "telecomunicacoes", "4g", "5g",
+        ),
+        Segment.SOFTWARE to SegmentAffinity.defaultKeywords(Segment.SOFTWARE) + listOf(
+            "licenciamento", "licencas", "sistema de gestao", "erp", "aplicacao", "portal", "nuvem", "saas", "assinatura de software",
+        ),
+        Segment.EQUIPAMENTOS to SegmentAffinity.defaultKeywords(Segment.EQUIPAMENTOS) + listOf(
+            "servidor", "storage", "camera", "cftv", "tablet", "projetor", "nobreak", "access point", "roteador",
+            "microcomputador", "desktop", "scanner", "equipamentos de informatica", "material de informatica",
+        ),
+        Segment.TI to SegmentAffinity.defaultKeywords(Segment.TI) + listOf(
+            "tecnologia da informacao", "data center", "seguranca da informacao", "service desk", "help desk",
+            "virtualizacao", "monitoramento", "videomonitoramento", "cabeamento estruturado", "rede logica", "wi-fi", "wifi",
+        ),
+    ).mapValues { (_, words) -> words.filter { TextMatch.normalize(it) !in genericTerms }.distinct() }
+
+    private val servicosVocabulary: List<String> =
+        SegmentAffinity.defaultKeywords(Segment.SERVICOS) + listOf("prestacao de servico", "contratacao de empresa", "outsourcing")
+
+    /**
+     * Inferência por palavras-chave do objeto. É uma HEURÍSTICA: objetos fora do vocabulário
+     * recebem [Segment.PERSONALIZADO] (o score trata como neutro), nunca um segmento inventado.
+     */
+    fun inferSegment(objeto: String): Segment {
+        if (objeto.isBlank()) return Segment.PERSONALIZADO
+        val text = " " + TextMatch.normalize(objeto) + " "
+        val scores = specificVocabulary.mapValues { (_, words) -> words.count { TextMatch.containsTerm(text, it) } }
+        val best = scores.maxByOrNull { it.value }
+        if (best != null && best.value > 0) {
+            // Desempate determinístico pela ordem do enum Segment (TELECOM_ISP, TI, SOFTWARE, EQUIPAMENTOS).
+            return scores.entries.filter { it.value == best.value }.minByOrNull { it.key.ordinal }!!.key
+        }
+        if (servicosVocabulary.any { TextMatch.containsTerm(text, it) }) return Segment.SERVICOS
+        return Segment.PERSONALIZADO
+    }
+}

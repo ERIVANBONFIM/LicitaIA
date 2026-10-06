@@ -1,0 +1,275 @@
+package com.licitaia.connector.pncp
+
+import com.licitaia.connector.api.BidSubmission
+import com.licitaia.connector.api.PortalAuthResult
+import com.licitaia.connector.api.PortalCredentials
+import com.licitaia.connector.api.SubmissionResult
+import com.licitaia.connector.api.ProposalPreparation
+import com.licitaia.connector.api.HumanConfirmation
+import com.licitaia.domain.model.Modality
+import com.licitaia.domain.model.OpportunityFilter
+import com.licitaia.domain.model.Portal
+import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Before
+import org.junit.Test
+import java.time.LocalDateTime
+import java.time.ZoneId
+
+/** Conector PNCP contra um MockWebServer que devolve respostas REAIS capturadas da API (fixtures). */
+class PncpConnectorTest {
+
+    private lateinit var server: MockWebServer
+    private lateinit var connector: PncpConnector
+    private val requests = mutableListOf<RecordedRequest>()
+
+    /** Relógio fixo: 06/10/2026 12:00 em Brasília → dataFinal=20261006. */
+    private val now = LocalDateTime.of(2026, 10, 6, 12, 0).atZone(ZoneId.of("America/Sao_Paulo")).toInstant().toEpochMilli()
+
+    private fun fixture(name: String): String =
+        checkNotNull(javaClass.getResourceAsStream("/pncp/$name")) { "fixture $name ausente" }.bufferedReader().readText()
+
+    private fun jsonResponse(body: String, code: Int = 200) =
+        MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json").setBody(body)
+
+    private fun noContent() = MockResponse().setResponseCode(204)
+
+    private fun start(dispatch: (RecordedRequest) -> MockResponse) {
+        server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                synchronized(requests) { requests += request }
+                return dispatch(request)
+            }
+        }
+        server.start()
+        connector = PncpConnector(OkHttpClient(), PncpConnector.defaultJson(), server.url("/"), clock = { now })
+    }
+
+    @Before
+    fun setUp() {
+        requests.clear()
+    }
+
+    @After
+    fun tearDown() {
+        if (this::server.isInitialized) server.shutdown()
+    }
+
+    private fun RecordedRequest.query(name: String): String? = requestUrl?.queryParameter(name)
+
+    // ------------------------------------------------------------ listOpportunities
+
+    @Test
+    fun `busca com modalidade e UF consulta propostas abertas e pagina ate acabar`() = runBlocking {
+        val page1 = fixture("contratacoes_proposta_mg_p1.json") // paginasRestantes = 37
+        start { req ->
+            when (req.query("pagina")) {
+                "1" -> jsonResponse(page1)
+                else -> noContent() // página 2 vazia (204, conforme OpenAPI) encerra a paginação
+            }
+        }
+
+        val result = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, ufs = setOf("mg")))
+
+        assertEquals(2, requests.size)
+        requests.forEach { r ->
+            assertEquals("/api/consulta/v1/contratacoes/proposta", r.requestUrl?.encodedPath)
+            assertEquals("20261006", r.query("dataFinal"))
+            assertEquals("12", r.query("codigoModalidadeContratacao"))
+            assertEquals("MG", r.query("uf"))
+            assertEquals("50", r.query("tamanhoPagina"))
+            assertNull("não há parâmetro de texto na API", r.query("q"))
+        }
+        assertEquals(listOf("1", "2"), requests.map { it.query("pagina") })
+
+        assertEquals(10, result.size)
+        assertTrue(result.all { it.portal == Portal.PNCP && it.id.startsWith("PNCP:") && it.uf == "MG" })
+        assertEquals(result.sortedBy { it.proposalDeadline }, result)
+    }
+
+    @Test
+    fun `paginacao para quando nao restam paginas`() = runBlocking {
+        val lastPage = fixture("contratacoes_proposta_mg_p1.json").replace("\"paginasRestantes\":37", "\"paginasRestantes\":0")
+        check(lastPage != fixture("contratacoes_proposta_mg_p1.json")) { "fixture mudou: ajustar substituição" }
+        start { jsonResponse(lastPage) }
+
+        val result = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, ufs = setOf("MG")))
+
+        assertEquals(1, requests.size)
+        assertEquals(10, result.size)
+    }
+
+    @Test
+    fun `sem modalidade consulta somente os codigos representados pelo app`() = runBlocking {
+        start { noContent() }
+
+        val result = connector.listOpportunities(OpportunityFilter())
+
+        assertTrue(result.isEmpty())
+        assertEquals(
+            listOf("6", "8", "4", "12"),
+            requests.map { it.query("codigoModalidadeContratacao") },
+        )
+        assertTrue(requests.all { it.query("uf") == null })
+    }
+
+    @Test
+    fun `filtros sem suporte na API (texto e valor) sao aplicados localmente`() = runBlocking {
+        start { req -> if (req.query("pagina") == "1") jsonResponse(fixture("contratacoes_proposta_mg_p1.json")) else noContent() }
+
+        val byText = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, query = "laboratório análises"))
+        assertEquals(
+            setOf("PNCP:20918579000183-1-000016/2025", "PNCP:18134056000102-1-000076/2025"),
+            byText.map { it.id }.toSet(),
+        )
+
+        requests.clear()
+        val byValue = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, minValue = 1_000_000.0))
+        assertEquals(2, byValue.size)
+        assertTrue(byValue.all { it.estimatedValue >= 1_000_000.0 })
+    }
+
+    @Test
+    fun `filtro de portais que exclui o PNCP nao gera requisicao`() = runBlocking {
+        start { fail("não deveria chamar a rede"); noContent() }
+        assertTrue(connector.listOpportunities(OpportunityFilter(portals = setOf(Portal.BLL))).isEmpty())
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test
+    fun `erro HTTP vira PncpException com mensagem em portugues`() = runBlocking {
+        start { MockResponse().setResponseCode(503).setBody("indisponível") }
+        try {
+            connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO))
+            fail("deveria falhar")
+        } catch (e: PncpException) {
+            assertEquals(PncpException.Kind.HTTP, e.kind)
+            assertEquals(503, e.httpStatus)
+            assertTrue(e.message!!, e.message!!.contains("indisponível"))
+        }
+    }
+
+    @Test
+    fun `limite de consultas (429) e corpo invalido tem mensagens proprias`() = runBlocking {
+        start { req -> if (req.query("pagina") == "1") MockResponse().setResponseCode(429) else noContent() }
+        try {
+            connector.listOpportunities(OpportunityFilter(modality = Modality.DISPENSA_ELETRONICA))
+            fail("deveria falhar")
+        } catch (e: PncpException) {
+            assertEquals(429, e.httpStatus)
+            assertTrue(e.message!!.contains("Aguarde"))
+        }
+        server.shutdown()
+
+        start { jsonResponse("<html>não é json</html>") }
+        try {
+            connector.listOpportunities(OpportunityFilter(modality = Modality.DISPENSA_ELETRONICA))
+            fail("deveria falhar")
+        } catch (e: PncpException) {
+            assertEquals(PncpException.Kind.INVALID_RESPONSE, e.kind)
+        }
+    }
+
+    @Test
+    fun `servidor inacessivel vira PncpException de conexao`() = runBlocking {
+        start { noContent() }
+        val url = server.url("/")
+        server.shutdown()
+        val offline = PncpConnector(OkHttpClient(), PncpConnector.defaultJson(), url, clock = { now })
+        try {
+            offline.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO))
+            fail("deveria falhar")
+        } catch (e: PncpException) {
+            assertTrue(e.kind == PncpException.Kind.OFFLINE || e.kind == PncpException.Kind.TIMEOUT)
+            assertTrue(e.message!!.contains("PNCP"))
+        }
+    }
+
+    // ------------------------------------------------------------ getTenderDetails
+
+    @Test
+    fun `detalhe combina contratacao, documentos (edital) e itens`() = runBlocking {
+        start { req ->
+            when (req.requestUrl?.encodedPath) {
+                "/api/consulta/v1/orgaos/20918579000183/compras/2025/16" -> jsonResponse(fixture("contratacao_20918579000183_2025_16.json"))
+                "/api/pncp/v1/orgaos/20918579000183/compras/2025/16/arquivos" -> jsonResponse(fixture("arquivos_20918579000183_2025_16.json"))
+                "/api/pncp/v1/orgaos/20918579000183/compras/2025/16/itens" -> jsonResponse(fixture("itens_20918579000183_2025_16.json"))
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+
+        val details = connector.getTenderDetails("PNCP:20918579000183-1-000016/2025")
+
+        assertNotNull(details)
+        assertEquals(3, requests.size)
+        assertEquals("PNCP:20918579000183-1-000016/2025", details!!.opportunity.id)
+        assertNull("o PDF não é lido pelo conector", details.editalText)
+        assertEquals("https://pncp.gov.br/pncp-api/v1/orgaos/20918579000183/compras/2025/16/arquivos/1", details.opportunity.editalUrl)
+        assertTrue(details.opportunity.keywords.contains("documento: EDITAL.pdf"))
+        assertTrue(details.items.isNotEmpty())
+        assertTrue(details.items.first().startsWith("Item 1 — ANTI TRANSGLUTAMINASE"))
+    }
+
+    @Test
+    fun `detalhe sem documentos mantem a pagina publica como editalUrl`() = runBlocking {
+        start { req ->
+            when {
+                req.requestUrl?.encodedPath?.startsWith("/api/consulta/") == true -> jsonResponse(fixture("contratacao_20918579000183_2025_16.json"))
+                else -> noContent()
+            }
+        }
+        val details = connector.getTenderDetails("PNCP:20918579000183-1-000016/2025")
+        assertEquals("https://pncp.gov.br/app/editais/20918579000183/2025/16", details!!.opportunity.editalUrl)
+        assertTrue(details.items.isEmpty())
+    }
+
+    @Test
+    fun `detalhe de id invalido ou inexistente devolve null`() = runBlocking {
+        start { noContent() }
+        assertNull(connector.getTenderDetails("COMPRAS_GOV:90045/2026"))
+        assertTrue(requests.isEmpty())
+        assertNull(connector.getTenderDetails("PNCP:20918579000183-1-000999/2025"))
+        assertEquals(1, requests.size)
+    }
+
+    // ------------------------------------------------------------ capacidades / não suportado
+
+    @Test
+    fun `capacidades declaram consulta publica real e metodos autenticados falham explicitamente`() = runBlocking {
+        start { fail("não deveria chamar a rede"); noContent() }
+        val caps = connector.capabilities
+        assertFalse(caps.isMock)
+        assertTrue(caps.supportsOfficialApi)
+        assertFalse(caps.supportsBrowserAutomation)
+        assertFalse(caps.supportsPersistentSession)
+        assertTrue(caps.limitations.any { it.contains("sem lances, propostas ou mensagens") })
+
+        val auth = connector.authenticate(PortalCredentials(1, "u", "s", "k"))
+        assertTrue(auth is PortalAuthResult.Failure && auth.message.contains("Não suportado pelo PNCP"))
+        assertTrue(connector.restoreSession("k") is PortalAuthResult.Failure)
+        val submission = connector.submitProposal(
+            ProposalPreparation(Portal.PNCP, "1", "item", 1, 10.0, emptyList()), HumanConfirmation("user", now),
+        )
+        assertTrue(submission is SubmissionResult.Failure)
+        assertTrue(connector.submitBid("s", "item", 1.0, null) is BidSubmission.Rejected)
+        assertNull(connector.readCurrentBidState("s"))
+        try {
+            connector.openLiveSession("s", com.licitaia.domain.bidding.DemoSessionSpecs.initial(1).first())
+            fail("deveria falhar")
+        } catch (_: UnsupportedOperationException) {
+        }
+        assertTrue(requests.isEmpty())
+    }
+}

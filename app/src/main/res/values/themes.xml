@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="licita_background">#070B14</color>
+    <!-- Pai AppCompat: o diálogo de fallback do BiometricPrompt (API 26/27) exige Theme.AppCompat. -->
+    <style name="Theme.LicitaIA" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/licita_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

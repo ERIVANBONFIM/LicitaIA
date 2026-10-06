@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="licitaia_proposals" path="proposals/" />
+    <files-path name="licitaia_restored" path="restored/" />
+    <files-path name="licitaia_editais" path="editais/" />
+</paths>
