@@ -1,10 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Somente HTTPS. Certificate pinning por portal/provedor deve ser adicionado aqui
-     (<pin-set>) quando as integrações reais forem validadas. -->
+<!--
+    Política de rede do LicitaIA: SOMENTE HTTPS, em qualquer domínio (base-config), com as âncoras de
+    confiança do sistema. Nenhum tráfego em texto puro é permitido, nem em debug.
+
+    Allowlist de destinos que o app acessa (documentação, não restrição — o Android não bloqueia hosts
+    por aqui; a restrição de hosts é feita no código: OkHttp dos provedores, PNCP e UpdateChecker, e na
+    allowlist da WebView em PortalWebPolicy):
+      - pncp.gov.br                      → API pública de consulta do PNCP (sem login)
+      - api.github.com                   → GitHub Releases (verificação/baixa de atualização)
+      - api.openai.com                   → provedor de IA (OpenAI)
+      - api.anthropic.com                → provedor de IA (Anthropic)
+      - generativelanguage.googleapis.com→ provedor de IA (Gemini)
+      - oauth2.googleapis.com            → OAuth Google (token) / JWKS do Sign in with Google
+      - www.googleapis.com               → JWKS (oauth2/v3/certs) e APIs Google
+
+    Certificate pinning: NÃO habilitado de propósito. Pinning real exige gestão de rotação das chaves de
+    cada operador (prazo de validade, pins de backup, expiração do <pin-set>) — sem isso o app para de
+    funcionar quando o certificado é renovado. Para habilitar, adicione <pin-set expiration="..."> com
+    pelo menos dois <pin digest="SHA-256"> (atual + backup) dentro do <domain-config> correspondente.
+    Ver SECURITY.md.
+-->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+
+    <!-- Portal Nacional de Contratações Públicas: consulta pública. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">pncp.gov.br</domain>
+        <!-- <pin-set expiration="AAAA-MM-DD"><pin digest="SHA-256">...</pin><pin digest="SHA-256">...</pin></pin-set> -->
+    </domain-config>
+
+    <!-- GitHub Releases: atualização do app. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">api.github.com</domain>
+    </domain-config>
+
+    <!-- Provedores de IA (chave do usuário, lida do Keystore só na chamada). -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">api.openai.com</domain>
+        <domain includeSubdomains="false">api.anthropic.com</domain>
+        <domain includeSubdomains="false">generativelanguage.googleapis.com</domain>
+    </domain-config>
+
+    <!-- Google: OAuth e JWKS para verificação do ID token. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">oauth2.googleapis.com</domain>
+        <domain includeSubdomains="false">www.googleapis.com</domain>
+    </domain-config>
 </network-security-config>

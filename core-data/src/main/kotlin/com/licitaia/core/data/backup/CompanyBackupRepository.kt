@@ -34,7 +34,7 @@ class CompanyBackupRepository @Inject constructor(
 
     private companion object {
         /** Versão de schema gravada no backup = versão atual do Room; restauração aceita versões anteriores. */
-        const val BACKUP_SCHEMA = 4
+        const val BACKUP_SCHEMA = 5
     }
 
     private fun session() = requireNotNull(holder.current) { "Entre em sua conta." }.also {

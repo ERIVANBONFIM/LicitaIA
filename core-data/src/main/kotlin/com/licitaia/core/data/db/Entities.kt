@@ -277,6 +277,10 @@ data class AuditEventEntity(
     val origin: AuditOrigin,
     val result: AuditResult,
     val details: String,
+    /** Hash do evento anterior (cadeia); "" em eventos anteriores à versão 5 do banco. */
+    @ColumnInfo(defaultValue = "") val prevHash: String = "",
+    /** SHA-256 de prevHash + campos essenciais; "" = evento legado (sem hash). */
+    @ColumnInfo(defaultValue = "") val hash: String = "",
 )
 
 /** Modelo/URL por provedor. A chave e o token OAuth ficam no cofre (Keystore), nunca aqui. */

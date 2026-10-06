@@ -44,6 +44,20 @@ object DatabaseMigrations {
         }
     }
 
+    /**
+     * Versão 5: hash encadeado na auditoria (`prevHash`, `hash`). Só adiciona colunas com default vazio:
+     * eventos antigos ficam sem hash e a verificação de integridade começa no primeiro evento encadeado.
+     */
+    val FROM_4_TO_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val columns = db.query("PRAGMA table_info(audit_events)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            if ("prevHash" !in columns) db.execSQL("ALTER TABLE audit_events ADD COLUMN prevHash TEXT NOT NULL DEFAULT ''")
+            if ("hash" !in columns) db.execSQL("ALTER TABLE audit_events ADD COLUMN hash TEXT NOT NULL DEFAULT ''")
+        }
+    }
+
     /** Todas as migrações incrementais, na ordem. */
-    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4)
+    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5)
 }

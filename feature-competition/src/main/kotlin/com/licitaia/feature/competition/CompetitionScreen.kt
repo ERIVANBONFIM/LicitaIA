@@ -10,20 +10,33 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AddChart
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.Percent
 import androidx.compose.material.icons.outlined.TrendingDown
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -39,6 +52,7 @@ import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
 import com.licitaia.core.ui.components.LinearMeter
 import com.licitaia.core.ui.components.PortalChip
+import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SectionHeader
 import com.licitaia.core.ui.components.SelectChip
 import com.licitaia.core.ui.components.SkeletonList
@@ -46,6 +60,7 @@ import com.licitaia.core.ui.components.StatCard
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.components.color
+import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.theme.LicitaColors
 import com.licitaia.domain.model.CompetitionRecord
 import com.licitaia.domain.util.Formatters
@@ -53,27 +68,92 @@ import com.licitaia.domain.util.Formatters
 @Composable
 fun CompetitionScreen(viewModel: CompetitionViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val navigator = LocalAppNavigator.current
+    LaunchedEffect(viewModel) { viewModel.messages.collect(navigator::showMessage) }
 
-    LicitaScaffold(title = "Concorrência", showBack = false) { padding ->
+    var formOpen by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<CompetitionRecord?>(null) }
+    if (formOpen) {
+        CompetitionRecordDialog(
+            defaultSegment = state.companySegment,
+            onDismiss = { formOpen = false },
+            onConfirm = { form ->
+                formOpen = false
+                form.toRecord(state.companyId).fold(onSuccess = viewModel::insert, onFailure = { navigator.showMessage(it.message ?: "Dados inválidos.") })
+            },
+        )
+    }
+    pendingDelete?.let { record ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Excluir registro?") },
+            text = {
+                Text(
+                    "${record.portal.shortName} ${record.tenderNumber} · ${record.agency}\n${if (record.won) "Vitória" else "Derrota"} em ${Formatters.date(record.date)}. " +
+                        "O registro sai do histórico e dos indicadores de concorrência. Esta ação não pode ser desfeita.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDelete = null
+                        viewModel.delete(record)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = LicitaColors.Red),
+                ) { Text("Excluir") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancelar") } },
+            containerColor = LicitaColors.SurfaceElevated,
+        )
+    }
+    val canRegister = !state.loading && !state.noSession && state.error == null && state.companyId > 0
+
+    LicitaScaffold(
+        title = "Concorrência", showBack = false,
+        actions = {
+            if (canRegister) {
+                IconButton(onClick = { formOpen = true }, enabled = !state.saving) {
+                    Icon(Icons.Outlined.AddChart, contentDescription = "Registrar resultado", tint = LicitaColors.Blue)
+                }
+            }
+        },
+    ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
                 state.loading -> SkeletonList()
                 state.noSession -> ErrorState("Sessão encerrada. Entre novamente para ver a análise de concorrência.")
                 state.error != null -> ErrorState(state.error ?: "", onRetry = viewModel::retry)
-                !state.hasAny -> EmptyState(
-                    "Sem histórico ainda",
-                    "Quando a empresa participar de pregões, os resultados públicos e o histórico interno alimentarão esta análise.",
-                    icon = Icons.Outlined.Insights,
-                )
+                !state.hasAny -> Column {
+                    EmptyState(
+                        "Sem resultados registrados",
+                        "A análise de concorrência é construída com os resultados reais dos pregões da empresa. " +
+                            "Ao marcar uma licitação como Vencida ou Perdida (tela da licitação ou Minhas Participações), o app pede os dados do pregão " +
+                            "— concorrentes, fechamento, nosso lance e lances. Você também pode registrar um resultado manualmente.",
+                        icon = Icons.Outlined.Insights,
+                        actionLabel = "Registrar resultado",
+                        onAction = { formOpen = true },
+                    )
+                    Text(
+                        "Apenas dados públicos (atas e resultados dos portais) e o histórico interno da empresa. Nenhum dado sigiloso de concorrentes é coletado.",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                        modifier = Modifier.padding(horizontal = 32.dp),
+                    )
+                }
                 else -> LazyColumn(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item(key = "notice") {
                         AlertBanner(
-                            "Apenas dados públicos e históricos internos",
-                            "A análise usa atas e resultados publicados pelos portais e o histórico de participações da própria empresa. Nenhum dado sigiloso de concorrentes é coletado.",
+                            "Resultados reais da empresa e dados públicos",
+                            "Os indicadores vêm dos resultados que a empresa registra ao vencer ou perder um pregão (e de atas públicas). Nenhum dado sigiloso de concorrentes é coletado.",
                             Tone.INFO,
+                        )
+                    }
+                    item(key = "register") {
+                        SecondaryButton(
+                            "Registrar resultado", { formOpen = true }, Modifier.fillMaxWidth(),
+                            enabled = !state.saving, icon = Icons.Outlined.AddChart,
                         )
                     }
                     item(key = "filters") { FiltersBlock(state, viewModel) }
@@ -147,7 +227,8 @@ fun CompetitionScreen(viewModel: CompetitionViewModel = hiltViewModel()) {
 
                         item(key = "histHeader") { SectionHeader("Histórico (${state.records.size})") }
                         items(state.records.size, key = { i -> "rec-${state.records[i].id}-$i" }) { i ->
-                            RecordCard(state.records[i], Modifier.animateItem())
+                            val record = state.records[i]
+                            RecordCard(record, Modifier.animateItem(), onDelete = { pendingDelete = record })
                         }
                     }
                 }
@@ -204,12 +285,15 @@ private fun SegmentCard(seg: SegmentStats) {
 }
 
 @Composable
-private fun RecordCard(record: CompetitionRecord, modifier: Modifier) {
+private fun RecordCard(record: CompetitionRecord, modifier: Modifier, onDelete: () -> Unit) {
     LicitaCard(modifier.fillMaxWidth(), accent = if (record.won) LicitaColors.Green else null) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PortalChip(record.portal)
             Text(record.tenderNumber, style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             StatusBadge(if (record.won) "Vitória" else "Derrota", if (record.won) Tone.SUCCESS else Tone.DANGER)
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = "Excluir registro", tint = LicitaColors.TextMuted, modifier = Modifier.size(18.dp))
+            }
         }
         Spacer(Modifier.height(8.dp))
         Text(record.objectSummary, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)

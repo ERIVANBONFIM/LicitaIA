@@ -1,6 +1,7 @@
 package com.licitaia.domain.repository
 
 import com.licitaia.domain.auth.GoogleIdentity
+import com.licitaia.domain.auth.PinVerification
 import com.licitaia.domain.model.AiAuthMode
 import com.licitaia.domain.model.AiConfig
 import com.licitaia.domain.model.AiProviderType
@@ -16,8 +17,10 @@ import com.licitaia.domain.model.Company
 import com.licitaia.domain.model.CompanyDocument
 import com.licitaia.domain.model.CompetitionRecord
 import com.licitaia.domain.model.ConnectorCapabilities
+import com.licitaia.domain.model.EditalImportProgress
 import com.licitaia.domain.model.EditalImportResult
 import com.licitaia.domain.model.EditalSource
+import com.licitaia.domain.model.IntegrityReport
 import com.licitaia.domain.model.ManualTenderDraft
 import com.licitaia.domain.model.NotificationCategory
 import com.licitaia.domain.model.Opportunity
@@ -59,7 +62,13 @@ interface AuthRepository {
     /** PIN opcional de desbloqueio; null remove. */
     suspend fun setPin(pin: String?)
     suspend fun hasPin(): Boolean
+
+    /** true somente se o PIN confere e não há bloqueio temporário ativo. Erros contam para o bloqueio. */
     suspend fun verifyPin(pin: String): Boolean
+
+    /** Variante detalhada: informa tentativas restantes ou o tempo de bloqueio (progressivo, persistido). */
+    suspend fun verifyPinDetailed(pin: String): PinVerification =
+        if (verifyPin(pin)) PinVerification.Success else PinVerification.Wrong(remainingAttempts = 0)
 }
 
 interface CompanyRepository {
@@ -120,10 +129,14 @@ interface TenderRepository {
     suspend fun createManual(companyId: Long, draft: ManualTenderDraft): Result<Long>
 
     /**
-     * Anexa o edital (PDF ou texto colado) à licitação, extrai o texto e o guarda em armazenamento
-     * privado. PDF sem camada de texto devolve `scanned = true` (OCR indisponível).
+     * Anexa o edital (PDF, texto colado ou OCR do PDF já importado) à licitação, extrai o texto e o
+     * guarda em armazenamento privado. PDF sem camada de texto (`scanned = true`) passa automaticamente
+     * pelo OCR local; `ocr = true` no resultado indica texto reconhecido (conferir trechos importantes).
      */
     suspend fun attachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult>
+
+    /** Progresso da importação/OCR em andamento para a licitação; null quando não há importação. */
+    fun observeEditalImportProgress(tenderId: Long): Flow<EditalImportProgress?>
 
     /** Texto do edital armazenado; null quando não há texto. */
     fun observeEditalText(tenderId: Long): Flow<String?>
@@ -250,10 +263,23 @@ interface AuditRepository {
         reason: String? = null,
         details: String = "",
     )
+
+    /**
+     * Percorre a trilha em ordem de inserção e confere o hash encadeado de cada evento
+     * (SHA-256 de `prevHash` + campos essenciais). Eventos anteriores ao encadeamento (sem hash)
+     * são contados em [IntegrityReport.unhashed]; a verificação começa no primeiro evento com hash.
+     */
+    suspend fun verifyIntegrity(): IntegrityReport
 }
 
 interface CompetitionRepository {
     fun observeRecords(companyId: Long): Flow<List<CompetitionRecord>>
+
+    /** Registra o resultado real de um pregão (vitória ou derrota) para a empresa. Retorna o id. */
+    suspend fun insert(record: CompetitionRecord): Long
+
+    /** Remove um registro do histórico da empresa. */
+    suspend fun delete(id: Long)
 }
 
 interface SettingsRepository {

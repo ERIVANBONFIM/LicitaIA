@@ -15,13 +15,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Gavel
+import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.Mail
-import androidx.compose.material.icons.outlined.PanTool
+import androidx.compose.material.icons.outlined.NotificationsOff
+import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Podcasts
 import androidx.compose.material.icons.outlined.Security
-import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,8 +47,8 @@ import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
 import com.licitaia.core.ui.components.LinearMeter
 import com.licitaia.core.ui.components.PortalChip
+import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SectionHeader
-import com.licitaia.core.ui.components.SimulationBadge
 import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.StatCard
 import com.licitaia.core.ui.components.StatusBadge
@@ -56,11 +57,13 @@ import com.licitaia.core.ui.components.tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.bidding.AssistedBidding
+import com.licitaia.domain.bidding.AssistedBidding.AlertKind
+import com.licitaia.domain.bidding.BidRuleEngine
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.model.LiveSession
 import com.licitaia.domain.model.LiveStatus
 import com.licitaia.domain.model.RiskLevel
-import com.licitaia.domain.model.RobotStatus
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.MessageRepository
 import com.licitaia.domain.util.Formatters
@@ -85,29 +88,32 @@ data class WarRoomUiState(
     val loading: Boolean = true,
     val sessions: List<LiveSession> = emptyList(),
     val unreadMessages: Int = 0,
-    val pausing: Boolean = false,
-    val lastPausedCount: Int? = null,
+    val toggling: Boolean = false,
+    val alertsMuted: Boolean = false,
+    val lastAffected: Int? = null,
 ) {
-    val open: List<LiveSession> get() = sessions.filter { it.status != LiveStatus.ENCERRADA }
-    val activeAuctions: Int get() = open.count { it.status == LiveStatus.EM_DISPUTA || it.status == LiveStatus.CAPTCHA_PENDENTE }
-    val activeRobots: Int get() = open.count { it.robotRunning }
-    val captchas: Int get() = open.count { it.captchaPending }
-    val pendingAuthorizations: Int get() = open.count { it.pendingAuthorization != null }
+    val open: List<LiveSession> get() = sessions.filter { it.isOpen }
+    val inDispute: Int get() = open.count { it.status == LiveStatus.EM_DISPUTA }
+    val waiting: Int get() = open.count { it.status == LiveStatus.AGUARDANDO }
+    val timers: Int get() = open.count { it.timerRunning }
     val errors: Int get() = sessions.count { it.status == LiveStatus.ERRO }
     val winning: Int get() = open.count { it.isWinning }
     val averageMargin: Double get() = open.filter { it.ourLastBid != null }.map { it.currentMarginPct }.average().takeIf { !it.isNaN() } ?: 0.0
+    private val alertsBySession: List<Pair<LiveSession, Set<AlertKind>>> get() = open.map { it to AssistedBidding.activeAlerts(it) }
+    val alertCount: Int get() = alertsBySession.sumOf { it.second.size }
+    val nearFloor: Int get() = alertsBySession.count { AlertKind.PROXIMO_DO_PISO in it.second }
+    val closingSoon: Int get() = alertsBySession.count { AlertKind.TEMPO_CRITICO in it.second }
 
-    /** Risco agregado: CAPTCHA/erros/piso pesam mais; margem baixa e autorizações pendentes somam. */
+    /** Risco agregado: piso/fechamento pesam mais; margem baixa e posição somam. */
     val riskScore: Int
         get() {
             if (open.isEmpty()) return 0
             var score = 0
-            score += captchas * 30
             score += errors * 35
-            score += open.count { it.robotStatus == RobotStatus.PARADO_NO_PISO } * 20
-            score += pendingAuthorizations * 10
-            score += open.count { it.currentMarginPct < it.rule.minMarginPct && it.ourLastBid != null } * 15
-            score += open.count { !it.isWinning && it.ourLastBid != null } * 8
+            score += nearFloor * 25
+            score += closingSoon * 20
+            score += alertsBySession.count { AlertKind.MARGEM_ABAIXO_MINIMA in it.second } * 15
+            score += alertsBySession.count { AlertKind.PERDEMOS_POSICAO in it.second } * 8
             return score.coerceIn(0, 100)
         }
     val riskLevel: RiskLevel
@@ -120,12 +126,17 @@ data class WarRoomUiState(
 
     val alerts: List<WarRoomAlert>
         get() = buildList {
-            sessions.filter { it.captchaPending }.forEach { add(WarRoomAlert(it.id, "CAPTCHA aguardando — sessão pausada.", "${it.portal.shortName} · ${it.tenderNumber}", Tone.DANGER)) }
-            sessions.filter { it.status == LiveStatus.ERRO }.forEach { add(WarRoomAlert(it.id, "Erro crítico — robô interrompido", "${it.portal.shortName} · ${it.tenderNumber}: ${it.lastError ?: ""}", Tone.DANGER)) }
-            sessions.filter { it.pendingAuthorization != null }.forEach { add(WarRoomAlert(it.id, "Autorização de lance pendente", "${it.portal.shortName} · ${it.tenderNumber}: ${Formatters.brl(it.pendingAuthorization?.proposedValue)}", Tone.WARNING)) }
-            sessions.filter { it.robotStatus == RobotStatus.PARADO_NO_PISO }.forEach { add(WarRoomAlert(it.id, "Robô parado no piso", "${it.portal.shortName} · ${it.tenderNumber}: piso ${Formatters.brl(it.rule.floorPrice)}", Tone.WARNING)) }
-            open.filter { it.ourLastBid != null && it.currentMarginPct < it.rule.minMarginPct && it.status != LiveStatus.ERRO }.forEach {
-                add(WarRoomAlert(it.id, "Margem abaixo da mínima", "${it.portal.shortName} · ${it.tenderNumber}: ${Formatters.percent(it.currentMarginPct)} (mín. ${Formatters.percent(it.rule.minMarginPct)})", Tone.WARNING))
+            sessions.filter { it.status == LiveStatus.ERRO }.forEach { add(WarRoomAlert(it.id, "Erro na sessão", "${it.portal.shortName} · ${it.tenderNumber}: ${it.lastError ?: ""}", Tone.DANGER)) }
+            alertsBySession.forEach { (s, kinds) ->
+                val label = "${s.portal.shortName} · ${s.tenderNumber}"
+                kinds.forEach { kind ->
+                    when (kind) {
+                        AlertKind.PROXIMO_DO_PISO -> add(WarRoomAlert(s.id, kind.label, "$label: ${Formatters.brl(s.ourLastBid)} a ${Formatters.brl(s.ourLastBid?.let { AssistedBidding.distanceToFloor(s.rule, it) })} do piso ${Formatters.brl(BidRuleEngine.effectiveFloor(s.rule))}", Tone.DANGER))
+                        AlertKind.TEMPO_CRITICO -> add(WarRoomAlert(s.id, kind.label, "$label: ${Formatters.countdown(s.remainingSeconds)} no cronômetro", Tone.DANGER))
+                        AlertKind.MARGEM_ABAIXO_MINIMA -> add(WarRoomAlert(s.id, kind.label, "$label: ${Formatters.percent(s.currentMarginPct)} (mín. ${Formatters.percent(s.rule.minMarginPct)})", Tone.WARNING))
+                        AlertKind.PERDEMOS_POSICAO -> add(WarRoomAlert(s.id, kind.label, "$label: ${s.position}º · melhor lance ${Formatters.brl(s.bestBid)}", Tone.WARNING))
+                    }
+                }
             }
         }
 }
@@ -139,15 +150,19 @@ class WarRoomViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val ready = MutableStateFlow(false)
-    private val pausing = MutableStateFlow(false)
-    private val lastPaused = MutableStateFlow<Int?>(null)
+    private val toggling = MutableStateFlow(false)
+    private val lastAffected = MutableStateFlow<Int?>(null)
 
     private val unread = auth.session.flatMapLatest { s ->
         if (s == null) flowOf(0) else messages.observeUnreadCount(s.activeCompany.id).catch { emit(0) }
     }
 
-    val state: StateFlow<WarRoomUiState> = combine(manager.sessions, unread, ready, pausing, lastPaused) { sessions, unread, ready, pausing, paused ->
-        WarRoomUiState(loading = !ready, sessions = sessions, unreadMessages = unread, pausing = pausing, lastPausedCount = paused)
+    val state: StateFlow<WarRoomUiState> = combine(manager.sessions, unread, ready, toggling, manager.alertsMuted, lastAffected) { values ->
+        @Suppress("UNCHECKED_CAST")
+        WarRoomUiState(
+            loading = !(values[2] as Boolean), sessions = values[0] as List<LiveSession>, unreadMessages = values[1] as Int,
+            toggling = values[3] as Boolean, alertsMuted = values[4] as Boolean, lastAffected = values[5] as Int?,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WarRoomUiState())
 
     init {
@@ -159,12 +174,12 @@ class WarRoomViewModel @Inject constructor(
         }
     }
 
-    fun pauseAll(onDone: (Int) -> Unit) {
+    fun setMuted(muted: Boolean, onDone: (Int) -> Unit) {
         viewModelScope.launch {
-            pausing.value = true
-            val count = runCatching { manager.pauseAllRobots("Parada de emergência — Sala de Guerra") }.getOrDefault(0)
-            lastPaused.value = count
-            pausing.value = false
+            toggling.value = true
+            val count = runCatching { manager.setAlertsMuted(muted) }.getOrDefault(0)
+            lastAffected.value = if (muted) count else null
+            toggling.value = false
             onDone(count)
         }
     }
@@ -174,13 +189,13 @@ class WarRoomViewModel @Inject constructor(
 fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
-    var confirmPauseAll by remember { mutableStateOf(false) }
+    var confirmMute by remember { mutableStateOf(false) }
 
-    LicitaScaffold(title = "Sala de Guerra", showBack = false) { padding ->
+    LicitaScaffold(title = "Sala de Guerra", showBack = false, subtitle = "Modo assistido") { padding ->
         when {
             state.loading && state.sessions.isEmpty() -> SkeletonList(Modifier.padding(padding))
             state.sessions.isEmpty() -> EmptyState(
-                "Nenhuma operação em andamento", "Quando houver pregões ao vivo, o painel executivo mostra robôs, CAPTCHAs, autorizações, margem e risco em tempo real.",
+                "Nenhuma operação em andamento", "Quando houver pregões acompanhados, o painel mostra sessões em disputa, margem média, cronômetros e alertas de piso em tempo real.",
                 Modifier.padding(padding), icon = Icons.Outlined.Security,
                 actionLabel = "Pregões ao Vivo", onAction = { navigator.navigateTop(Routes.LIVE) },
             )
@@ -190,9 +205,9 @@ fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Operações simultâneas", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                                Text("${state.activeAuctions} pregão(ões) · ${state.winning} vencendo", style = MaterialTheme.typography.headlineSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("${state.open.size} pregão(ões) · ${state.winning} vencendo", style = MaterialTheme.typography.headlineSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
                             }
-                            StatusBadge("Registro local", Tone.INFO)
+                            StatusBadge(if (state.alertsMuted) "Alertas silenciados" else "Alertas ativos", if (state.alertsMuted) Tone.WARNING else Tone.SUCCESS)
                         }
                         Spacer(Modifier.height(12.dp))
                         val riskTone = state.riskLevel.tone()
@@ -201,25 +216,25 @@ fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Column {
                                 Text(Formatters.percent(state.averageMargin), style = MaterialTheme.typography.titleLarge, color = if (state.averageMargin >= 10) LicitaColors.GreenBright else LicitaColors.Yellow, fontWeight = FontWeight.Bold)
-                                Text("margem média", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                                Text("margem média (sessões com lance)", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                Text("${state.errors}", style = MaterialTheme.typography.titleLarge, color = if (state.errors > 0) LicitaColors.RedBright else LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
-                                Text("erros críticos", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                                Text("${state.alertCount}", style = MaterialTheme.typography.titleLarge, color = if (state.alertCount > 0) LicitaColors.Yellow else LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("alertas ativos", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                             }
                         }
                     }
                 }
                 item("counters1") {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StatCard("Pregões ativos", "${state.activeAuctions}", Icons.Outlined.Podcasts, Modifier.weight(1f), tone = Tone.INFO, onClick = { navigator.navigateTop(Routes.LIVE) })
-                        StatCard("Robôs ativos", "${state.activeRobots}", Icons.Outlined.SmartToy, Modifier.weight(1f), tone = Tone.SUCCESS, highlight = state.activeRobots > 0, onClick = { navigator.navigateTop(Routes.ROBOT) })
+                        StatCard("Em disputa", "${state.inDispute}", Icons.Outlined.Podcasts, Modifier.weight(1f), tone = Tone.INFO, onClick = { navigator.navigateTop(Routes.LIVE) })
+                        StatCard("Vencendo", "${state.winning}", Icons.Outlined.EmojiEvents, Modifier.weight(1f), tone = Tone.SUCCESS, highlight = state.winning > 0)
                     }
                 }
                 item("counters2") {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StatCard("CAPTCHAs", "${state.captchas}", Icons.Outlined.VerifiedUser, Modifier.weight(1f), tone = if (state.captchas > 0) Tone.DANGER else Tone.NEUTRAL, highlight = state.captchas > 0)
-                        StatCard("Autorizações", "${state.pendingAuthorizations}", Icons.Outlined.Gavel, Modifier.weight(1f), tone = if (state.pendingAuthorizations > 0) Tone.WARNING else Tone.NEUTRAL, highlight = state.pendingAuthorizations > 0)
+                        StatCard("Perto do piso", "${state.nearFloor}", Icons.Outlined.WarningAmber, Modifier.weight(1f), tone = if (state.nearFloor > 0) Tone.DANGER else Tone.NEUTRAL, highlight = state.nearFloor > 0)
+                        StatCard("Cronômetros", "${state.timers}" + if (state.closingSoon > 0) " (${state.closingSoon} < 60 s)" else "", Icons.Outlined.Timer, Modifier.weight(1f), tone = if (state.closingSoon > 0) Tone.DANGER else Tone.NEUTRAL, highlight = state.closingSoon > 0)
                     }
                 }
                 item("counters3") {
@@ -229,25 +244,29 @@ fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
                     }
                 }
 
-                item("emergency") {
+                item("mute") {
                     Column {
-                        DangerButton("PAUSAR TODOS OS ROBÔS", { confirmPauseAll = true }, icon = Icons.Outlined.PanTool, enabled = !state.pausing)
+                        if (state.alertsMuted) {
+                            SecondaryButton("Reativar alertas de todas", { vm.setMuted(false) { navigator.showMessage("Alertas reativados.") } }, Modifier.fillMaxWidth(), enabled = !state.toggling, icon = Icons.Outlined.NotificationsActive, tone = Tone.SUCCESS)
+                        } else {
+                            DangerButton("PAUSAR ALERTAS DE TODAS", { confirmMute = true }, icon = Icons.Outlined.NotificationsOff, enabled = !state.toggling && state.open.isNotEmpty())
+                        }
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Interrompe todas as automações imediatamente. As sessões continuam abertas para acompanhamento e controle manual. Fica registrado na auditoria.",
+                            "Silencia as notificações de margem, piso e cronômetro de todas as sessões desta empresa. As sessões continuam abertas e a telemetria segue atualizada. Fica registrado na auditoria.",
                             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                         )
-                        AnimatedVisibility(state.lastPausedCount != null) {
+                        AnimatedVisibility(state.alertsMuted && state.lastAffected != null) {
                             Column {
                                 Spacer(Modifier.height(8.dp))
-                                AlertBanner("Parada de emergência executada", "${state.lastPausedCount ?: 0} robô(s) pausado(s). Sessões mantidas abertas.", Tone.WARNING)
+                                AlertBanner("Alertas silenciados", "${state.lastAffected ?: 0} sessão(ões) aberta(s) mantida(s). Os banners nesta tela continuam visíveis.", Tone.WARNING)
                             }
                         }
                     }
                 }
 
                 if (state.alerts.isNotEmpty()) {
-                    item("alertsHeader") { SectionHeader("Alertas críticos (${state.alerts.size})") }
+                    item("alertsHeader") { SectionHeader("Alertas (${state.alerts.size})") }
                     state.alerts.forEachIndexed { index, alert ->
                         item("alert-$index-${alert.sessionId}") {
                             AlertBanner(alert.title, alert.message, alert.tone, pulsing = alert.tone == Tone.DANGER, actionLabel = "Abrir", onAction = { navigator.navigate(Routes.liveSession(alert.sessionId)) })
@@ -269,28 +288,30 @@ fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
         }
     }
 
-    if (confirmPauseAll) {
+    if (confirmMute) {
         ConfirmDialog(
-            title = "Pausar todos os robôs?",
-            message = "${state.activeRobots} robô(s) ativo(s) serão pausados agora em todas as sessões. Nenhuma sessão será encerrada; você poderá retomar cada robô individualmente.",
+            title = "Pausar alertas de todas as sessões?",
+            message = "${state.open.size} sessão(ões) aberta(s) deixam de notificar margem, piso e cronômetro até você reativar. Nenhuma sessão é encerrada e nada muda no portal.",
             onConfirm = {
-                confirmPauseAll = false
-                vm.pauseAll { count -> navigator.showMessage(if (count > 0) "$count robô(s) pausado(s). Sessões mantidas abertas." else "Nenhum robô estava ativo.") }
+                confirmMute = false
+                vm.setMuted(true) { count -> navigator.showMessage("Alertas silenciados em $count sessão(ões). Sessões mantidas abertas.") }
             },
-            onDismiss = { confirmPauseAll = false },
-            confirmLabel = "PAUSAR TODOS",
+            onDismiss = { confirmMute = false },
+            confirmLabel = "PAUSAR ALERTAS",
             tone = Tone.DANGER,
-            icon = Icons.Outlined.PanTool,
+            icon = Icons.Outlined.NotificationsOff,
         )
     }
 }
 
 @Composable
 private fun SessionTile(session: LiveSession, modifier: Modifier, onClick: () -> Unit) {
+    val alerts = AssistedBidding.activeAlerts(session)
     val accent by animateColorAsState(
         when {
-            session.captchaPending || session.status == LiveStatus.ERRO -> LicitaColors.Red
-            session.pendingAuthorization != null || session.robotStatus == RobotStatus.PARADO_NO_PISO -> LicitaColors.Yellow
+            session.status == LiveStatus.ERRO -> LicitaColors.Red
+            AlertKind.PROXIMO_DO_PISO in alerts || AlertKind.TEMPO_CRITICO in alerts -> LicitaColors.Red
+            alerts.isNotEmpty() -> LicitaColors.Yellow
             session.isWinning -> LicitaColors.Green
             session.status == LiveStatus.ENCERRADA -> LicitaColors.Outline
             else -> LicitaColors.Blue
@@ -301,7 +322,7 @@ private fun SessionTile(session: LiveSession, modifier: Modifier, onClick: () ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             PortalChip(session.portal)
             Spacer(Modifier.weight(1f))
-            Text(Formatters.countdown(session.remainingSeconds), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+            Text(Formatters.countdown(session.remainingSeconds), style = MaterialTheme.typography.labelSmall, color = if (session.timerRunning) LicitaColors.TextPrimary else LicitaColors.TextMuted)
         }
         Spacer(Modifier.height(6.dp))
         Text(session.tenderNumber, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, maxLines = 1)
@@ -320,8 +341,10 @@ private fun SessionTile(session: LiveSession, modifier: Modifier, onClick: () ->
             }
         }
         Spacer(Modifier.height(8.dp))
-        StatusBadge(session.status.label, session.status.tone(), pulsing = session.captchaPending)
-        Spacer(Modifier.height(4.dp))
-        StatusBadge(session.robotStatus.label, session.robotStatus.tone(), pulsing = session.robotStatus == RobotStatus.ATIVO)
+        StatusBadge(session.status.label, session.status.tone(), pulsing = session.status == LiveStatus.EM_DISPUTA)
+        if (alerts.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            StatusBadge("${alerts.size} alerta(s)", if (AlertKind.PROXIMO_DO_PISO in alerts || AlertKind.TEMPO_CRITICO in alerts) Tone.DANGER else Tone.WARNING)
+        }
     }
 }

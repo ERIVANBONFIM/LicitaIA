@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.ManageSearch
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -84,6 +85,7 @@ private fun AuditOrigin.tone(): Tone = when (this) {
 @Composable
 fun AuditScreen(viewModel: AuditViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val integrity by viewModel.integrity.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val context = LocalContext.current
     var showFilters by rememberSaveable { mutableStateOf(false) }
@@ -137,6 +139,10 @@ fun AuditScreen(viewModel: AuditViewModel = hiltViewModel()) {
                             )
                         }
                     }
+                    item(key = "integrity") {
+                        Spacer(Modifier.height(10.dp))
+                        IntegrityPanel(integrity, onVerify = viewModel::verifyIntegrity)
+                    }
                     item(key = "filters") {
                         AnimatedVisibility(showFilters || filters.activeCount > 0) {
                             FiltersPanel(filters, viewModel)
@@ -182,6 +188,50 @@ fun AuditScreen(viewModel: AuditViewModel = hiltViewModel()) {
             containerColor = LicitaColors.SurfaceElevated,
         ) {
             EventDetail(event) { shareText(context, "LicitaIA — Evento de auditoria\n" + event.toExportLine()) { navigator.showMessage(it) } }
+        }
+    }
+}
+
+/** Verificação da cadeia de hashes: botão + resultado (ok / quebra a partir do evento N). */
+@Composable
+private fun IntegrityPanel(integrity: IntegrityUi, onVerify: () -> Unit) {
+    val checking = integrity is IntegrityUi.Checking
+    LicitaCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Integridade da trilha", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                Text(
+                    "Cada evento guarda o hash SHA-256 do anterior; alterar ou remover um evento quebra a cadeia.",
+                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            SecondaryButton(
+                if (checking) "Verificando…" else "Verificar integridade", onVerify,
+                enabled = !checking, icon = Icons.Outlined.VerifiedUser, tone = Tone.INFO,
+            )
+        }
+        when (integrity) {
+            IntegrityUi.Idle, IntegrityUi.Checking -> Unit
+            is IntegrityUi.Failed -> {
+                Spacer(Modifier.height(8.dp))
+                Text(integrity.message, style = MaterialTheme.typography.bodySmall, color = LicitaColors.RedBright)
+            }
+            is IntegrityUi.Done -> {
+                Spacer(Modifier.height(8.dp))
+                val report = integrity.report
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusBadge(
+                        if (report.ok) "Íntegra" else "Quebra no evento #${report.firstBroken}",
+                        if (report.ok) Tone.SUCCESS else Tone.DANGER,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        report.summary(), style = MaterialTheme.typography.bodySmall,
+                        color = if (report.ok) LicitaColors.TextSecondary else LicitaColors.RedBright, modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
     }
 }
@@ -319,6 +369,12 @@ private fun EventDetail(event: AuditEvent, onShare: () -> Unit) {
             Text("Detalhes", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
             Text(event.details, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
         }
+        Spacer(Modifier.height(8.dp))
+        Text("Hash (SHA-256)", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+        Text(
+            if (event.hash.isEmpty()) "— (evento anterior ao encadeamento)" else event.hash,
+            style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted,
+        )
         Spacer(Modifier.height(16.dp))
         SecondaryButton("Compartilhar evento", onShare, Modifier.fillMaxWidth(), icon = Icons.Outlined.Share)
     }

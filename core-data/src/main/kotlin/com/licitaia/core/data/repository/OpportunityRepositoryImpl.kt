@@ -36,11 +36,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Busca de oportunidades em fontes REAIS (conectores com `isMock = false`, hoje o PNCP), cache em Room
- * para uso offline, filtros/radares e score de aderência.
+ * Busca de oportunidades em fontes REAIS (conectores com `isMock = false`, hoje PNCP e Compras.gov.br),
+ * cache em Room para uso offline, filtros/radares e score de aderência.
  *
  * Conectores mock são ignorados por completo: nenhum resultado fictício é devolvido nem misturado
  * aos reais. Linhas antigas de portais simulados que ainda existam no cache também são filtradas.
+ *
+ * Deduplicação: as contratações da Lei 14.133 do Compras.gov.br também são publicadas no PNCP; a mesma
+ * contratação chega dos dois conectores com o mesmo número de controle PNCP no sufixo do id
+ * (`PNCP:<número>` / `COMPRAS_GOV:<número>`). [OpportunityDeduplicator] mantém só uma.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @Singleton
@@ -143,8 +147,15 @@ class OpportunityRepositoryImpl @Inject constructor(
     private fun realConnector(portal: Portal): PortalConnector? =
         runCatching { registry.get(portal) }.getOrNull()?.takeIf { !it.capabilities.isMock }
 
-    private suspend fun cachedFor(portals: Set<Portal>): List<Opportunity> =
-        opportunityDao.getAll().map { it.toDomain() }.filter { it.portal in portals }
+    private suspend fun cachedFor(portals: Set<Portal>, preferred: Portal = Portal.PNCP): List<Opportunity> =
+        OpportunityDeduplicator.dedupe(opportunityDao.getAll().map { it.toDomain() }.filter { it.portal in portals }, preferred)
+
+    /**
+     * Portal preferido quando a mesma contratação vem do PNCP e do Compras.gov.br: o Compras.gov.br se o
+     * usuário selecionou explicitamente esse portal; caso contrário (inclusive "Todos os portais"), o PNCP.
+     */
+    private fun preferredDuplicatePortal(selected: Set<Portal>): Portal =
+        if (selected.size < Portal.entries.size && Portal.COMPRAS_GOV in selected) Portal.COMPRAS_GOV else Portal.PNCP
 
     /**
      * Consulta as fontes reais em paralelo. Fontes com falha são ignoradas; se todas falharem,
@@ -154,14 +165,17 @@ class OpportunityRepositoryImpl @Inject constructor(
     private suspend fun fetch(portals: Set<Portal>, filter: OpportunityFilter): Result<List<Opportunity>> = coroutineScope {
         val sources = portals.mapNotNull { portal -> realConnector(portal)?.let { portal to it } }
         if (sources.isEmpty()) {
+            val realNames = Portal.entries.filter { realConnector(it) != null }.map { it.displayName }
+                .ifEmpty { listOf(Portal.PNCP.displayName, Portal.COMPRAS_GOV.displayName) }
             return@coroutineScope Result.failure(
                 IOException(
-                    "A busca de licitações está disponível apenas no PNCP (consulta pública). " +
-                        "Os demais portais não possuem API pública integrada: selecione o PNCP ou \"Todos os portais\".",
+                    "A busca de licitações está disponível apenas em ${realNames.joinToString(" e ")} (consulta pública). " +
+                        "Os demais portais não possuem API pública integrada: selecione um desses portais ou \"Todos os portais\".",
                 ),
             )
         }
         val realPortals = sources.map { it.first }.toSet()
+        val preferred = preferredDuplicatePortal(filter.portals.ifEmpty { portals })
         val results = sources.map { (_, connector) ->
             async {
                 try {
@@ -173,9 +187,10 @@ class OpportunityRepositoryImpl @Inject constructor(
                 }
             }
         }.awaitAll()
-        val fetched = results.mapNotNull { it.getOrNull() }.flatten()
-            .filter { it.portal in realPortals }
-            .distinctBy { it.id }
+        val fetched = OpportunityDeduplicator.dedupe(
+            results.mapNotNull { it.getOrNull() }.flatten().filter { it.portal in realPortals },
+            preferred,
+        )
         val allFailed = results.all { it.isFailure }
         if (!allFailed) {
             if (fetched.isNotEmpty()) {
@@ -184,14 +199,14 @@ class OpportunityRepositoryImpl @Inject constructor(
             }
             return@coroutineScope Result.success(fetched)
         }
-        val cached = cachedFor(realPortals)
+        val cached = cachedFor(realPortals, preferred)
         val cause = results.firstNotNullOfOrNull { it.exceptionOrNull() }
         when {
             cached.isNotEmpty() -> Result.success(cached)
             else -> Result.failure(
                 IOException(
                     cause?.message?.takeIf { it.isNotBlank() }
-                        ?: "Não foi possível consultar o PNCP e não há oportunidades em cache. Verifique a conexão.",
+                        ?: "Não foi possível consultar ${realPortals.joinToString(" e ") { it.displayName }} e não há oportunidades em cache. Verifique a conexão.",
                     cause,
                 ),
             )
@@ -200,5 +215,35 @@ class OpportunityRepositoryImpl @Inject constructor(
 
     private companion object {
         const val CACHE_TTL_MS = 45L * 24 * 60 * 60 * 1000
+    }
+}
+
+/**
+ * Remove duplicatas da mesma contratação vinda de portais diferentes.
+ *
+ * A chave é o número de controle PNCP (`<cnpj 14>-1-<sequencial>/<ano>`) que PNCP e Compras.gov.br
+ * colocam no sufixo do id (`PNCP:<número>` / `COMPRAS_GOV:<número>`). Ids fora desse padrão
+ * (ex.: licitações legadas `COMPRAS_GOV:<uasg>-<mod>-<num>/<ano>`) só são deduplicados por igualdade.
+ * A ordem de entrada é preservada; quando há duplicata, fica a do portal [preferred] (ou a primeira, se
+ * nenhuma for do preferido).
+ */
+internal object OpportunityDeduplicator {
+    private val PNCP_CONTROL_NUMBER = Regex("""^\d{14}-1-\d{1,6}/\d{4}$""")
+
+    /** Chave de deduplicação: número de controle PNCP quando o id o contém; senão o próprio id. */
+    fun key(opportunity: Opportunity): String {
+        val ref = opportunity.id.substringAfter(':', missingDelimiterValue = "")
+        return if (PNCP_CONTROL_NUMBER.matches(ref)) "pncp:$ref" else opportunity.id
+    }
+
+    fun dedupe(opportunities: List<Opportunity>, preferred: Portal): List<Opportunity> {
+        if (opportunities.size < 2) return opportunities
+        val byKey = LinkedHashMap<String, Opportunity>(opportunities.size)
+        for (candidate in opportunities) {
+            val k = key(candidate)
+            val current = byKey[k]
+            if (current == null || (current.portal != preferred && candidate.portal == preferred)) byKey[k] = candidate
+        }
+        return byKey.values.toList()
     }
 }

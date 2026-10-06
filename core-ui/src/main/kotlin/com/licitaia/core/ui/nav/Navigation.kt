@@ -30,6 +30,8 @@ object Routes {
     const val DOCUMENT_EDIT = "documents/edit/{documentId}"
 
     const val LIVE = "live"
+    /** Formulário "Acompanhar pregão" (sessão assistida). Rota literal: vence o padrão live/{sessionId}. */
+    const val LIVE_NEW = "live/new"
     const val LIVE_SESSION = "live/{sessionId}"
     const val WEBVIEW = "webview/{sessionId}"
     /** Navegador interno do portal (login manual, sessão por cookies). Argumento: nome do enum Portal. */
@@ -60,6 +62,8 @@ object Routes {
     fun proposalPdf(proposalId: Long) = "proposal/$proposalId/pdf"
     fun documentEdit(documentId: Long = -1) = "documents/edit/$documentId"
     fun liveSession(sessionId: String) = "live/$sessionId"
+    /** Abre o formulário já vinculado a uma licitação de interesse (tenderId opcional). */
+    fun liveNew(tenderId: Long? = null) = if (tenderId == null) LIVE_NEW else "$LIVE_NEW?tenderId=$tenderId"
     fun webView(sessionId: String) = "webview/$sessionId"
     fun portalWeb(portal: com.licitaia.domain.model.Portal) = "portal/${portal.name}"
     fun robotConfig(sessionId: String) = "robot/$sessionId"

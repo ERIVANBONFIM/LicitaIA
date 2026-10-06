@@ -2,6 +2,29 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.3.0-personal] — 2026-10-06
+
+### Adicionado
+- **Busca real no Compras.gov.br** (`connector-comprasgov`, API pública de dados abertos `dadosabertos.compras.gov.br`:
+  contratações Lei 14.133 por modalidade/UF e legado Lei 8.666), consolidada com o PNCP e **deduplicada** pelo número
+  de controle PNCP; 28 testes com fixtures reais.
+- **Pregões ao Vivo em modo assistido**: acompanhar pregão (de licitação de interesse ou manual), registrar nosso
+  lance (recusado abaixo do piso) e o melhor concorrente, sugestão de próximo lance (copiar), posição, cronômetro,
+  abrir portal com sessão salva, alertas (margem mínima, proximidade do piso, cronômetro < 60 s), encerrar com
+  resultado → registro em Concorrência e status VENCIDA/PERDIDA; RBAC por ação (operar / piso / regras);
+  Sala de Guerra com contadores reais e "Pausar alertas de todas". Robô permanece desligado (sem API autorizada).
+- **OCR no aparelho** (ML Kit) para editais escaneados, automático ou manual, com progresso por página.
+- **Concorrência com resultados reais**: registro ao marcar vitória/derrota e formulário manual; exclusão.
+- **Segurança**: limite de tentativas de PIN com bloqueio progressivo; auditoria com hash encadeado e verificação
+  de integridade (migration 4→5); portais mostram capacidades reais; mensagem clara quando o build não está
+  cadastrado no Google Cloud.
+- Compras.gov.br no navegador interno: entrada oficial do fornecedor → gov.br → seleção de empresa → abre em
+  "Compras eletrônicas"; sessão salva.
+- Build debug renomeado "LicitaIA Dev".
+
+### Alterado
+- APK maior (~50 MB release) por causa do modelo OCR embutido.
+
 ## [0.2.0-personal] — 2026-10-06
 
 Preparação para uso pessoal com dados reais. Parte das mudanças foi feita por outra ferramenta (Codex) e

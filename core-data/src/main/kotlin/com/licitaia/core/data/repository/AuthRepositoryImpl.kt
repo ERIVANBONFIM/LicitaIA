@@ -11,10 +11,12 @@ import com.licitaia.core.data.seed.DatabaseSeeder
 import com.licitaia.core.data.session.SessionHolder
 import com.licitaia.core.data.settings.SessionPrefs
 import com.licitaia.core.security.PasswordHasher
+import com.licitaia.core.security.PinLockoutPolicy
 import com.licitaia.core.security.SecretStore
 import com.licitaia.domain.auth.DemoAccountConflictException
 import com.licitaia.domain.auth.GoogleIdentity
 import com.licitaia.domain.auth.NoCompanyAccessException
+import com.licitaia.domain.auth.PinVerification
 import com.licitaia.domain.model.AuditAction
 import com.licitaia.domain.model.AuthProvider
 import com.licitaia.domain.model.AuditResult
@@ -25,6 +27,8 @@ import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AuthRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -243,13 +247,54 @@ class AuthRepositoryImpl @Inject constructor(
 
     override suspend fun hasPin(): Boolean = secretStore.contains(PIN_KEY)
 
-    override suspend fun verifyPin(pin: String): Boolean {
-        val stored = secretStore.get(PIN_KEY) ?: return false
-        return withContext(Dispatchers.Default) { hasher.verify(pin, stored) }
+    override suspend fun verifyPin(pin: String): Boolean = verifyPinDetailed(pin) is PinVerification.Success
+
+    /**
+     * Verificação com bloqueio progressivo ([PinLockoutPolicy]): a partir do 5º erro consecutivo o PIN fica
+     * bloqueado por 30 s, 1 min, 5 min… O estado (erros + instante de desbloqueio) fica no cofre cifrado,
+     * portanto sobrevive ao fechamento do app. Enquanto bloqueado, o PIN nem é comparado. Falhas e bloqueios
+     * são auditados sem o PIN digitado.
+     */
+    override suspend fun verifyPinDetailed(pin: String): PinVerification = pinLock.withLock {
+        val now = System.currentTimeMillis()
+        val state = PinLockoutPolicy.State.parse(secretStore.get(PIN_LOCKOUT_KEY))
+        if (PinLockoutPolicy.isLocked(state, now)) {
+            val remaining = PinLockoutPolicy.remainingMillis(state, now)
+            audit.record(
+                AuditAction.LOGIN, result = AuditResult.BLOQUEADO,
+                details = "Desbloqueio por PIN recusado: bloqueio temporário ativo (${state.failures} erros consecutivos, ${remaining / 1000 + 1}s restantes)",
+            )
+            return@withLock PinVerification.Locked(remaining)
+        }
+        val stored = secretStore.get(PIN_KEY)
+        val ok = stored != null && withContext(Dispatchers.Default) { hasher.verify(pin, stored) }
+        if (ok) {
+            if (state != PinLockoutPolicy.State.NONE) secretStore.remove(PIN_LOCKOUT_KEY)
+            return@withLock PinVerification.Success
+        }
+        val next = PinLockoutPolicy.onFailure(state, now)
+        secretStore.put(PIN_LOCKOUT_KEY, next.serialize())
+        val lockMs = PinLockoutPolicy.remainingMillis(next, now)
+        if (lockMs > 0L) {
+            audit.record(
+                AuditAction.LOGIN, result = AuditResult.BLOQUEADO,
+                details = "PIN incorreto (${next.failures}ª tentativa consecutiva): bloqueado por ${lockMs / 1000}s",
+            )
+            PinVerification.Locked(lockMs)
+        } else {
+            audit.record(
+                AuditAction.LOGIN, result = AuditResult.FALHA,
+                details = "PIN incorreto (${next.failures} de ${PinLockoutPolicy.FREE_ATTEMPTS} tentativas antes do bloqueio)",
+            )
+            PinVerification.Wrong(PinLockoutPolicy.remainingAttempts(next))
+        }
     }
+
+    private val pinLock = Mutex()
 
     private companion object {
         const val PIN_KEY = "auth.pin_hash"
+        const val PIN_LOCKOUT_KEY = "auth.pin_lockout"
         const val PIN_ITERATIONS = 60_000
         val EMAIL = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
     }

@@ -6,8 +6,8 @@ proposta comercial em PDF com aprovação humana, pregões ao vivo em sessões i
 supervisionado (modo SIMULAÇÃO), workflow de CAPTCHA/MFA manual, Sala de Guerra, mensagens do pregoeiro,
 concorrência, auditoria, multiempresa e perfis de acesso.
 
-> **Versão atual (v0.2.0-personal):** preparada para **uso pessoal com dados reais**: busca real de licitações na
-> API pública do **PNCP**, cadastro manual + importação do PDF do edital para análise por IA, backup cifrado da
+> **Versão atual (v0.2.0-personal):** preparada para **uso pessoal com dados reais**: busca real de licitações nas APIs
+> públicas do **PNCP** e do **Compras.gov.br**, cadastro manual + importação do PDF do edital para análise por IA, backup cifrado da
 > empresa, atualização automática via GitHub Releases e login Google com assinatura do token verificada. Os dados
 > de demonstração (seed) foram desativados. Lances, propostas e mensagens aos portais **continuam sem integração**
 > (não há API oficial autenticada): o app prepara, você executa no portal. Nenhuma ação vinculante é enviada.
@@ -26,7 +26,7 @@ Documentação: [ARCHITECTURE.md](ARCHITECTURE.md) · [SECURITY.md](SECURITY.md)
 | Caminho | `app\build\outputs\apk\debug\app-debug.apk` |
 | Caminho absoluto | `C:\Users\DESKTOP\Documents\app licitaçao\app\build\outputs\apk\debug\app-debug.apk` |
 | applicationId | `com.licitaia.app.debug` |
-| versão | `0.2.0-personal-debug` (versionCode 3, build 06/10 02:24) |
+| versão | `0.3.0-personal` (versionCode 5) |
 | minSdk / targetSdk | 26 (Android 8.0) / 34 |
 | Assinatura | debug keystore padrão do Android SDK |
 

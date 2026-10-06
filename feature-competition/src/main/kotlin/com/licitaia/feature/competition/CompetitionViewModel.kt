@@ -8,10 +8,13 @@ import com.licitaia.domain.model.Segment
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompetitionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
@@ -19,6 +22,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /** Desconto do fechamento em relação ao estimado, em %. */
@@ -60,6 +64,8 @@ data class CompetitionUiState(
     val error: String? = null,
     val noSession: Boolean = false,
     val hasAny: Boolean = false,
+    val companyId: Long = 0,
+    val companySegment: Segment? = null,
     val segments: List<Segment> = emptyList(),
     val portals: List<Portal> = emptyList(),
     val segmentFilter: Segment? = null,
@@ -67,6 +73,8 @@ data class CompetitionUiState(
     /** Mais recente primeiro. */
     val records: List<CompetitionRecord> = emptyList(),
     val stats: CompetitionStats? = null,
+    /** Gravação/exclusão em andamento. */
+    val saving: Boolean = false,
 )
 
 private data class Filters(val segment: Segment? = null, val portal: Portal? = null, val retry: Int = 0)
@@ -79,8 +87,11 @@ class CompetitionViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val filters = MutableStateFlow(Filters())
+    private val saving = MutableStateFlow(false)
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messages = _messages.asSharedFlow()
 
-    val state: StateFlow<CompetitionUiState> = combine(auth.session, filters) { s, f -> s to f }
+    private val remote = combine(auth.session, filters) { s, f -> s to f }
         .flatMapLatest { (session, f) ->
             if (session == null) {
                 flowOf(CompetitionUiState(loading = false, noSession = true))
@@ -95,6 +106,7 @@ class CompetitionViewModel @Inject constructor(
                         val filtered = all.filter { (segment == null || it.segment == segment) && (portal == null || it.portal == portal) }
                         CompetitionUiState(
                             loading = false, hasAny = all.isNotEmpty(), segments = segments, portals = portals,
+                            companyId = session.activeCompany.id, companySegment = session.activeCompany.segment,
                             segmentFilter = segment, portalFilter = portal,
                             records = filtered.sortedByDescending { it.date },
                             stats = if (filtered.isEmpty()) null else computeStats(filtered),
@@ -103,11 +115,40 @@ class CompetitionViewModel @Inject constructor(
                     .catch { emit(CompetitionUiState(loading = false, error = it.message ?: "Falha ao carregar o histórico.")) }
             }
         }
+
+    val state: StateFlow<CompetitionUiState> = combine(remote, saving) { s, busy -> s.copy(saving = busy) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CompetitionUiState())
 
     fun setSegment(segment: Segment?) = filters.update { it.copy(segment = segment) }
     fun setPortal(portal: Portal?) = filters.update { it.copy(portal = portal) }
     fun retry() = filters.update { it.copy(retry = it.retry + 1) }
+
+    /** Registro manual de resultado (formulário da tela Concorrência). */
+    fun insert(record: CompetitionRecord) = run("Não foi possível registrar o resultado.") {
+        competition.insert(record)
+        _messages.tryEmit(if (record.won) "Vitória registrada." else "Derrota registrada.")
+    }
+
+    fun delete(record: CompetitionRecord) = run("Não foi possível excluir o registro.") {
+        competition.delete(record.id)
+        _messages.tryEmit("Registro de ${record.portal.shortName} ${record.tenderNumber} excluído.")
+    }
+
+    private fun run(errorMessage: String, block: suspend () -> Unit) {
+        if (saving.value) return
+        saving.value = true
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.tryEmit(e.message?.takeIf(String::isNotBlank) ?: errorMessage)
+            } finally {
+                saving.value = false
+            }
+        }
+    }
 }
 
 internal fun computeStats(records: List<CompetitionRecord>): CompetitionStats {

@@ -27,6 +27,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // Extração de texto de PDFs de edital (Apache 2.0). Inicializado via PDFBoxResourceLoader.init(context).
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // OCR local (sem rede) para editais escaneados: ML Kit Text Recognition v2, script latino, modelo embutido (~4 MB no APK).
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)

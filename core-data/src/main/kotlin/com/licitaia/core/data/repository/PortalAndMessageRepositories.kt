@@ -116,14 +116,24 @@ class PortalRepositoryImpl @Inject constructor(
         }
     }
 
-    override fun capabilities(portal: Portal): ConnectorCapabilities = ConnectorCapabilities(
-        supportsWebView = true, supportsOfficialApi = portal == Portal.PNCP, supportsBrowserAutomation = false,
-        supportsPersistentSession = portal != Portal.PNCP, requiresMfa = portal != Portal.PNCP, mayShowCaptcha = portal != Portal.PNCP, isMock = false,
-        limitations = listOf(
-            "Login manual no navegador interno; a sessão fica nos cookies deste aparelho e pode expirar pelo portal.",
-            "Sem envio integrado de propostas, mensagens ou lances.",
-        ),
-    )
+    /**
+     * Capacidades reais: conectores com API pública (PNCP, Compras.gov.br) respondem por si; portais sem
+     * conector real (mock inerte) são descritos como acesso manual no navegador interno.
+     */
+    override fun capabilities(portal: Portal): ConnectorCapabilities {
+        val real = runCatching { registry.get(portal).capabilities }.getOrNull()?.takeIf { !it.isMock }
+        if (real != null) return real
+        val publicOnly = portal == Portal.PNCP
+        return ConnectorCapabilities(
+            supportsWebView = true, supportsOfficialApi = false, supportsBrowserAutomation = false,
+            supportsPersistentSession = !publicOnly, requiresMfa = !publicOnly, mayShowCaptcha = !publicOnly, isMock = false,
+            limitations = listOf(
+                "Sem API pública de consulta: busca de licitações indisponível neste portal (use PNCP/Compras.gov.br).",
+                "Login manual no navegador interno; a sessão fica nos cookies deste aparelho e pode expirar pelo portal.",
+                "Sem envio integrado de propostas, mensagens ou lances.",
+            ),
+        )
+    }
 
     private fun capabilityLabel(portal: Portal): String =
         if (runCatching { registry.get(portal).capabilities.isMock }.getOrDefault(true)) "simulação" else "conector real"

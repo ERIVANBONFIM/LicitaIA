@@ -39,7 +39,7 @@ import com.licitaia.core.ui.components.PortalChip
 import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.SectionHeader
 import com.licitaia.core.ui.components.SelectChip
-import com.licitaia.core.ui.components.SimulationBadge
+import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
@@ -65,7 +65,8 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class RuleForm(
-    val mode: RobotMode = RobotMode.SUPERVISIONADO,
+    /** Modo assistido: sempre MANUAL (o app só sugere; quem envia é o usuário no portal). */
+    val mode: RobotMode = RobotMode.MANUAL,
     val strategy: BidStrategy = BidStrategy.CONSERVADORA,
     val initialPrice: String = "",
     val floorPrice: String = "",
@@ -85,7 +86,7 @@ data class RuleForm(
         val loss = parseBrl(lossLimit) ?: return null
         val interval = minInterval.trim().toIntOrNull() ?: return null
         val threshold = parseBrl(authThreshold) ?: return null
-        return BidRule(mode, strategy, initial, floor, cost, red, margin, loss, interval, threshold, simulation = true)
+        return BidRule(RobotMode.MANUAL, strategy, initial, floor, cost, red, margin, loss, interval, threshold, simulation = true)
     }
 
     /** Erros por campo (chave = nome do campo) + erros gerais. */
@@ -110,7 +111,7 @@ data class RuleForm(
 
     companion object {
         fun from(rule: BidRule) = RuleForm(
-            mode = rule.mode, strategy = rule.strategy,
+            mode = RobotMode.MANUAL, strategy = rule.strategy,
             initialPrice = formatInput(rule.initialPrice), floorPrice = formatInput(rule.floorPrice),
             costPrice = formatInput(rule.costPrice), reduction = formatInput(rule.reductionValue),
             minMargin = formatInput(rule.minMarginPct), lossLimit = formatInput(rule.lossLimit),
@@ -125,6 +126,8 @@ data class RobotConfigUiState(
     val role: UserRole? = null,
     val saving: Boolean = false,
     val saved: Boolean = false,
+    /** Motivo da recusa do motor (RBAC/validação); null = sem erro. */
+    val error: String? = null,
 ) {
     val canChangeRules get() = role?.let { Rbac.can(it, Permission.ALTERAR_REGRAS) } ?: false
     val canChangeFloor get() = role?.let { Rbac.can(it, Permission.APROVAR_PISO) } ?: false
@@ -141,11 +144,17 @@ class RobotConfigViewModel @Inject constructor(
     private val saving = MutableStateFlow(false)
     private val saved = MutableStateFlow(false)
     private val loaded = MutableStateFlow(false)
+    private val error = MutableStateFlow<String?>(null)
 
     val state: StateFlow<RobotConfigUiState> = combine(
-        manager.observeSession(sessionId), auth.session, saving, saved, loaded,
-    ) { session, auth, saving, saved, loaded ->
-        RobotConfigUiState(loading = !loaded, session = session, role = auth?.user?.role, saving = saving, saved = saved)
+        manager.observeSession(sessionId), auth.session, saving, saved, loaded, error,
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
+        RobotConfigUiState(
+            loading = !(values[4] as Boolean), session = values[0] as LiveSession?,
+            role = (values[1] as com.licitaia.domain.model.AuthSession?)?.user?.role,
+            saving = values[2] as Boolean, saved = values[3] as Boolean, error = values[5] as String?,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RobotConfigUiState())
 
     init {
@@ -160,11 +169,15 @@ class RobotConfigViewModel @Inject constructor(
     fun save(rule: BidRule) {
         viewModelScope.launch {
             saving.value = true
-            runCatching { manager.updateRule(sessionId, rule) }
+            error.value = null
+            val result = runCatching { manager.updateRule(sessionId, rule) }
             saving.value = false
-            saved.value = true
+            result.onSuccess { saved.value = true }
+                .onFailure { e -> error.value = e.message ?: "Não foi possível salvar os parâmetros." }
         }
     }
+
+    fun dismissError() { error.value = null }
 }
 
 @Composable
@@ -173,7 +186,7 @@ fun RobotConfigScreen(vm: RobotConfigViewModel = hiltViewModel()) {
     val navigator = LocalAppNavigator.current
     val session = state.session
 
-    LicitaScaffold(title = "Configurar Robô", showBack = true, subtitle = session?.let { "${it.portal.shortName} · ${it.tenderNumber}" }) { padding ->
+    LicitaScaffold(title = "Parâmetros da sessão", showBack = true, subtitle = session?.let { "${it.portal.shortName} · ${it.tenderNumber}" }) { padding ->
         when {
             state.loading && session == null -> SkeletonList(Modifier.padding(padding), items = 3)
             session == null -> ErrorState("A sessão não está mais disponível.", Modifier.padding(padding), title = "Sessão não encontrada")
@@ -191,9 +204,12 @@ fun RobotConfigScreen(vm: RobotConfigViewModel = hiltViewModel()) {
 
     LaunchedEffect(state.saved) {
         if (state.saved) {
-            navigator.showMessage("Regra do robô atualizada.")
+            navigator.showMessage("Parâmetros da sessão atualizados.")
             navigator.back()
         }
+    }
+    LaunchedEffect(state.error) {
+        state.error?.let { navigator.showMessage(it); vm.dismissError() }
     }
 }
 
@@ -213,10 +229,10 @@ private fun ConfigForm(
     val candidate = form.toRule()
     val warnings = candidate?.let { BidRuleEngine.validateRule(it) }.orEmpty()
     val floorChanged = candidate != null && candidate.floorPrice != session.rule.floorPrice
-    val otherChanged = candidate != null && candidate.copy(floorPrice = session.rule.floorPrice) != session.rule.copy(simulation = true)
+    val otherChanged = candidate != null && candidate.copy(floorPrice = session.rule.floorPrice) != session.rule.copy(mode = RobotMode.MANUAL, simulation = true)
     val blockedReason = when {
         floorChanged && !canChangeFloor -> "Alterar o piso exige a permissão “Aprovar/alterar piso” (Diretoria, Financeiro ou Admin). Seu perfil: ${role?.label ?: "—"}."
-        otherChanged && !canChangeRules -> "Alterar regras do robô exige a permissão “Alterar regras do robô” (Diretoria ou Admin). Seu perfil: ${role?.label ?: "—"}."
+        otherChanged && !canChangeRules -> "Alterar estratégia e margens exige a permissão “Alterar regras do robô” (Diretoria ou Admin). Seu perfil: ${role?.label ?: "—"}."
         else -> null
     }
     val canSave = candidate != null && errors.isEmpty() && blockedReason == null && (floorChanged || otherChanged) && !saving
@@ -227,22 +243,16 @@ private fun ConfigForm(
                 PortalChip(session.portal)
                 Spacer(Modifier.width(8.dp))
                 Text(session.tenderNumber, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
-                SimulationBadge()
+                StatusBadge("Modo assistido", Tone.INFO)
             }
             Spacer(Modifier.height(4.dp))
             Text(session.itemLabel, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextSecondary)
             InfoRow("Melhor lance atual", Formatters.brl(session.bestBid))
             InfoRow("Nosso último lance", Formatters.brl(session.ourLastBid))
-            InfoRow("Robô", session.robotStatus.label)
         }
 
-        SectionHeader("Modo de operação")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RobotMode.entries.forEach { m -> SelectChip(m.short(), form.mode == m, { form = form.copy(mode = m) }) }
-        }
-        Text(form.mode.description, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-
-        SectionHeader("Estratégia")
+        SectionHeader("Estratégia de sugestão")
+        Text("Define como o app sugere o próximo lance. Quem envia é sempre você, no portal.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             BidStrategy.entries.take(2).forEach { s -> SelectChip(s.label, form.strategy == s, { form = form.copy(strategy = s) }, Modifier.weight(1f), color = s.color()) }
         }
@@ -255,7 +265,7 @@ private fun ConfigForm(
         NumberField("Preço inicial", form.initialPrice, { form = form.copy(initialPrice = it) }, suffix = "R$", error = errors["initial"])
         NumberField(
             "Piso (preço mínimo)", form.floorPrice, { form = form.copy(floorPrice = it) }, suffix = "R$", error = errors["floor"],
-            supporting = "O robô NUNCA envia lance abaixo deste valor." + if (!canChangeFloor) " Seu perfil não pode alterá-lo." else "",
+            supporting = "O app recusa registrar lance abaixo deste valor." + if (!canChangeFloor) " Seu perfil não pode alterá-lo." else "",
         )
         NumberField("Custo total estimado", form.costPrice, { form = form.copy(costPrice = it) }, suffix = "R$", error = errors["cost"], supporting = "Base do cálculo de margem.")
         candidate?.let {
@@ -266,10 +276,9 @@ private fun ConfigForm(
 
         SectionHeader("Comportamento")
         NumberField("Redução por lance", form.reduction, { form = form.copy(reduction = it) }, suffix = "R$", error = errors["reduction"], supporting = "Conservadora usa ½, Agressiva usa 2×, Acompanhar usa o decremento mínimo.")
-        NumberField("Margem mínima", form.minMargin, { form = form.copy(minMargin = it) }, suffix = "%", error = errors["margin"], supporting = "Abaixo dela o robô automático pede autorização.")
-        NumberField("Limite de perda", form.lossLimit, { form = form.copy(lossLimit = it) }, suffix = "R$", error = errors["loss"], supporting = "0 = nunca vender abaixo do custo.")
-        NumberField("Intervalo mínimo entre lances", form.minInterval, { form = form.copy(minInterval = it) }, suffix = "s", error = errors["interval"])
-        NumberField("Pedir autorização a menos de", form.authThreshold, { form = form.copy(authThreshold = it) }, suffix = "% do piso", error = errors["threshold"])
+        NumberField("Margem mínima", form.minMargin, { form = form.copy(minMargin = it) }, suffix = "%", error = errors["margin"], supporting = "Abaixo dela o app alerta.")
+        NumberField("Limite de perda", form.lossLimit, { form = form.copy(lossLimit = it) }, suffix = "R$", error = errors["loss"], supporting = "0 = nunca vender abaixo do custo (endurece o piso efetivo).")
+        NumberField("Alertar quando o lance estiver a menos de", form.authThreshold, { form = form.copy(authThreshold = it) }, suffix = "% do piso", error = errors["threshold"])
 
         warnings.forEach { AlertBanner("Atenção", it, Tone.WARNING) }
         blockedReason?.let { AlertBanner("Permissão insuficiente", it, Tone.DANGER) }
@@ -286,7 +295,7 @@ private fun ConfigForm(
             icon = Icons.Outlined.Save,
         )
         Text(
-            "Toda alteração gera auditoria (mudança de piso registra valor anterior e novo). Autorizações pendentes são canceladas ao salvar.",
+            "Toda alteração gera auditoria (mudança de piso registra valor anterior e novo e exige confirmação).",
             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
         )
         Spacer(Modifier.height(24.dp))
@@ -295,7 +304,7 @@ private fun ConfigForm(
     confirmFloor?.let { rule ->
         ConfirmDialog(
             title = "Confirmar mudança de piso",
-            message = "Piso atual: ${Formatters.brl(session.rule.floorPrice)}\nNovo piso: ${Formatters.brl(rule.floorPrice)}\nMargem no novo piso: ${Formatters.percent(rule.marginPct(rule.floorPrice))}\n\nO robô passará a aceitar lances até este valor. A mudança fica registrada na auditoria com seu nome.",
+            message = "Piso atual: ${Formatters.brl(session.rule.floorPrice)}\nNovo piso: ${Formatters.brl(rule.floorPrice)}\nMargem no novo piso: ${Formatters.percent(rule.marginPct(rule.floorPrice))}\n\nO app passará a aceitar registrar lances até este valor. A mudança fica registrada na auditoria com seu nome.",
             onConfirm = { confirmFloor = null; onSave(rule) },
             onDismiss = { confirmFloor = null },
             confirmLabel = "Confirmar piso",

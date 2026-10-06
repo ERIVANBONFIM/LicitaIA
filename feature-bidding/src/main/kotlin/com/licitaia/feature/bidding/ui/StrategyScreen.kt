@@ -101,7 +101,7 @@ val strategyInfos: List<StrategyInfo> = listOf(
         BidStrategy.ACOMPANHAR_CONCORRENTE,
         "Cobre o melhor lance pelo decremento mínimo do portal, sempre respeitando o intervalo mínimo.",
         listOf("Menor custo por lance", "Fica em 1º gastando o mínimo", "Preserva margem em disputas longas"),
-        listOf("Muitos lances (depende do intervalo)", "Concorrentes agressivos forçam o robô ao piso"),
+        listOf("Muitos lances (depende do intervalo)", "Concorrentes agressivos forçam a sugestão ao piso"),
         "Pregões longos com vários concorrentes conservadores.",
     ),
     StrategyInfo(
@@ -169,10 +169,11 @@ class StrategyViewModel @Inject constructor(
         }
     }
 
-    fun apply(session: LiveSession, strategy: BidStrategy, onDone: () -> Unit) {
+    /** Aplica a estratégia a uma sessão acompanhada; [onDone] recebe null em sucesso ou o motivo da recusa (RBAC/validação). */
+    fun apply(session: LiveSession, strategy: BidStrategy, onDone: (String?) -> Unit) {
         viewModelScope.launch {
-            runCatching { manager.updateRule(session.id, session.rule.copy(strategy = strategy)) }
-            onDone()
+            val result = runCatching { manager.updateRule(session.id, session.rule.copy(strategy = strategy)) }
+            onDone(result.exceptionOrNull()?.let { it.message ?: "Não foi possível aplicar a estratégia." })
         }
     }
 }
@@ -240,7 +241,7 @@ fun StrategyScreen(vm: StrategyViewModel = hiltViewModel()) {
                 }
                 if (!state.canChangeRules) {
                     item("rbac") {
-                        AlertBanner("Aplicar a uma sessão exige permissão", "Somente Diretoria ou Administrador podem alterar a estratégia de um robô (“Alterar regras do robô”).", Tone.WARNING)
+                        AlertBanner("Aplicar a uma sessão exige permissão", "Somente Diretoria ou Administrador podem alterar a estratégia de uma sessão acompanhada (“Alterar regras do robô”).", Tone.WARNING)
                     }
                 }
             }
@@ -276,10 +277,12 @@ fun StrategyScreen(vm: StrategyViewModel = hiltViewModel()) {
     applyTarget?.let { (session, strategy) ->
         ConfirmDialog(
             title = "Aplicar estratégia ${strategy.label}?",
-            message = "Sessão ${session.portal.shortName} · ${session.tenderNumber}\nEstratégia atual: ${session.rule.strategy.label}\n\nA mudança vale a partir do próximo lance e fica registrada na auditoria.",
+            message = "Sessão ${session.portal.shortName} · ${session.tenderNumber}\nEstratégia atual: ${session.rule.strategy.label}\n\nA mudança vale a partir da próxima sugestão de lance e fica registrada na auditoria.",
             onConfirm = {
                 applyTarget = null
-                vm.apply(session, strategy) { navigator.showMessage("Estratégia ${strategy.label} aplicada em ${session.tenderNumber}.") }
+                vm.apply(session, strategy) { error ->
+                    navigator.showMessage(error ?: "Estratégia ${strategy.label} aplicada em ${session.tenderNumber}.")
+                }
             },
             onDismiss = { applyTarget = null },
             confirmLabel = "Aplicar",

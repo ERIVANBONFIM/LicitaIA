@@ -218,12 +218,12 @@ fun AppNotification.toEntity() =
 
 fun AuditEventEntity.toDomain() = AuditEvent(
     id, timestamp, user, companyId, companyName, portal, tenderNumber, item, action, previousValue, newValue,
-    reason, origin, result, details,
+    reason, origin, result, details, prevHash, hash,
 )
 
 fun AuditEvent.toEntity() = AuditEventEntity(
     id, timestamp, user, companyId, companyName, portal, tenderNumber, item, action, previousValue, newValue,
-    reason, origin, result, details,
+    reason, origin, result, details, prevHash, hash,
 )
 
 fun CompetitionEntity.toDomain() = CompetitionRecord(

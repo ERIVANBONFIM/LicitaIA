@@ -128,7 +128,7 @@ fun SimulatorScreen(vm: SimulatorViewModel = hiltViewModel()) {
                 Text("Teste a estratégia sem portal real", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Disputa 100% local e determinística: a mesma semente reproduz o mesmo pregão. Os concorrentes seguem perfis configuráveis; o nosso robô usa o mesmo motor de regras da operação real.",
+                    "Disputa 100% local e determinística: a mesma semente reproduz o mesmo pregão. Os concorrentes seguem perfis configuráveis; o nosso lado usa o mesmo motor de regras que sugere lances no modo assistido — treino, não operação.",
                     style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                 )
             }

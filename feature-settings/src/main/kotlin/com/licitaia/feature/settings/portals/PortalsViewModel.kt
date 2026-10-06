@@ -31,12 +31,33 @@ import javax.inject.Inject
 data class PortalRow(
     val portal: Portal,
     val session: PortalSession?,
+    /** Capacidades declaradas pelo conector via [PortalRepository.capabilities] (null = indisponível). */
     val capabilities: ConnectorCapabilities?,
 ) {
     /** false = portal público (PNCP): só "Abrir". */
     val requiresLogin: Boolean get() = PortalWebPolicy.rules(portal).requiresLogin
     val status: PortalConnectionStatus get() = session?.status ?: PortalConnectionStatus.DESCONECTADO
     val startUrl: String get() = PortalWebPolicy.startUrl(portal)
+
+    /** true quando o conector expõe API pública/oficial de consulta (hoje: PNCP). */
+    val hasPublicApi: Boolean get() = capabilities?.supportsOfficialApi == true
+
+    /** Texto de acesso derivado das capacidades reais do conector, nunca de texto fixo por portal. */
+    val accessLabel: String get() = when {
+        capabilities == null -> "Capacidades do conector indisponíveis"
+        capabilities.isMock -> "Conector de simulação · sem acesso real"
+        capabilities.supportsOfficialApi && !capabilities.supportsPersistentSession -> "API pública (consulta) · sem login"
+        capabilities.supportsOfficialApi -> "API oficial · login no portal"
+        capabilities.supportsBrowserAutomation -> "Automação de navegador autorizada"
+        else -> "Acesso manual no navegador interno · sem API autorizada"
+    }
+
+    /** Observações do conector (MFA/CAPTCHA) para a linha de detalhes. */
+    val accessNotes: List<String> get() = buildList {
+        val c = capabilities ?: return@buildList
+        if (c.requiresMfa) add("MFA do portal resolvido por você")
+        if (c.mayShowCaptcha) add("pode exibir CAPTCHA")
+    }
 }
 
 data class PortalsUiState(

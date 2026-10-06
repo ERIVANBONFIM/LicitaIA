@@ -2,6 +2,7 @@ package com.licitaia.feature.bidding.di
 
 import com.licitaia.connector.api.ConnectorRegistry
 import com.licitaia.connector.api.PortalConnector
+import com.licitaia.connector.comprasgov.ComprasGovConnector
 import com.licitaia.connector.mock.MockConnectorRegistry
 import com.licitaia.connector.pncp.PncpConnector
 import com.licitaia.domain.live.LiveSessionManager
@@ -24,13 +25,13 @@ abstract class BiddingModule {
 
     companion object {
         /**
-         * PNCP: conector REAL (consulta pública documentada). Demais portais: sem API oficial validada,
-         * continuam atrás de conectores MOCK (isMock = true), que os repositórios de busca ignoram.
+         * PNCP e Compras.gov.br: conectores REAIS (consulta pública documentada, sem login). Demais portais:
+         * sem API oficial validada, continuam atrás de conectores MOCK (isMock = true), que os repositórios de busca ignoram.
          */
         @Provides
         @Singleton
-        fun provideConnectorRegistry(pncp: PncpConnector): ConnectorRegistry =
-            RealFirstConnectorRegistry(real = listOf(pncp), fallback = MockConnectorRegistry())
+        fun provideConnectorRegistry(pncp: PncpConnector, comprasGov: ComprasGovConnector): ConnectorRegistry =
+            RealFirstConnectorRegistry(real = listOf(pncp, comprasGov), fallback = MockConnectorRegistry())
     }
 }
 

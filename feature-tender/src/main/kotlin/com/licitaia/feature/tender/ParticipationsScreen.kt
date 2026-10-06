@@ -23,6 +23,7 @@ import com.licitaia.core.ui.components.EmptyState
 import com.licitaia.core.ui.components.ErrorState
 import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
+import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SimulationBadge
 import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.StatCard
@@ -105,6 +106,13 @@ fun ParticipationsScreen(viewModel: TenderListViewModel = hiltViewModel()) {
                                 if (tender.status.ordinal >= TenderStatus.ENVIADA_SIMULADA.ordinal) SimulationBadge()
                                 Spacer(Modifier.weight(1f))
                                 Text("Atualizada ${Formatters.relative(tender.updatedAt)}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                            }
+                            if (tender.status != TenderStatus.VENCIDA && tender.status != TenderStatus.PERDIDA) {
+                                Spacer(Modifier.height(8.dp))
+                                SecondaryButton(
+                                    "Registrar resultado (vencemos / perdemos)", { navigator.navigate(Routes.tender(tender.id)) },
+                                    Modifier.fillMaxWidth(), icon = Icons.Outlined.EmojiEvents, tone = Tone.NEUTRAL,
+                                )
                             }
                         }
                     }

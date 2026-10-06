@@ -4,11 +4,11 @@
 
 | Tipo | Onde | Quantidade | Como rodar | Estado |
 |---|---|---|---|---|
-| Unitários JVM | `core-domain`, `core-data`, `core-ai`, `ai-provider-mock`, `connector-mock`, `connector-pncp`, `core-security`, `feature-auth`, `app` | 169 testes | `.\gradlew.bat test` (a partir de `L:\`, ver abaixo) | ✅ 0 falhas |
+| Unitários JVM | `core-domain`, `core-data`, `core-ai`, `ai-provider-mock`, `connector-mock`, `connector-pncp`, `core-security`, `feature-auth`, `app`, `connector-comprasgov`, `feature-live`, `feature-bidding` | 246 testes | `.\gradlew.bat test` (a partir de `L:\`, ver abaixo) | ✅ 0 falhas |
 | Lint Android | todos os módulos | — | `.\gradlew.bat lintDebug` | ✅ 0 erros (warnings restantes não críticos) |
 | UI Compose (instrumentado) | `app/src/androidTest/.../LicitaScaffoldTest.kt` | 3 testes | `.\gradlew.bat connectedDebugAndroidTest` (exige aparelho/emulador) | ✅ compila; ⬜ não executado (sem dispositivo no ambiente de build) |
 | Build | `assembleDebug`, `assembleRelease` (não assinado, R8) | — | ver README | ✅ passam (06/10/2026) |
-| Migração Room no aparelho | banco real v2 → v3 → v4 | — | instalar por cima | ✅ validada no Xiaomi (dados preservados, `user_version=4`, sem crash) |
+| Migração Room no aparelho | banco real v2 → v3 → v4 → v5 | — | instalar por cima | ✅ validada no Xiaomi (dados preservados, sem crash) |
 | Smoke em aparelho físico | roteiro abaixo | — | manual | ⬜ pendente |
 
 > **Windows + caminho com "ç"**: o task `test` falha com `ClassNotFoundException` quando o projeto está em

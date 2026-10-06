@@ -130,7 +130,7 @@ data class Tender(
     val editalChars: Int = 0,
     /** Páginas do PDF importado; null quando o texto foi colado ou não há PDF. */
     val editalPages: Int? = null,
-    /** PDF sem camada de texto (escaneado): OCR ainda não disponível. */
+    /** PDF sem camada de texto (escaneado). Com [hasEditalText] = true, o texto veio do OCR local (conferir trechos). */
     val editalScanned: Boolean = false,
 ) {
     /** Há texto real do edital para enviar à IA. */
@@ -190,15 +190,36 @@ sealed interface EditalSource {
 
     /** Texto colado/digitado pelo usuário. */
     data class Text(val text: String) : EditalSource
+
+    /** Reconhecimento de texto (OCR no aparelho) sobre o PDF já importado da licitação. */
+    data object Ocr : EditalSource
 }
 
 data class EditalImportResult(
     val chars: Int,
     val pages: Int?,
-    /** true = PDF sem camada de texto; o texto precisa ser colado manualmente (OCR indisponível). */
+    /** true = PDF sem camada de texto (escaneado). Com [ocr] = true o texto foi reconhecido no aparelho. */
     val scanned: Boolean,
     val storedPath: String,
+    /** true = o texto salvo veio do OCR local (ML Kit); pode conter erros de reconhecimento. */
+    val ocr: Boolean = false,
 )
+
+/** Progresso da importação do edital (cópia, extração e OCR página a página). */
+data class EditalImportProgress(
+    val tenderId: Long,
+    val stage: Stage,
+    /** Páginas já reconhecidas (OCR); 0 nas demais etapas. */
+    val page: Int = 0,
+    /** Total de páginas a reconhecer (OCR); 0 quando desconhecido. */
+    val totalPages: Int = 0,
+) {
+    enum class Stage(val label: String) {
+        COPIANDO("Copiando o PDF"),
+        EXTRAINDO("Extraindo o texto"),
+        OCR("Reconhecendo texto"),
+    }
+}
 
 data class ExtractedEdital(
     val objectDescription: String,
@@ -415,12 +436,15 @@ data class LiveSession(
     val lastError: String? = null,
     val startedAt: Long,
     val updatedAt: Long,
+    /** Cronômetro do modo assistido em contagem (estado de runtime; não persiste). */
+    val timerRunning: Boolean = false,
 ) {
     /** Margem no nosso último lance (ou no preço inicial se ainda não houve lance). */
     val currentMarginPct: Double get() = rule.marginPct(ourLastBid ?: rule.initialPrice)
     val isWinning: Boolean get() = position == 1
     val robotRunning: Boolean
         get() = robotStatus == RobotStatus.ATIVO || robotStatus == RobotStatus.AGUARDANDO_AUTORIZACAO
+    val isOpen: Boolean get() = status != LiveStatus.ENCERRADA && status != LiveStatus.ERRO
 }
 
 data class LiveSessionSpec(
@@ -506,7 +530,25 @@ data class AuditEvent(
     val origin: AuditOrigin,
     val result: AuditResult,
     val details: String = "",
+    /** Hash do evento anterior na cadeia ("" no primeiro evento encadeado ou em eventos legados). */
+    val prevHash: String = "",
+    /** SHA-256 (hex) de `prevHash` + campos essenciais; "" em eventos anteriores ao encadeamento. */
+    val hash: String = "",
 )
+
+/** Resultado da verificação da cadeia de hashes da auditoria. */
+data class IntegrityReport(
+    /** Total de eventos na trilha. */
+    val total: Int,
+    /** Eventos encadeados cujo hash e vínculo com o anterior conferiram. */
+    val verified: Int,
+    /** id do primeiro evento cujo hash/encadeamento não confere; null = cadeia íntegra. */
+    val firstBroken: Long?,
+    /** Eventos anteriores ao encadeamento (sem hash), não verificáveis. */
+    val unhashed: Int = 0,
+) {
+    val ok: Boolean get() = firstBroken == null
+}
 
 // ---------------------------------------------------------------- Concorrência (dados públicos / internos)
 

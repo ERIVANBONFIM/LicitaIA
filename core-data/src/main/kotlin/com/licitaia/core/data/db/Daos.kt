@@ -304,6 +304,17 @@ interface AuditDao {
 
     @Insert
     suspend fun insertAll(entities: List<AuditEventEntity>)
+
+    /** Último evento inserido (cabeça da cadeia de hashes). */
+    @Query("SELECT * FROM audit_events ORDER BY id DESC LIMIT 1")
+    suspend fun last(): AuditEventEntity?
+
+    @Query("SELECT COUNT(*) FROM audit_events")
+    suspend fun count(): Int
+
+    /** Página em ordem de inserção para verificação da cadeia. */
+    @Query("SELECT * FROM audit_events WHERE id > :afterId ORDER BY id ASC LIMIT :limit")
+    suspend fun pageAfter(afterId: Long, limit: Int): List<AuditEventEntity>
 }
 
 @Dao
@@ -352,6 +363,15 @@ interface CompetitionDao {
 
     @Insert
     suspend fun insertAll(entities: List<CompetitionEntity>)
+
+    @Insert
+    suspend fun insert(entity: CompetitionEntity): Long
+
+    @Query("SELECT * FROM competition_records WHERE id = :id")
+    suspend fun getById(id: Long): CompetitionEntity?
+
+    @Query("DELETE FROM competition_records WHERE id = :id")
+    suspend fun deleteById(id: Long)
 
     @Query("DELETE FROM competition_records WHERE companyId = :companyId")
     suspend fun deleteByCompany(companyId: Long)

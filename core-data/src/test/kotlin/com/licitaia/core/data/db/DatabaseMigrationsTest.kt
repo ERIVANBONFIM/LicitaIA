@@ -83,10 +83,35 @@ class DatabaseMigrationsTest {
         verify(exactly = 0) { db.execSQL(match { it.startsWith("ALTER TABLE") }) }
     }
 
+    @Test fun version5AddsAuditHashColumnsWithEmptyDefaultAndKeepsRows() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val cursor = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(audit_events)") } returns cursor
+        every { cursor.moveToNext() } returnsMany listOf(true, true, true, false)
+        every { cursor.getColumnIndexOrThrow("name") } returns 0
+        every { cursor.getString(0) } returnsMany listOf("id", "timestamp", "details")
+        DatabaseMigrations.FROM_4_TO_5.migrate(db)
+        verify { db.execSQL("ALTER TABLE audit_events ADD COLUMN prevHash TEXT NOT NULL DEFAULT ''") }
+        verify { db.execSQL("ALTER TABLE audit_events ADD COLUMN hash TEXT NOT NULL DEFAULT ''") }
+        // Eventos antigos ficam sem hash: nada é recalculado, apagado ou reescrito.
+        verify(exactly = 0) { db.execSQL(match { it.contains("DROP", true) || it.contains("DELETE", true) || it.contains("UPDATE", true) }) }
+    }
+
+    @Test fun version5IsIdempotentWhenColumnsExist() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val cursor = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(audit_events)") } returns cursor
+        every { cursor.moveToNext() } returnsMany listOf(true, true, false)
+        every { cursor.getColumnIndexOrThrow("name") } returns 0
+        every { cursor.getString(0) } returnsMany listOf("prevHash", "hash")
+        DatabaseMigrations.FROM_4_TO_5.migrate(db)
+        verify(exactly = 0) { db.execSQL(match { it.startsWith("ALTER TABLE") }) }
+    }
+
     @Test fun allMigrationsAreOrderedAndContiguous() {
         val all = DatabaseMigrations.ALL.toList()
         assertEquals(1, all.first().startVersion)
-        assertEquals(4, all.last().endVersion)
+        assertEquals(5, all.last().endVersion)
         all.zipWithNext().forEach { (a, b) -> assertEquals(a.endVersion, b.startVersion) }
     }
 }

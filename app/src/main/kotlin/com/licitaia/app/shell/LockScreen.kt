@@ -52,21 +52,40 @@ import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.auth.PinVerification
+import kotlinx.coroutines.delay
 
-/** Sobreposição de bloqueio: exige PIN e/ou biometria após timeout ou abertura a frio. */
+/**
+ * Sobreposição de bloqueio: exige PIN e/ou biometria após timeout ou abertura a frio.
+ * [onBiometricSuccess] recebe o [BiometricPrompt.AuthenticationResult] do callback do sistema —
+ * é a única forma de desbloquear sem PIN.
+ */
 @Composable
 fun LockScreen(
     userName: String,
     biometricEnabled: Boolean,
     hasPin: Boolean,
-    onPin: (String, (Boolean) -> Unit) -> Unit,
-    onBiometricSuccess: () -> Unit,
+    onPin: (String, (PinVerification) -> Unit) -> Unit,
+    onBiometricSuccess: (BiometricPrompt.AuthenticationResult) -> Unit,
     onLogout: () -> Unit,
 ) {
     val context = LocalContext.current
     val activity = context as? FragmentActivity
     var pin by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    /** Instante (epoch ms) até o qual o PIN está bloqueado; null = livre. */
+    var lockedUntil by remember { mutableStateOf<Long?>(null) }
+    var remainingSeconds by remember { mutableStateOf(0L) }
+    LaunchedEffect(lockedUntil) {
+        val until = lockedUntil ?: return@LaunchedEffect
+        while (true) {
+            val left = until - System.currentTimeMillis()
+            if (left <= 0L) { lockedUntil = null; remainingSeconds = 0L; error = null; break }
+            remainingSeconds = (left + 999) / 1000
+            delay(250L)
+        }
+    }
+    val pinLocked = lockedUntil != null
 
     val canBiometric = remember(biometricEnabled) {
         biometricEnabled && activity != null &&
@@ -80,7 +99,7 @@ fun LockScreen(
                 host,
                 ContextCompat.getMainExecutor(host),
                 object : BiometricPrompt.AuthenticationCallback() {
-                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onBiometricSuccess()
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onBiometricSuccess(result)
                     override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                         if (errorCode != BiometricPrompt.ERROR_USER_CANCELED && errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON && errorCode != BiometricPrompt.ERROR_CANCELED) {
                             error = errString.toString()
@@ -126,8 +145,22 @@ fun LockScreen(
             Spacer(Modifier.height(24.dp))
 
             val submitPin = {
-                if (pin.length >= 4) onPin(pin) { ok ->
-                    if (!ok) { error = "PIN incorreto."; pin = "" }
+                if (pin.length >= 4 && !pinLocked) onPin(pin) { outcome ->
+                    when (outcome) {
+                        PinVerification.Success -> Unit
+                        is PinVerification.Wrong -> {
+                            error = if (outcome.remainingAttempts > 0) {
+                                "PIN incorreto. ${outcome.remainingAttempts} tentativa(s) antes do bloqueio."
+                            } else "PIN incorreto. A próxima tentativa errada bloqueia temporariamente."
+                            pin = ""
+                        }
+                        is PinVerification.Locked -> {
+                            lockedUntil = System.currentTimeMillis() + outcome.retryAfterMs
+                            remainingSeconds = (outcome.retryAfterMs + 999) / 1000
+                            error = null
+                            pin = ""
+                        }
+                    }
                 }
             }
             if (hasPin) {
@@ -136,6 +169,7 @@ fun LockScreen(
                     onValueChange = { v -> pin = v.filter(Char::isDigit).take(6); error = null },
                     label = { Text("PIN") },
                     singleLine = true,
+                    enabled = !pinLocked,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { submitPin() }),
@@ -143,7 +177,18 @@ fun LockScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(12.dp))
-                PrimaryButton("Desbloquear", onClick = submitPin, enabled = pin.length >= 4, modifier = Modifier.fillMaxWidth())
+                PrimaryButton(
+                    if (pinLocked) "Tente novamente em ${remainingSeconds}s" else "Desbloquear",
+                    onClick = submitPin, enabled = pin.length >= 4 && !pinLocked, modifier = Modifier.fillMaxWidth(),
+                )
+                if (pinLocked) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Muitas tentativas incorretas. Tente novamente em ${remainingSeconds}s" +
+                            if (canBiometric) " ou use a biometria." else ".",
+                        style = MaterialTheme.typography.bodySmall, color = LicitaColors.Yellow, textAlign = TextAlign.Center,
+                    )
+                }
             }
             if (canBiometric) {
                 Spacer(Modifier.height(10.dp))

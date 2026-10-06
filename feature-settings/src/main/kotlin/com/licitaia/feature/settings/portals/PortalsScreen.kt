@@ -119,14 +119,19 @@ private fun PortalCard(row: PortalRow, canManage: Boolean, busy: Boolean, onOpen
             StatusBadge(label, tone, pulsing = row.requiresLogin && row.status == PortalConnectionStatus.CONECTADO)
         }
         Spacer(Modifier.height(6.dp))
+        // Capacidade real declarada pelo conector (PortalRepository.capabilities), não texto fixo por portal.
+        Text(
+            (listOf(row.accessLabel) + row.accessNotes).joinToString(" · "),
+            style = MaterialTheme.typography.bodyMedium, color = if (row.hasPublicApi) LicitaColors.BlueBright else LicitaColors.TextSecondary,
+        )
         Text(
             when {
-                !row.requiresLogin -> "Busca de editais sem login (Portal Nacional de Contratações Públicas)."
+                row.hasPublicApi -> "Busca de editais por consulta pública, sem credenciais."
                 row.status == PortalConnectionStatus.CONECTADO -> "Sessão aberta · desde ${shortDateTime(row.session?.lastLoginAt)}"
                 row.status == PortalConnectionStatus.SESSAO_EXPIRADA -> "O portal encerrou a sessão. Entre novamente para continuar."
                 else -> "Entre com seu cadastro na página oficial. O app não coleta usuário nem senha."
             },
-            style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextSecondary,
+            style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
         )
         Text(row.startUrl, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
         row.capabilities?.limitations?.takeIf { it.isNotEmpty() }?.let { limits ->

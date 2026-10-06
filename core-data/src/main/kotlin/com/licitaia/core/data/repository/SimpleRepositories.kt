@@ -139,9 +139,43 @@ class NotificationRepositoryImpl @Inject constructor(
 class CompetitionRepositoryImpl @Inject constructor(
     private val competitionDao: CompetitionDao,
     private val access: RepositoryAccess,
+    private val audit: AuditRepository,
 ) : CompetitionRepository {
     override fun observeRecords(companyId: Long): Flow<List<CompetitionRecord>> =
         competitionDao.observeByCompany(companyId).map { list -> if (access.owns(companyId)) list.map { it.toDomain() } else emptyList() }
+
+    override suspend fun insert(record: CompetitionRecord): Long = withContext(Dispatchers.IO) {
+        access.requireCompany(record.companyId)
+        require(record.tenderNumber.isNotBlank()) { "Informe o número da licitação." }
+        require(record.competitors >= 0) { "Número de concorrentes inválido." }
+        require(record.bidsCount >= 0) { "Número de lances inválido." }
+        require(!record.closingValue.isNaN() && record.closingValue >= 0.0) { "Valor de fechamento inválido." }
+        require(!record.ourFinalBid.isNaN() && record.ourFinalBid >= 0.0) { "Nosso lance final inválido." }
+        val entity = record.copy(
+            id = 0,
+            date = if (record.date <= 0L) System.currentTimeMillis() else record.date,
+            ourMarginPct = if (record.ourMarginPct.isNaN()) 0.0 else record.ourMarginPct,
+        ).toEntity()
+        val id = competitionDao.insert(entity)
+        audit.record(
+            AuditAction.CADASTRO, portal = record.portal, tenderNumber = record.tenderNumber,
+            newValue = (if (record.won) "Vitória" else "Derrota") + " · fechamento ${"%.2f".format(java.util.Locale.ROOT, record.closingValue)} · ${record.competitors} concorrente(s)",
+            details = "Resultado de pregão registrado no histórico de concorrência",
+        )
+        id
+    }
+
+    override suspend fun delete(id: Long) {
+        withContext(Dispatchers.IO) {
+            val row = competitionDao.getById(id) ?: return@withContext
+            access.requireCompany(row.companyId)
+            competitionDao.deleteById(id)
+            audit.record(
+                AuditAction.CADASTRO, portal = row.portal, tenderNumber = row.tenderNumber,
+                previousValue = if (row.won) "Vitória" else "Derrota", details = "Resultado de pregão removido do histórico de concorrência",
+            )
+        }
+    }
 }
 
 @Singleton
@@ -157,27 +191,42 @@ class LiveSessionStoreImpl @Inject constructor(
     }
 
     override suspend fun saveSession(session: LiveSession) = withContext(Dispatchers.IO) {
-        access.requireCompany(session.companyId, Permission.OPERAR_SESSOES)
+        requireWriter(session.companyId)
         liveSessionDao.upsert(session.toEntity())
     }
 
     override suspend fun deleteSession(sessionId: String) {
         withContext(Dispatchers.IO) {
-            requireSession(sessionId)
+            requireSession(sessionId, write = true)
             bidEventDao.deleteBySession(sessionId)
             liveSessionDao.delete(sessionId)
         }
     }
 
     override suspend fun appendEvent(event: BidEvent) {
-        withContext(Dispatchers.IO) { requireSession(event.sessionId); bidEventDao.insert(event.copy(id = 0).toEntity()) }
+        withContext(Dispatchers.IO) { requireSession(event.sessionId, write = true); bidEventDao.insert(event.copy(id = 0).toEntity()) }
     }
 
-    private suspend fun requireSession(id: String) {
+    /**
+     * Escrita no modo assistido: quem opera a sessão (OPERAR_SESSOES) ou quem altera regras/piso
+     * (ALTERAR_REGRAS / APROVAR_PISO — Diretoria e Financeiro), sempre dentro da empresa ativa.
+     */
+    private fun requireWriter(companyId: Long) {
+        access.requireCompany(companyId)
+        val allowed = WRITE_PERMISSIONS.any { runCatching { access.requireCompany(companyId, it) }.isSuccess }
+        check(allowed) { "Seu perfil não tem permissão para esta operação." }
+    }
+
+    private suspend fun requireSession(id: String, write: Boolean) {
         val entity = liveSessionDao.getById(id) ?: error("Sessão não encontrada.")
-        access.requireCompany(entity.companyId, Permission.OPERAR_SESSOES)
+        if (write) requireWriter(entity.companyId) else access.requireCompany(entity.companyId)
     }
 
+    /** Leitura do log: qualquer membro da empresa ativa (Diretoria/Financeiro acompanham sem operar). */
     override fun observeEvents(sessionId: String): Flow<List<BidEvent>> =
-        bidEventDao.observeBySession(sessionId).map { list -> runCatching { requireSession(sessionId) }.fold({ list.map { it.toDomain() } }, { emptyList() }) }
+        bidEventDao.observeBySession(sessionId).map { list -> runCatching { requireSession(sessionId, write = false) }.fold({ list.map { it.toDomain() } }, { emptyList() }) }
+
+    private companion object {
+        val WRITE_PERMISSIONS = listOf(Permission.OPERAR_SESSOES, Permission.ALTERAR_REGRAS, Permission.APROVAR_PISO)
+    }
 }

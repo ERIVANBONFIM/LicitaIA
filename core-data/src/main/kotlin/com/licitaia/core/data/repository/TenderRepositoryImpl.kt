@@ -14,15 +14,18 @@ import com.licitaia.core.data.db.toDomain
 import com.licitaia.core.data.db.toEntity
 import com.licitaia.core.data.db.toTender
 import com.licitaia.core.data.di.DataScope
+import com.licitaia.core.data.edital.EditalOcrSupport
 import com.licitaia.core.data.edital.EditalStore
 import com.licitaia.core.data.edital.EditalTextPreparer
 import com.licitaia.core.data.edital.PdfExtractionException
+import com.licitaia.core.data.edital.PdfOcrEngine
 import com.licitaia.core.data.edital.PdfTextExtractor
 import com.licitaia.domain.model.AiProviderType
 import com.licitaia.domain.model.AppNotification
 import com.licitaia.domain.model.AuditAction
 import com.licitaia.domain.model.AuditOrigin
 import com.licitaia.domain.model.AuditResult
+import com.licitaia.domain.model.EditalImportProgress
 import com.licitaia.domain.model.EditalImportResult
 import com.licitaia.domain.model.EditalSource
 import com.licitaia.domain.model.ManualTenderDraft
@@ -36,16 +39,21 @@ import com.licitaia.domain.repository.TenderRepository
 import com.licitaia.domain.security.Permission
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -66,10 +74,15 @@ class TenderRepositoryImpl @Inject constructor(
     private val access: RepositoryAccess,
     private val editalStore: EditalStore,
     private val pdfExtractor: PdfTextExtractor,
+    private val pdfOcrEngine: PdfOcrEngine,
     @DataScope private val scope: CoroutineScope,
 ) : TenderRepository {
 
     private val interestMutex = Mutex()
+
+    /** Importações/OCR em andamento por licitação (sobrevivem à saída da tela). */
+    private val importJobs = HashMap<Long, Deferred<Result<EditalImportResult>>>()
+    private val importProgress = MutableStateFlow<Map<Long, EditalImportProgress>>(emptyMap())
 
     init {
         // Análises interrompidas por morte do processo são retomadas na próxima abertura.
@@ -210,38 +223,77 @@ class TenderRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun attachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult> = withContext(Dispatchers.IO) {
+    override fun observeEditalImportProgress(tenderId: Long): Flow<EditalImportProgress?> =
+        importProgress.map { it[tenderId] }.distinctUntilChanged()
+
+    /**
+     * A importação roda no [scope] da camada de dados (não no da tela): se o usuário sair da tela no
+     * meio de um OCR longo, o trabalho continua, o banco é atualizado e o progresso segue observável.
+     * Uma segunda chamada para a mesma licitação enquanto há importação em andamento reaproveita o job.
+     */
+    override suspend fun attachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult> {
+        val job = synchronized(importJobs) {
+            importJobs[tenderId] ?: scope.async(Dispatchers.IO) {
+                try {
+                    doAttachEdital(tenderId, source)
+                } finally {
+                    synchronized(importJobs) { importJobs.remove(tenderId) }
+                    importProgress.update { it - tenderId }
+                }
+            }.also { importJobs[tenderId] = it }
+        }
+        return job.await()
+    }
+
+    private fun publishProgress(tenderId: Long, stage: EditalImportProgress.Stage, page: Int = 0, total: Int = 0) {
+        importProgress.update { it + (tenderId to EditalImportProgress(tenderId, stage, page, total)) }
+    }
+
+    private suspend fun doAttachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult> {
         val entity = tenderDao.getById(tenderId)
-            ?: return@withContext Result.failure(IllegalArgumentException("Licitação não encontrada."))
+            ?: return Result.failure(IllegalArgumentException("Licitação não encontrada."))
         val tender = entity.toDomain()
-        try {
+        return try {
             access.requireCompany(tender.companyId, Permission.ANALISAR)
             val now = System.currentTimeMillis()
             val result = when (source) {
                 is EditalSource.Pdf -> {
+                    publishProgress(tenderId, EditalImportProgress.Stage.COPIANDO)
                     val pdf = editalStore.importPdf(tender.companyId, tenderId, source.uri)
+                    publishProgress(tenderId, EditalImportProgress.Stage.EXTRAINDO)
                     val extraction = pdfExtractor.extract(pdf)
-                    val text = EditalTextPreparer.normalize(extraction.text)
-                    val chars = if (extraction.scanned) 0 else text.length
-                    val textPath = if (chars > 0) editalStore.writeText(tender.companyId, tenderId, text).absolutePath else {
+                    val extracted = EditalTextPreparer.normalize(extraction.text)
+                    if (!EditalOcrSupport.needsOcr(extraction.scanned, EditalOcrSupport.meaningfulChars(extracted))) {
+                        val textPath = editalStore.writeText(tender.companyId, tenderId, extracted).absolutePath
+                        tenderDao.updateEdital(
+                            id = tenderId, pdfPath = pdf.absolutePath, textPath = textPath, chars = extracted.length,
+                            pages = extraction.totalPages, scanned = false, registered = true, now = now,
+                        )
+                        audit.record(
+                            AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
+                            newValue = "${extraction.totalPages} página(s) · ${extracted.length} caractere(s)",
+                            details = "PDF do edital importado e texto extraído" + if (extraction.truncated) " (lidas ${extraction.pagesRead} de ${extraction.totalPages} páginas)" else "",
+                        )
+                        EditalImportResult(chars = extracted.length, pages = extraction.totalPages, scanned = false, storedPath = pdf.absolutePath)
+                    } else {
+                        // Sem camada de texto: guarda o PDF como escaneado e tenta o OCR local em seguida.
                         editalStore.textFile(tender.companyId, tenderId).delete()
-                        null
+                        tenderDao.updateEdital(
+                            id = tenderId, pdfPath = pdf.absolutePath, textPath = null, chars = 0,
+                            pages = extraction.totalPages, scanned = true, registered = true, now = now,
+                        )
+                        audit.record(
+                            AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
+                            result = AuditResult.PENDENTE, newValue = "${extraction.totalPages} página(s) · 0 caractere(s)",
+                            details = "PDF do edital importado sem camada de texto (escaneado); iniciando OCR local",
+                        )
+                        runOcr(tender.copy(editalPdfPath = pdf.absolutePath, editalPages = extraction.totalPages), automatic = true)
                     }
-                    tenderDao.updateEdital(
-                        id = tenderId, pdfPath = pdf.absolutePath, textPath = textPath, chars = chars,
-                        pages = extraction.totalPages, scanned = extraction.scanned, registered = true, now = now,
-                    )
-                    audit.record(
-                        AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
-                        result = if (extraction.scanned) AuditResult.PENDENTE else AuditResult.SUCESSO,
-                        newValue = "${extraction.totalPages} página(s) · $chars caractere(s)",
-                        details = if (extraction.scanned) {
-                            "PDF do edital importado sem camada de texto (escaneado); OCR indisponível — texto deve ser colado"
-                        } else {
-                            "PDF do edital importado e texto extraído" + if (extraction.truncated) " (lidas ${extraction.pagesRead} de ${extraction.totalPages} páginas)" else ""
-                        },
-                    )
-                    EditalImportResult(chars = chars, pages = extraction.totalPages, scanned = extraction.scanned, storedPath = pdf.absolutePath)
+                }
+                is EditalSource.Ocr -> {
+                    val path = tender.editalPdfPath?.takeIf { File(it).exists() }
+                        ?: throw IllegalStateException("Importe o PDF do edital antes de reconhecer o texto.")
+                    runOcr(tender.copy(editalPdfPath = path), automatic = false)
                 }
                 is EditalSource.Text -> {
                     val text = EditalTextPreparer.normalize(source.text)
@@ -275,6 +327,59 @@ class TenderRepositoryImpl @Inject constructor(
             }
             Result.failure(surfaced)
         }
+    }
+
+    /**
+     * OCR local do PDF já armazenado em [tender.editalPdfPath]. Publica o progresso página a página,
+     * grava o `.txt` como no fluxo normal e marca `scanned = true` (texto reconhecido, não extraído).
+     * @param automatic true quando disparado pela importação do PDF (texto insuficiente).
+     */
+    private suspend fun runOcr(tender: Tender, automatic: Boolean): EditalImportResult {
+        val tenderId = tender.id
+        val pdf = File(tender.editalPdfPath ?: error("PDF do edital ausente."))
+        publishProgress(tenderId, EditalImportProgress.Stage.OCR, 0, tender.editalPages ?: 0)
+        val ocr = try {
+            pdfOcrEngine.recognize(pdf) { done, total -> publishProgress(tenderId, EditalImportProgress.Stage.OCR, done, total) }
+        } catch (e: PdfExtractionException) {
+            throw PdfExtractionException(
+                (if (automatic) "O PDF foi importado, mas o reconhecimento de texto falhou: " else "O reconhecimento de texto falhou: ") +
+                    e.message + " Você ainda pode colar o texto do edital.",
+                e,
+            )
+        }
+        val text = EditalTextPreparer.normalize(ocr.text)
+        val now = System.currentTimeMillis()
+        if (!ocr.usable) {
+            editalStore.textFile(tender.companyId, tenderId).delete()
+            tenderDao.updateEdital(
+                id = tenderId, pdfPath = pdf.absolutePath, textPath = null, chars = 0,
+                pages = ocr.totalPages, scanned = true, registered = true, now = now,
+            )
+            audit.record(
+                AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number, result = AuditResult.PENDENTE,
+                newValue = "${ocr.totalPages} página(s) · ${ocr.pagesWithText} com texto reconhecido",
+                details = "OCR local concluído sem texto suficiente (imagem ilegível ou idioma não suportado); texto deve ser colado",
+            )
+            throw PdfExtractionException(
+                "O OCR não reconheceu texto suficiente neste PDF (${ocr.pagesWithText} de ${ocr.pagesProcessed} página(s) com texto). " +
+                    "Verifique a qualidade da digitalização ou cole o texto do edital.",
+            )
+        }
+        val file = editalStore.writeText(tender.companyId, tenderId, text)
+        tenderDao.updateEdital(
+            id = tenderId, pdfPath = pdf.absolutePath, textPath = file.absolutePath, chars = text.length,
+            pages = ocr.totalPages, scanned = true, registered = true, now = now,
+        )
+        audit.record(
+            AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number, origin = AuditOrigin.SISTEMA,
+            newValue = "${ocr.totalPages} página(s) · ${text.length} caractere(s) via OCR",
+            details = buildString {
+                append(if (automatic) "PDF escaneado: texto reconhecido por OCR local (ML Kit, sem rede)" else "OCR local executado manualmente (ML Kit, sem rede)")
+                append("; ${ocr.pagesWithText} de ${ocr.pagesProcessed} página(s) com texto")
+                if (ocr.truncated) append("; reconhecidas ${ocr.pagesProcessed} de ${ocr.totalPages} páginas (limite)")
+            },
+        )
+        return EditalImportResult(chars = text.length, pages = ocr.totalPages, scanned = true, storedPath = pdf.absolutePath, ocr = true)
     }
 
     // ------------------------------------------------------------------ análise

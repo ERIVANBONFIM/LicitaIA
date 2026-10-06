@@ -85,8 +85,14 @@ class GoogleCredentialClient @Inject constructor(
         } catch (e: GetCredentialProviderConfigurationException) {
             GoogleSignInResult.Failure("O Google Play Services não está disponível ou atualizado neste aparelho.")
         } catch (e: GetCredentialException) {
-            // Mensagem genérica: o tipo do erro é útil para diagnóstico, nunca inclui o token.
-            GoogleSignInResult.Failure("Não foi possível entrar com o Google (${e.type.substringAfterLast('.')}).")
+            // DEVELOPER_ERROR / código 10: o par (pacote, SHA-1 do certificado de assinatura) deste build não está
+            // cadastrado no projeto Google Cloud do Web Client ID. Mensagem acionável, sem dados do token.
+            if (isDeveloperError(e)) {
+                GoogleSignInResult.Failure(DEVELOPER_ERROR_MESSAGE)
+            } else {
+                // Mensagem genérica: o tipo do erro é útil para diagnóstico, nunca inclui o token.
+                GoogleSignInResult.Failure("Não foi possível entrar com o Google (${e.type.substringAfterLast('.')}).")
+            }
         } catch (e: GoogleIdTokenParsingException) {
             GoogleSignInResult.Failure("A credencial do Google não pôde ser lida.")
         } catch (e: java.io.IOException) {
@@ -111,6 +117,18 @@ class GoogleCredentialClient @Inject constructor(
 
     private companion object {
         val SERVER_CLIENT_ID: String = BuildConfig.GOOGLE_SERVER_CLIENT_ID
+        const val DEVELOPER_ERROR_MESSAGE = "Este build não está cadastrado no Google Cloud (pacote + SHA-1). Veja o README."
+
+        /** Código 10 isolado (`10:`, `[10]`, `code 10`, `status 10`) ou texto DEVELOPER_ERROR / 28444 (console não configurado). */
+        private val CODE_10 = Regex("""(^|[\s\[(:=])10([\s\]):,.]|$)""")
+
+        fun isDeveloperError(e: GetCredentialException): Boolean {
+            val text = listOfNotNull(e.type, e.message, e.errorMessage?.toString()).joinToString(" ")
+            return text.contains("DEVELOPER_ERROR", ignoreCase = true) ||
+                text.contains("28444") ||
+                text.contains("Developer console is not set up correctly", ignoreCase = true) ||
+                CODE_10.containsMatchIn(text)
+        }
     }
 }
 

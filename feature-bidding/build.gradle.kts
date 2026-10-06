@@ -15,6 +15,7 @@ dependencies {
     implementation(project(":connector-api"))
     implementation(project(":connector-mock"))
     implementation(project(":connector-pncp"))
+    implementation(project(":connector-comprasgov"))
     implementation(project(":ai-provider-api"))
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.lifecycle.process)

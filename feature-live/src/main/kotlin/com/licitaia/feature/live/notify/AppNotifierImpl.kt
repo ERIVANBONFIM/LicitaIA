@@ -183,7 +183,7 @@ class AppNotifierImpl @Inject constructor(
     private fun channelDescription(c: NotificationCategory) = when (c) {
         NotificationCategory.CAPTCHA -> "CAPTCHA/MFA aguardando resolução manual em uma sessão de pregão"
         NotificationCategory.CRITICA -> "Erros críticos, paradas de emergência e alertas que exigem ação imediata"
-        NotificationCategory.LANCES -> "Autorizações de lance, piso atingido e eventos do robô"
+        NotificationCategory.LANCES -> "Modo assistido: margem abaixo da mínima, lance próximo do piso e cronômetro no fim"
         NotificationCategory.MENSAGENS -> "Mensagens do pregoeiro"
         NotificationCategory.DOCUMENTOS -> "Documentos vencendo ou vencidos"
         NotificationCategory.SESSOES -> "Abertura e encerramento de sessões de pregão"

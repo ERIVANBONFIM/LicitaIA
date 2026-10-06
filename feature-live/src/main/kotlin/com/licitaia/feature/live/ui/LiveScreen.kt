@@ -1,6 +1,5 @@
 package com.licitaia.feature.live.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
@@ -22,9 +21,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.OpenInNew
-import androidx.compose.material.icons.outlined.Pause
-import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Podcasts
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -48,7 +46,6 @@ import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
 import com.licitaia.core.ui.components.PortalChip
 import com.licitaia.core.ui.components.SecondaryButton
-import com.licitaia.core.ui.components.SimulationBadge
 import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
@@ -56,11 +53,11 @@ import com.licitaia.core.ui.components.tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
-import com.licitaia.domain.bidding.DemoSessionSpecs
+import com.licitaia.domain.bidding.AssistedBidding
+import com.licitaia.domain.bidding.BidRuleEngine
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.model.LiveSession
 import com.licitaia.domain.model.LiveStatus
-import com.licitaia.domain.model.RobotStatus
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.security.Permission
@@ -82,7 +79,7 @@ data class LiveUiState(
     val sessions: List<LiveSession> = emptyList(),
     val role: UserRole? = null,
     val companyId: Long? = null,
-    val creating: Boolean = false,
+    val alertsMuted: Boolean = false,
 ) {
     val canOperate get() = role?.let { Rbac.can(it, Permission.OPERAR_SESSOES) } ?: false
 }
@@ -94,11 +91,9 @@ class LiveViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val ready = MutableStateFlow(false)
-    private val creating = MutableStateFlow(false)
-    private var demoIndex = 0
 
-    val state: StateFlow<LiveUiState> = combine(manager.sessions, auth.session, ready, creating) { sessions, session, ready, creating ->
-        LiveUiState(loading = !ready, sessions = sessions, role = session?.user?.role, companyId = session?.activeCompany?.id, creating = creating)
+    val state: StateFlow<LiveUiState> = combine(manager.sessions, auth.session, ready, manager.alertsMuted) { sessions, session, ready, muted ->
+        LiveUiState(loading = !ready, sessions = sessions, role = session?.user?.role, companyId = session?.activeCompany?.id, alertsMuted = muted)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LiveUiState())
 
     init {
@@ -108,13 +103,6 @@ class LiveViewModel @Inject constructor(
                 ready.value = true
             }
         }
-    }
-
-    fun pause(id: String) = viewModelScope.launch { manager.pauseRobot(id) }
-    fun resume(id: String) = viewModelScope.launch { manager.resumeRobot(id) }
-
-    fun newDemoSession(onDone: (String?) -> Unit) {
-        onDone(null) // Personal mode never creates fabricated sessions.
     }
 }
 
@@ -126,21 +114,25 @@ fun LiveScreen(vm: LiveViewModel = hiltViewModel()) {
     LicitaScaffold(
         title = "Pregões ao Vivo",
         showBack = false,
+        subtitle = "Modo assistido",
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { navigator.navigate(Routes.PORTALS) },
-                containerColor = LicitaColors.Blue, contentColor = Color.White,
-                icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                text = { Text(if (state.creating) "Abrindo…" else "Abrir portais oficiais") },
-            )
+            if (state.canOperate) {
+                ExtendedFloatingActionButton(
+                    onClick = { navigator.navigate(Routes.LIVE_NEW) },
+                    containerColor = LicitaColors.Blue, contentColor = Color.White,
+                    icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                    text = { Text("Acompanhar pregão") },
+                )
+            }
         },
     ) { padding ->
         when {
             state.loading && state.sessions.isEmpty() -> SkeletonList(Modifier.padding(padding))
             state.sessions.isEmpty() -> EmptyState(
-                "Nenhum pregão em andamento", "Acompanhe o pregão no portal oficial. O app não recebe telemetria nem executa lances.",
+                "Nenhum pregão acompanhado",
+                "Você opera no portal oficial; o LicitaIA registra seus lances, calcula margem e piso, cronometra e alerta. Nenhum lance é enviado pelo app.",
                 Modifier.padding(padding), icon = Icons.Outlined.Podcasts,
-                actionLabel = "Abrir portais oficiais", onAction = { navigator.navigate(Routes.PORTALS) },
+                actionLabel = if (state.canOperate) "Acompanhar pregão" else "Abrir portais", onAction = { navigator.navigate(if (state.canOperate) Routes.LIVE_NEW else Routes.PORTALS) },
             )
             else -> LazyColumn(
                 Modifier.fillMaxSize().padding(padding),
@@ -148,35 +140,33 @@ fun LiveScreen(vm: LiveViewModel = hiltViewModel()) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item("summary") {
-                    val open = state.sessions.filter { it.status != LiveStatus.ENCERRADA }
+                    val open = state.sessions.filter { it.isOpen }
+                    val alerts = open.sumOf { AssistedBidding.activeAlerts(it).size }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("${open.size} sessão(ões) simultânea(s)", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
+                            Text("${open.size} sessão(ões) acompanhada(s)", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
                             Text(
-                                "${open.count { it.isWinning }} vencendo · ${open.count { it.robotRunning }} robô(s) ativo(s) · ${open.count { it.captchaPending }} CAPTCHA(s)",
+                                "${open.count { it.isWinning }} vencendo · ${open.count { it.timerRunning }} cronômetro(s) · $alerts alerta(s)",
                                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                             )
                         }
-                        StatusBadge("Registro local", Tone.INFO)
+                        StatusBadge(if (state.alertsMuted) "Alertas silenciados" else "Modo assistido", if (state.alertsMuted) Tone.WARNING else Tone.INFO)
                     }
                 }
-                val captchas = state.sessions.filter { it.captchaPending }
-                if (captchas.isNotEmpty()) {
-                    item("captcha") {
+                val critical = state.sessions.filter { it.isOpen && AssistedBidding.activeAlerts(it).any { a -> a == AssistedBidding.AlertKind.PROXIMO_DO_PISO || a == AssistedBidding.AlertKind.TEMPO_CRITICO } }
+                if (critical.isNotEmpty()) {
+                    item("critical") {
                         AlertBanner(
-                            "CAPTCHA aguardando — sessão pausada.",
-                            captchas.joinToString { "${it.portal.shortName} ${it.tenderNumber}" } + ". Resolva no portal e confirme para retomar.",
-                            Tone.DANGER, pulsing = true, actionLabel = "Abrir", onAction = { navigator.navigate(Routes.liveSession(captchas.first().id)) },
+                            "Atenção: piso próximo ou fechamento iminente",
+                            critical.joinToString { "${it.portal.shortName} ${it.tenderNumber}" },
+                            Tone.DANGER, pulsing = true, actionLabel = "Abrir", onAction = { navigator.navigate(Routes.liveSession(critical.first().id)) },
                         )
                     }
                 }
                 items(state.sessions, key = { it.id }) { session ->
                     LiveSessionCard(
                         session = session,
-                        canOperate = state.canOperate,
                         onOpen = { navigator.navigate(Routes.liveSession(session.id)) },
-                        onPause = { vm.pause(session.id) },
-                        onResume = { vm.resume(session.id) },
                         onWebView = { navigator.navigate(Routes.portalWeb(session.portal)) },
                     )
                 }
@@ -188,16 +178,15 @@ fun LiveScreen(vm: LiveViewModel = hiltViewModel()) {
 @Composable
 fun LiveSessionCard(
     session: LiveSession,
-    canOperate: Boolean,
     onOpen: () -> Unit,
-    onPause: () -> Unit,
-    onResume: () -> Unit,
     onWebView: () -> Unit,
 ) {
+    val alerts = AssistedBidding.activeAlerts(session)
     val accent by animateColorAsState(
         when {
-            session.captchaPending || session.status == LiveStatus.ERRO -> LicitaColors.Red
-            session.pendingAuthorization != null -> LicitaColors.Yellow
+            session.status == LiveStatus.ERRO -> LicitaColors.Red
+            AssistedBidding.AlertKind.PROXIMO_DO_PISO in alerts || AssistedBidding.AlertKind.TEMPO_CRITICO in alerts -> LicitaColors.Red
+            alerts.isNotEmpty() -> LicitaColors.Yellow
             session.isWinning -> LicitaColors.Green
             session.status == LiveStatus.ENCERRADA -> LicitaColors.Outline
             else -> LicitaColors.Blue
@@ -209,7 +198,7 @@ fun LiveSessionCard(
             PortalChip(session.portal)
             Spacer(Modifier.width(8.dp))
             Text(session.tenderNumber, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
-            StatusBadge(session.status.label, session.status.tone(), pulsing = session.status == LiveStatus.EM_DISPUTA || session.captchaPending)
+            StatusBadge(session.status.label, session.status.tone(), pulsing = session.status == LiveStatus.EM_DISPUTA)
         }
         Spacer(Modifier.height(4.dp))
         Text(session.itemLabel, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextSecondary, fontWeight = FontWeight.Medium)
@@ -218,43 +207,31 @@ fun LiveSessionCard(
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             PositionBadge(session.position, session.competitors)
-            Telemetry("Nosso lance", Formatters.brlCompact(session.ourLastBid ?: 0.0).takeIf { session.ourLastBid != null } ?: "—", LicitaColors.TextPrimary)
+            Telemetry("Nosso lance", session.ourLastBid?.let(Formatters::brlCompact) ?: "—", LicitaColors.TextPrimary)
             Telemetry("Melhor lance", session.bestBid?.let(Formatters::brlCompact) ?: "—", if (session.isWinning) LicitaColors.GreenBright else LicitaColors.BlueBright)
-            Telemetry("Tempo", Formatters.countdown(session.remainingSeconds), if ((session.remainingSeconds ?: 999) < 120) LicitaColors.Yellow else LicitaColors.TextPrimary)
+            Telemetry(
+                if (session.timerRunning) "Tempo" else "Cronômetro",
+                Formatters.countdown(session.remainingSeconds),
+                if (session.timerRunning && (session.remainingSeconds ?: 999) <= AssistedBidding.TIMER_ALERT_SECONDS) LicitaColors.RedBright else if (session.timerRunning) LicitaColors.TextPrimary else LicitaColors.TextMuted,
+            )
         }
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Telemetry("Piso", Formatters.brlCompact(session.rule.floorPrice), LicitaColors.Yellow)
+            Telemetry("Piso", Formatters.brlCompact(BidRuleEngine.effectiveFloor(session.rule)), LicitaColors.Yellow)
             Telemetry("Margem", Formatters.percent(session.currentMarginPct), if (session.currentMarginPct >= session.rule.minMarginPct) LicitaColors.GreenBright else LicitaColors.RedBright)
             Telemetry("Estratégia", session.rule.strategy.label, LicitaColors.TextPrimary)
         }
         Spacer(Modifier.height(10.dp))
         MarginToFloorBar(session)
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Robô:", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-            Spacer(Modifier.width(6.dp))
-            StatusBadge(session.robotStatus.label, session.robotStatus.tone(), pulsing = session.robotStatus == RobotStatus.ATIVO)
-            Spacer(Modifier.width(6.dp))
-            Text("${session.rule.mode.label}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+        if (alerts.isNotEmpty() && session.isOpen) {
+            Spacer(Modifier.height(8.dp))
+            Text(alerts.joinToString(" · ") { it.label }, style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
         }
-        AnimatedVisibility(session.pendingAuthorization != null) {
-            Column {
-                Spacer(Modifier.height(8.dp))
-                AlertBanner("Autorização pendente", "Lance de ${Formatters.brl(session.pendingAuthorization?.proposedValue)} aguarda decisão.", Tone.WARNING, actionLabel = "Decidir", onAction = onOpen)
-            }
-        }
-        if (session.status != LiveStatus.ENCERRADA && session.status != LiveStatus.ERRO) {
+        if (session.isOpen) {
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SecondaryButton("Abrir", onOpen, Modifier.weight(1f), icon = Icons.Outlined.OpenInNew)
-                when {
-                    session.robotRunning || session.robotStatus == RobotStatus.BLOQUEADO_CAPTCHA ->
-                        SecondaryButton("Pausar robô", onPause, Modifier.weight(1f), icon = Icons.Outlined.Pause, tone = Tone.WARNING)
-                    session.robotStatus == RobotStatus.PAUSADO ->
-                        SecondaryButton("Retomar robô", onResume, Modifier.weight(1f), enabled = canOperate, icon = Icons.Outlined.PlayArrow, tone = Tone.SUCCESS)
-                    else -> SecondaryButton("Portal", onWebView, Modifier.weight(1f), tone = Tone.NEUTRAL)
-                }
+                SecondaryButton("Operar", onOpen, Modifier.weight(1f), icon = Icons.Outlined.OpenInNew)
+                SecondaryButton("Portal", onWebView, Modifier.weight(1f), icon = Icons.Outlined.Language, tone = Tone.NEUTRAL)
             }
         }
     }
@@ -286,13 +263,14 @@ fun Telemetry(label: String, value: String, color: Color) {
     }
 }
 
-/** Barra que mostra onde o nosso lance está entre o preço inicial (100%) e o piso (0%). */
+/** Barra que mostra onde o nosso lance está entre o preço inicial (100%) e o piso efetivo (0%). */
 @Composable
 fun MarginToFloorBar(session: LiveSession) {
     val rule = session.rule
-    val span = (rule.initialPrice - rule.floorPrice).takeIf { it > 0 } ?: 1.0
+    val floor = BidRuleEngine.effectiveFloor(rule)
+    val span = (rule.initialPrice - floor).takeIf { it > 0 } ?: 1.0
     val ours = session.ourLastBid ?: rule.initialPrice
-    val fraction = ((ours - rule.floorPrice) / span).coerceIn(0.0, 1.0).toFloat()
+    val fraction = ((ours - floor) / span).coerceIn(0.0, 1.0).toFloat()
     val animated by animateFloatAsState(fraction, tween(600), label = "floor")
     val color = when {
         fraction <= 0.05f -> LicitaColors.Red
@@ -302,7 +280,7 @@ fun MarginToFloorBar(session: LiveSession) {
     Column {
         Row(Modifier.fillMaxWidth()) {
             Text("Folga até o piso", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f))
-            Text(Formatters.brlCompact((ours - rule.floorPrice).coerceAtLeast(0.0)), style = MaterialTheme.typography.labelSmall, color = color)
+            Text(Formatters.brlCompact((ours - floor).coerceAtLeast(0.0)), style = MaterialTheme.typography.labelSmall, color = color)
         }
         Spacer(Modifier.height(4.dp))
         Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(LicitaColors.Outline)) {

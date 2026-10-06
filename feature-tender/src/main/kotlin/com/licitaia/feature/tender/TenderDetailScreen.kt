@@ -13,6 +13,8 @@ import androidx.compose.material.icons.outlined.Balance
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.DocumentScanner
+import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PictureAsPdf
@@ -68,6 +70,7 @@ import com.licitaia.core.ui.components.tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.model.EditalImportProgress
 import com.licitaia.domain.model.EditalImportResult
 import com.licitaia.domain.model.EditalSource
 import com.licitaia.domain.model.Proposal
@@ -76,6 +79,7 @@ import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AuthRepository
+import com.licitaia.domain.repository.CompetitionRepository
 import com.licitaia.domain.repository.ProposalRepository
 import com.licitaia.domain.repository.TenderRepository
 import com.licitaia.domain.security.Permission
@@ -111,11 +115,22 @@ data class TenderDetailState(
     val analyzing: Boolean = false,
     /** Último erro do card "Edital" (import/colagem/análise). */
     val editalError: String? = null,
+    /** Etapa atual da importação/OCR (página X de N) enquanto [importing]. */
+    val importProgress: EditalImportProgress? = null,
+    /** Resultado desta licitação já registrado no histórico de concorrência. */
+    val resultRegistered: Boolean = false,
+    /** Gravação do resultado (status + concorrência) em andamento. */
+    val savingResult: Boolean = false,
 ) {
     val canAnalyze: Boolean get() = role?.let { Rbac.can(it, Permission.ANALISAR) } ?: false
 }
 
-private data class DetailFlags(val importing: Boolean = false, val analyzing: Boolean = false, val editalError: String? = null)
+private data class DetailFlags(
+    val importing: Boolean = false,
+    val analyzing: Boolean = false,
+    val editalError: String? = null,
+    val savingResult: Boolean = false,
+)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -124,6 +139,7 @@ class TenderDetailViewModel @Inject constructor(
     auth: AuthRepository,
     private val tenders: TenderRepository,
     proposals: ProposalRepository,
+    private val competition: CompetitionRepository,
 ) : ViewModel() {
 
     private val tenderId: Long = savedStateHandle.longArg("tenderId") ?: -1L
@@ -140,18 +156,28 @@ class TenderDetailViewModel @Inject constructor(
                 tenders.observeTender(tenderId),
                 tenders.observeAnalysis(tenderId).catch { emit(null) },
                 proposals.observeProposals(tenderId).catch { emit(emptyList()) },
-            ) { tender, analysis, versions ->
+                competition.observeRecords(session.activeCompany.id).catch { emit(emptyList()) },
+            ) { tender, analysis, versions, records ->
                 if (tender == null || tender.companyId != session.activeCompany.id) {
                     TenderDetailState(loading = false, notFound = true)
                 } else {
-                    TenderDetailState(loading = false, tender = tender, analysis = analysis, proposals = versions, role = session.user.role)
+                    TenderDetailState(
+                        loading = false, tender = tender, analysis = analysis, proposals = versions, role = session.user.role,
+                        resultRegistered = records.any { it.portal == tender.portal && it.tenderNumber == tender.number },
+                    )
                 }
             }.catch { emit(TenderDetailState(loading = false, notFound = true)) }
         }
     }
 
-    val state: StateFlow<TenderDetailState> = combine(remote, flags) { s, f ->
-        s.copy(importing = f.importing, analyzing = f.analyzing, editalError = f.editalError)
+    private val progress = tenders.observeEditalImportProgress(tenderId).catch { emit(null) }
+
+    val state: StateFlow<TenderDetailState> = combine(remote, flags, progress) { s, f, p ->
+        s.copy(
+            // Uma importação/OCR que continua em segundo plano (após sair e voltar à tela) também conta como "importando".
+            importing = f.importing || p != null, analyzing = f.analyzing, editalError = f.editalError,
+            importProgress = p, savingResult = f.savingResult,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderDetailState())
 
     fun toggleChecklist(index: Int) {
@@ -166,19 +192,25 @@ class TenderDetailViewModel @Inject constructor(
         }
     }
 
-    /** Importa o PDF escolhido (content://) e extrai o texto. */
+    /** Importa o PDF escolhido (content://) e extrai o texto; PDF escaneado passa pelo OCR local automaticamente. */
     fun importPdf(uri: String) = attach(EditalSource.Pdf(uri)) { result ->
         when {
-            result.scanned -> "PDF sem texto (escaneado): OCR ainda não disponível — cole o texto do edital manualmente."
+            result.ocr -> "Texto obtido por OCR (${result.pages ?: 0} página(s), ${result.chars} caracteres) — confira trechos importantes antes de analisar."
+            result.scanned -> "PDF sem texto (escaneado): o OCR não reconheceu texto suficiente — cole o texto do edital manualmente."
             else -> "Edital importado: ${result.pages ?: 0} página(s), ${result.chars} caracteres. Pronto para analisar com IA."
         }
+    }
+
+    /** OCR manual (ML Kit, no aparelho) sobre o PDF já importado. */
+    fun recognizeText() = attach(EditalSource.Ocr) { result ->
+        "Texto obtido por OCR (${result.pages ?: 0} página(s), ${result.chars} caracteres) — confira trechos importantes antes de analisar."
     }
 
     /** Guarda o texto colado pelo usuário como texto do edital. */
     fun pasteText(text: String) = attach(EditalSource.Text(text)) { result -> "Texto do edital salvo (${result.chars} caracteres)." }
 
     private fun attach(source: EditalSource, message: (EditalImportResult) -> String) {
-        if (flags.value.importing || tenderId <= 0) return
+        if (state.value.importing || tenderId <= 0) return
         flags.update { it.copy(importing = true, editalError = null) }
         viewModelScope.launch {
             val result = try {
@@ -190,13 +222,58 @@ class TenderDetailViewModel @Inject constructor(
             }
             result.fold(
                 onSuccess = { r ->
-                    flags.update { it.copy(importing = false, editalError = if (r.scanned) message(r) else null) }
+                    // Texto reconhecido por OCR fica com aviso permanente no card; PDF escaneado sem texto também.
+                    flags.update { it.copy(importing = false, editalError = if (r.scanned && !r.ocr) message(r) else null) }
                     _messages.tryEmit(message(r))
                 },
                 onFailure = { e ->
                     flags.update { it.copy(importing = false, editalError = e.message?.takeIf(String::isNotBlank) ?: "Não foi possível importar o edital.") }
                 },
             )
+        }
+    }
+
+    /**
+     * Registra o resultado do pregão: grava o [CompetitionRecord] (histórico de concorrência) e, se
+     * necessário, muda o status para VENCIDA/PERDIDA. Falha na gravação não altera o status.
+     */
+    fun registerResult(form: TenderResultForm) {
+        val tender = state.value.tender ?: return
+        if (flags.value.savingResult) return
+        flags.update { it.copy(savingResult = true) }
+        viewModelScope.launch {
+            try {
+                val record = form.toRecord(tender).getOrThrow()
+                competition.insert(record)
+                val target = if (form.won) TenderStatus.VENCIDA else TenderStatus.PERDIDA
+                if (tender.status != target) tenders.updateStatus(tender.id, target)
+                _messages.tryEmit(if (form.won) "Vitória registrada na análise de concorrência." else "Derrota registrada na análise de concorrência.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.tryEmit(e.message?.takeIf(String::isNotBlank) ?: "Não foi possível registrar o resultado.")
+            } finally {
+                flags.update { it.copy(savingResult = false) }
+            }
+        }
+    }
+
+    /** Só muda o status (sem gravar na concorrência). */
+    fun setOutcome(won: Boolean) {
+        val tender = state.value.tender ?: return
+        if (flags.value.savingResult) return
+        flags.update { it.copy(savingResult = true) }
+        viewModelScope.launch {
+            try {
+                tenders.updateStatus(tender.id, if (won) TenderStatus.VENCIDA else TenderStatus.PERDIDA)
+                _messages.tryEmit("Status atualizado para ${if (won) "Vencida" else "Perdida"}.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.tryEmit(e.message?.takeIf(String::isNotBlank) ?: "Não foi possível alterar o status.")
+            } finally {
+                flags.update { it.copy(savingResult = false) }
+            }
         }
     }
 
@@ -267,6 +344,28 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
             },
         )
     }
+    // null = fechado; true/false = resultado pré-selecionado ("Vencemos"/"Perdemos").
+    var resultDialog by remember { mutableStateOf<Boolean?>(null) }
+    val decided = tender.status == TenderStatus.VENCIDA || tender.status == TenderStatus.PERDIDA
+    resultDialog?.let { won ->
+        TenderResultDialog(
+            tender = tender,
+            initialWon = won,
+            suggestedBid = state.proposals.firstOrNull()?.totalValue,
+            allowToggleOutcome = !decided,
+            onDismiss = { resultDialog = null },
+            onConfirm = { form ->
+                resultDialog = null
+                viewModel.registerResult(form)
+            },
+            onSkip = if (decided) null else {
+                { chosen ->
+                    resultDialog = null
+                    viewModel.setOutcome(chosen)
+                }
+            },
+        )
+    }
     LazyColumn(
         Modifier.fillMaxSize().padding(padding),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
@@ -293,12 +392,18 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 state = state,
                 onImportPdf = { pickPdf.launch(arrayOf("application/pdf")) },
                 onPaste = { pasteOpen = true },
+                onOcr = viewModel::recognizeText,
                 onOpenPdf = {
                     val path = tender.editalPdfPath
                     if (path == null || !openPdf(context, path)) navigator.showMessage("Não foi possível abrir o PDF (arquivo ausente ou nenhum leitor instalado).")
                 },
                 onAnalyze = viewModel::analyze,
             )
+        }
+        if (tender.status.isParticipation()) {
+            item(key = "result") {
+                ResultCard(tender, state, onRegister = { won -> resultDialog = won })
+            }
         }
         item(key = "recommendation") {
             if (analysis == null) {
@@ -443,12 +548,15 @@ private fun EditalCard(
     state: TenderDetailState,
     onImportPdf: () -> Unit,
     onPaste: () -> Unit,
+    onOcr: () -> Unit,
     onOpenPdf: () -> Unit,
     onAnalyze: () -> Unit,
 ) {
     val busy = state.importing || state.analyzing
+    val ocrText = tender.editalScanned && tender.hasEditalText
     val statusText = when {
-        tender.editalScanned && !tender.hasEditalText -> "PDF escaneado (sem camada de texto) — cole o texto manualmente"
+        tender.editalScanned && !tender.hasEditalText -> "PDF escaneado (sem camada de texto) — reconheça o texto (OCR) ou cole manualmente"
+        ocrText -> "${tender.editalPages ?: 0} página(s) · ${tender.editalChars} caracteres reconhecidos por OCR"
         tender.hasEditalText && tender.editalPages != null -> "${tender.editalPages} página(s) · ${tender.editalChars} caracteres extraídos"
         tender.hasEditalText -> "Texto colado · ${tender.editalChars} caracteres"
         else -> "Nenhum edital anexado"
@@ -466,16 +574,50 @@ private fun EditalCard(
                 Text("Edital", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
                 Text(statusText, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
             }
-            StatusBadge(if (tender.hasEditalText) "Texto OK" else if (tender.editalScanned) "Escaneado" else "Pendente", statusTone)
+            StatusBadge(if (ocrText) "OCR" else if (tender.hasEditalText) "Texto OK" else if (tender.editalScanned) "Escaneado" else "Pendente", statusTone)
         }
         if (tender.editalPdfPath != null) {
             Spacer(Modifier.height(8.dp))
             InfoRow("Arquivo", "${tender.id}.pdf" + (tender.editalPages?.let { " · $it pág." } ?: ""))
         }
-        if (state.importing) {
+        if (ocrText && !busy) {
             Spacer(Modifier.height(10.dp))
-            AlertBanner("Importando o edital…", "Copiando o PDF e extraindo o texto. Editais grandes podem levar alguns segundos.", Tone.INFO, pulsing = true)
-            LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
+            AlertBanner(
+                "Texto obtido por OCR — confira trechos importantes",
+                "O PDF é uma imagem digitalizada; o texto foi reconhecido no aparelho e pode conter erros em números, datas e valores. Abra o PDF para conferir antes de decidir.",
+                Tone.WARNING,
+            )
+        }
+        if (state.importing) {
+            val progress = state.importProgress
+            Spacer(Modifier.height(10.dp))
+            when (progress?.stage) {
+                EditalImportProgress.Stage.OCR -> {
+                    val label = if (progress.totalPages > 0) "Reconhecendo texto… ${progress.page}/${progress.totalPages}" else "Reconhecendo texto…"
+                    AlertBanner(
+                        label,
+                        "OCR no aparelho (sem enviar o PDF para fora). Páginas digitalizadas levam alguns segundos cada; você pode sair da tela que o processo continua.",
+                        Tone.INFO, pulsing = true,
+                    )
+                    if (progress.totalPages > 0) {
+                        LinearProgressIndicator(
+                            progress = { progress.page.toFloat() / progress.totalPages },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline,
+                        )
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
+                    }
+                }
+                else -> {
+                    AlertBanner(
+                        "Importando o edital…",
+                        progress?.stage?.label?.let { "$it. Editais grandes podem levar alguns segundos." }
+                            ?: "Copiando o PDF e extraindo o texto. Editais grandes podem levar alguns segundos.",
+                        Tone.INFO, pulsing = true,
+                    )
+                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
+                }
+            }
         }
         if (state.analyzing) {
             Spacer(Modifier.height(10.dp))
@@ -500,7 +642,14 @@ private fun EditalCard(
         }
         if (tender.editalPdfPath != null) {
             Spacer(Modifier.height(8.dp))
-            SecondaryButton("Abrir PDF", onOpenPdf, Modifier.fillMaxWidth(), icon = Icons.Outlined.OpenInNew, tone = Tone.NEUTRAL)
+            ButtonRow {
+                SecondaryButton(
+                    if (tender.editalScanned && !tender.hasEditalText) "Reconhecer texto (OCR)" else "Refazer OCR", onOcr, Modifier.weight(1f),
+                    enabled = state.canAnalyze && !busy, icon = Icons.Outlined.DocumentScanner,
+                    tone = if (tender.editalScanned && !tender.hasEditalText) Tone.WARNING else Tone.NEUTRAL,
+                )
+                SecondaryButton("Abrir PDF", onOpenPdf, Modifier.weight(1f), icon = Icons.Outlined.OpenInNew, tone = Tone.NEUTRAL)
+            }
         }
         Spacer(Modifier.height(8.dp))
         PrimaryButton(
@@ -518,6 +667,64 @@ private fun EditalCard(
         if (!state.canAnalyze && state.role != null) {
             Spacer(Modifier.height(6.dp))
             Text("Seu perfil (${state.role.label}) não pode importar nem analisar editais.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+        }
+    }
+}
+
+/**
+ * Card "Resultado do pregão": muda o status para Vencida/Perdida abrindo o diálogo "Registrar
+ * resultado" (que alimenta a análise de concorrência). Em licitações já decididas sem registro,
+ * oferece registrar o resultado a posteriori.
+ */
+@Composable
+private fun ResultCard(tender: Tender, state: TenderDetailState, onRegister: (won: Boolean) -> Unit) {
+    val won = tender.status == TenderStatus.VENCIDA
+    val lost = tender.status == TenderStatus.PERDIDA
+    val decided = won || lost
+    val accent = when {
+        won -> LicitaColors.Green
+        lost -> LicitaColors.Red
+        else -> null
+    }
+    LicitaCard(Modifier.fillMaxWidth(), accent = accent) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconBubble(Icons.Outlined.EmojiEvents, accent ?: LicitaColors.Yellow)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Resultado do pregão", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
+                Text(
+                    when {
+                        decided && state.resultRegistered -> "Resultado registrado na análise de concorrência."
+                        decided -> "Status definido, mas sem dados do pregão (concorrentes, fechamento, lances)."
+                        else -> "Ao encerrar a sessão, informe se vencemos ou perdemos e os dados do pregão."
+                    },
+                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                )
+            }
+            if (decided) StatusBadge(if (won) "Vencemos" else "Não vencemos", if (won) Tone.SUCCESS else Tone.DANGER)
+        }
+        if (!(decided && state.resultRegistered)) {
+            Spacer(Modifier.height(12.dp))
+            if (decided) {
+                SecondaryButton(
+                    "Registrar resultado", { onRegister(won) }, Modifier.fillMaxWidth(),
+                    enabled = state.canAnalyze && !state.savingResult, icon = Icons.Outlined.EmojiEvents,
+                )
+            } else {
+                ButtonRow {
+                    SecondaryButton(
+                        "Vencemos", { onRegister(true) }, Modifier.weight(1f),
+                        enabled = state.canAnalyze && !state.savingResult, icon = Icons.Outlined.EmojiEvents, tone = Tone.SUCCESS,
+                    )
+                    SecondaryButton(
+                        "Perdemos", { onRegister(false) }, Modifier.weight(1f),
+                        enabled = state.canAnalyze && !state.savingResult, tone = Tone.DANGER,
+                    )
+                }
+            }
+            if (state.savingResult) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
+            }
         }
     }
 }

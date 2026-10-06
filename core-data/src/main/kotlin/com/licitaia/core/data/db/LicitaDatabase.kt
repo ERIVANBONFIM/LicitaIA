@@ -11,7 +11,7 @@ import androidx.room.TypeConverters
         PortalSessionEntity::class, LiveSessionEntity::class, BidEventEntity::class, NotificationEntity::class,
         AuditEventEntity::class, AiConfigEntity::class, MessageEntity::class, CompetitionEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(RoomConverters::class)

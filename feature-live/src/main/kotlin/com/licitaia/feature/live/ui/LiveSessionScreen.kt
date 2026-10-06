@@ -1,6 +1,5 @@
 package com.licitaia.feature.live.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -18,23 +17,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.FrontHand
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Send
-import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,8 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
@@ -52,7 +52,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.components.AlertBanner
-import com.licitaia.core.ui.components.BindingConfirmDialog
 import com.licitaia.core.ui.components.ConfirmDialog
 import com.licitaia.core.ui.components.DangerButton
 import com.licitaia.core.ui.components.ErrorState
@@ -64,7 +63,7 @@ import com.licitaia.core.ui.components.PortalChip
 import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SectionHeader
-import com.licitaia.core.ui.components.SimulationBadge
+import com.licitaia.core.ui.components.SelectChip
 import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
@@ -72,7 +71,7 @@ import com.licitaia.core.ui.components.tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
-import com.licitaia.domain.bidding.BidContext
+import com.licitaia.domain.bidding.AssistedBidding
 import com.licitaia.domain.bidding.BidDecision
 import com.licitaia.domain.bidding.BidRuleEngine
 import com.licitaia.domain.live.LiveSessionManager
@@ -81,8 +80,6 @@ import com.licitaia.domain.model.BidEventType
 import com.licitaia.domain.model.BidResult
 import com.licitaia.domain.model.LiveSession
 import com.licitaia.domain.model.LiveStatus
-import com.licitaia.domain.model.RobotMode
-import com.licitaia.domain.model.RobotStatus
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.security.Permission
@@ -106,6 +103,7 @@ data class LiveSessionUiState(
     val role: UserRole? = null,
     val userName: String = "Operador",
     val busy: Boolean = false,
+    val alertsMuted: Boolean = false,
 ) {
     val canOperate get() = role?.let { Rbac.can(it, Permission.OPERAR_SESSOES) } ?: false
     val canChangeRules get() = role?.let { Rbac.can(it, Permission.ALTERAR_REGRAS) } ?: false
@@ -125,11 +123,14 @@ class LiveSessionViewModel @Inject constructor(
     val state: StateFlow<LiveSessionUiState> = combine(
         manager.observeSession(sessionId),
         manager.observeEvents(sessionId).catch { emit(emptyList()) },
-        auth.session, loaded, busy,
-    ) { session, events, authSession, loaded, busy ->
+        auth.session, loaded, busy, manager.alertsMuted,
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
+        val authSession = values[2] as com.licitaia.domain.model.AuthSession?
         LiveSessionUiState(
-            loading = !loaded, session = session, events = events,
-            role = authSession?.user?.role, userName = authSession?.user?.name ?: "Operador", busy = busy,
+            loading = !(values[3] as Boolean), session = values[0] as LiveSession?, events = values[1] as List<BidEvent>,
+            role = authSession?.user?.role, userName = authSession?.user?.name ?: "Operador", busy = values[4] as Boolean,
+            alertsMuted = values[5] as Boolean,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LiveSessionUiState())
 
@@ -147,25 +148,19 @@ class LiveSessionViewModel @Inject constructor(
         busy.value = false
     }
 
-    fun start() = run { manager.startRobot(sessionId) }
-    fun pause() = run { manager.pauseRobot(sessionId) }
-    fun resume() = run { manager.resumeRobot(sessionId) }
-    fun stop() = run { manager.stopRobot(sessionId) }
-    fun takeOver() = run { manager.takeOverManually(sessionId) }
-    fun confirmCaptcha() = run { manager.confirmCaptchaResolved(sessionId) }
-    fun demoCaptcha() = run { manager.triggerDemoCaptcha(sessionId) }
-    fun respond(authId: String, approved: Boolean) = run { manager.respondAuthorization(sessionId, authId, approved) }
+    fun startDispute() = run { manager.startDispute(sessionId) }
+    fun recordOurBid(value: Double, onResult: (BidResult) -> Unit) = run { onResult(manager.recordOurBid(sessionId, value)) }
+    fun recordCompetitorBid(value: Double, onResult: (BidResult) -> Unit) = run { onResult(manager.recordCompetitorBid(sessionId, value)) }
+    fun setPosition(position: Int) = run { manager.setPosition(sessionId, position) }
+    fun startTimer(seconds: Int) = run { manager.startTimer(sessionId, seconds) }
+    fun stopTimer() = run { manager.stopTimer(sessionId) }
+    fun finish(won: Boolean, finalValue: Double, onDone: () -> Unit) = run { manager.finishSession(sessionId, won, finalValue); onDone() }
     fun close(onDone: () -> Unit) = run { manager.closeSession(sessionId); onDone() }
-
-    fun manualBid(value: Double, onResult: (BidResult) -> Unit) = run {
-        onResult(manager.submitManualBid(sessionId, value))
-    }
 }
 
 @Composable
 fun LiveSessionScreen(vm: LiveSessionViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val navigator = LocalAppNavigator.current
     val session = state.session
 
     LicitaScaffold(
@@ -181,182 +176,143 @@ fun LiveSessionScreen(vm: LiveSessionViewModel = hiltViewModel()) {
     }
 }
 
+private enum class Dialog { OUR_BID, COMPETITOR_BID, TIMER, POSITION, FINISH, CLOSE }
+
 @Composable
 private fun SessionContent(session: LiveSession, state: LiveSessionUiState, vm: LiveSessionViewModel, modifier: Modifier) {
     val navigator = LocalAppNavigator.current
-    var confirmCaptcha by remember { mutableStateOf(false) }
-    var confirmTakeOver by remember { mutableStateOf(false) }
-    var confirmStop by remember { mutableStateOf(false) }
-    var confirmClose by remember { mutableStateOf(false) }
-    var bidText by remember(session.id) { mutableStateOf("") }
-    var bidToConfirm by remember { mutableStateOf<Double?>(null) }
-    val sessionOpen = session.status != LiveStatus.ENCERRADA && session.status != LiveStatus.ERRO
+    val clipboard = LocalClipboardManager.current
+    var dialog by remember { mutableStateOf<Dialog?>(null) }
+    var prefill by remember { mutableStateOf("") }
+    val sessionOpen = session.isOpen
+    val canAct = sessionOpen && state.canOperate && !state.busy
 
     val suggestion = remember(session.rule, session.bestBid, session.ourLastBid, session.position, session.captchaPending) {
-        val decision = BidRuleEngine.decide(
-            BidContext(session.rule, session.ourLastBid, session.bestBid, session.position, session.captchaPending, System.currentTimeMillis()),
-        )
-        when (decision) {
-            is BidDecision.Suggest -> decision.value
-            is BidDecision.Place -> decision.value
-            is BidDecision.RequestAuthorization -> decision.value
-            else -> null
-        }
+        AssistedBidding.suggest(session, System.currentTimeMillis())
     }
+    val alerts = remember(session) { AssistedBidding.activeAlerts(session) }
 
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item("head") { HeaderCard(session) }
 
-        if (session.captchaPending) {
-            item("captcha") {
-                LicitaCard(Modifier.fillMaxWidth(), accent = LicitaColors.Red) {
-                    AlertBanner(
-                        "CAPTCHA aguardando — sessão pausada.",
-                        "O portal exibiu um CAPTCHA/MFA. O LicitaIA nunca resolve CAPTCHA: resolva você mesmo no portal e confirme aqui para retomar. Pendente ${session.captchaSince?.let { Formatters.relative(it) } ?: ""}.",
-                        Tone.DANGER, pulsing = true,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PrimaryButton("Resolver no portal", { navigator.navigate(Routes.portalWeb(session.portal)) }, Modifier.weight(1f), icon = Icons.Outlined.Language, tone = Tone.DANGER)
-                        SecondaryButton("Já resolvi — retomar", { confirmCaptcha = true }, Modifier.weight(1f), tone = Tone.SUCCESS)
-                    }
-                }
-            }
-        }
-
-        session.pendingAuthorization?.let { auth ->
-            item("auth") {
-                LicitaCard(Modifier.fillMaxWidth(), accent = LicitaColors.Yellow) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Autorização pendente", style = MaterialTheme.typography.titleMedium, color = LicitaColors.Yellow, modifier = Modifier.weight(1f))
-                        Text(Formatters.relative(auth.requestedAt), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(Formatters.brl(auth.proposedValue), style = MaterialTheme.typography.headlineMedium, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
-                    Text("Margem ${Formatters.percent(session.rule.marginPct(auth.proposedValue))} · ${Formatters.brl(auth.proposedValue - session.rule.floorPrice)} acima do piso", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-                    Spacer(Modifier.height(4.dp))
-                    Text(auth.reason, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextSecondary)
-                    Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PrimaryButton("Aprovar lance", { vm.respond(auth.id, true) }, Modifier.weight(1f), enabled = state.canOperate && !state.busy, tone = Tone.SUCCESS)
-                        SecondaryButton("Negar", { vm.respond(auth.id, false) }, Modifier.weight(1f), enabled = !state.busy, tone = Tone.DANGER)
-                    }
-                    if (!state.canOperate) Text("Aprovar exige a permissão “Operar sessões de pregão”.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-                }
-            }
-        }
-
         if (session.status == LiveStatus.ERRO) {
-            item("error") { AlertBanner("Erro crítico — robô interrompido", session.lastError ?: "Erro desconhecido", Tone.DANGER) }
+            item("error") { AlertBanner("Erro na sessão", session.lastError ?: "Erro desconhecido", Tone.DANGER) }
         }
         if (session.status == LiveStatus.ENCERRADA) {
             item("closed") {
                 AlertBanner(
                     if (session.isWinning) "Disputa encerrada — vencemos!" else "Disputa encerrada",
-                    "Melhor lance final ${Formatters.brl(session.bestBid)}. Nosso último lance ${Formatters.brl(session.ourLastBid)}.",
+                    "Lance final ${Formatters.brl(session.bestBid)} · nosso último lance ${Formatters.brl(session.ourLastBid)} · margem ${Formatters.percent(session.currentMarginPct)}.",
                     if (session.isWinning) Tone.SUCCESS else Tone.NEUTRAL,
+                    actionLabel = "Concorrência", onAction = { navigator.navigate(Routes.COMPETITION) },
                 )
+            }
+        }
+        if (sessionOpen && alerts.isNotEmpty()) {
+            item("alerts") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    alerts.forEach { kind ->
+                        val (msg, tone) = when (kind) {
+                            AssistedBidding.AlertKind.MARGEM_ABAIXO_MINIMA -> "Margem ${Formatters.percent(session.currentMarginPct)} abaixo da mínima ${Formatters.percent(session.rule.minMarginPct)}." to Tone.WARNING
+                            AssistedBidding.AlertKind.PROXIMO_DO_PISO -> "Nosso lance está a ${Formatters.brl(session.ourLastBid?.let { AssistedBidding.distanceToFloor(session.rule, it) })} do piso." to Tone.DANGER
+                            AssistedBidding.AlertKind.TEMPO_CRITICO -> "Menos de ${AssistedBidding.TIMER_ALERT_SECONDS} s no cronômetro." to Tone.DANGER
+                            AssistedBidding.AlertKind.PERDEMOS_POSICAO -> "Estamos em ${session.position}º. Melhor lance ${Formatters.brl(session.bestBid)}." to Tone.WARNING
+                        }
+                        AlertBanner(kind.label, msg + if (state.alertsMuted) " (alertas silenciados na Sala de Guerra)" else "", tone, pulsing = tone == Tone.DANGER)
+                    }
+                }
             }
         }
 
         item("telemetry") { TelemetryCard(session) }
 
-        item("robot") {
-            LicitaCard(Modifier.fillMaxWidth().animateContentSize()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Robô de lances", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
-                    StatusBadge(session.robotStatus.label, session.robotStatus.tone(), pulsing = session.robotStatus == RobotStatus.ATIVO)
+        if (sessionOpen) {
+            item("actions") {
+                LicitaCard(Modifier.fillMaxWidth().animateContentSize()) {
+                    Text("Registrar o que aconteceu no portal", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
+                    Spacer(Modifier.height(4.dp))
+                    Text("O app não envia lances. Dê o lance no portal e registre aqui; abaixo do piso o registro é recusado.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                    Spacer(Modifier.height(12.dp))
+                    if (session.status == LiveStatus.AGUARDANDO) {
+                        PrimaryButton("Disputa iniciou no portal", { vm.startDispute() }, Modifier.fillMaxWidth(), enabled = canAct, icon = Icons.Outlined.PlayArrow, tone = Tone.SUCCESS)
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PrimaryButton("Registrar nosso lance", { prefill = ""; dialog = Dialog.OUR_BID }, Modifier.weight(1f), enabled = canAct, tone = Tone.SUCCESS)
+                        SecondaryButton("Lance concorrente", { prefill = ""; dialog = Dialog.COMPETITOR_BID }, Modifier.weight(1f), enabled = canAct)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SecondaryButton("Marcar posição", { dialog = Dialog.POSITION }, Modifier.weight(1f), enabled = canAct, icon = Icons.Outlined.Flag, tone = Tone.NEUTRAL)
+                        if (session.timerRunning) {
+                            SecondaryButton("Pausar cronômetro", { vm.stopTimer() }, Modifier.weight(1f), enabled = !state.busy, icon = Icons.Outlined.Pause, tone = Tone.WARNING)
+                        } else {
+                            SecondaryButton("Cronômetro", { dialog = Dialog.TIMER }, Modifier.weight(1f), enabled = canAct, icon = Icons.Outlined.Timer, tone = Tone.NEUTRAL)
+                        }
+                    }
+                    if (!state.canOperate) {
+                        Spacer(Modifier.height(6.dp))
+                        Text("Seu perfil (${state.role?.label ?: "—"}) só visualiza. Registrar lances exige “Operar sessões de pregão”.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                    }
+                }
+            }
+
+            item("suggestion") {
+                LicitaCard(Modifier.fillMaxWidth().animateContentSize(), accent = LicitaColors.Blue) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Sugerir próximo lance", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
+                        StatusBadge(session.rule.strategy.label, Tone.INFO)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    when (val d = suggestion) {
+                        is BidDecision.Suggest -> {
+                            val gap = AssistedBidding.distanceToFloor(session.rule, d.value)
+                            Text(Formatters.brl(d.value), style = MaterialTheme.typography.headlineMedium, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Margem resultante ${Formatters.percent(session.rule.marginPct(d.value))} · ${Formatters.brl(gap)} acima do piso",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (AssistedBidding.isMarginBelowMin(session.rule, d.value)) LicitaColors.Yellow else LicitaColors.TextSecondary,
+                            )
+                            Text(d.reason, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                            Spacer(Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SecondaryButton(
+                                    "Copiar valor",
+                                    { clipboard.setText(AnnotatedString(String.format(java.util.Locale("pt", "BR"), "%.2f", d.value))); navigator.showMessage("Valor copiado: ${Formatters.brl(d.value)}. Cole no portal e registre aqui depois.") },
+                                    Modifier.weight(1f), icon = Icons.Outlined.ContentCopy,
+                                )
+                                SecondaryButton("Registrar este", { prefill = String.format(java.util.Locale.US, "%.2f", d.value); dialog = Dialog.OUR_BID }, Modifier.weight(1f), enabled = canAct, tone = Tone.SUCCESS)
+                            }
+                        }
+                        is BidDecision.Wait -> Text(d.reason, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.GreenBright)
+                        is BidDecision.StopAtFloor -> AlertBanner("Piso atingido", "${d.reason} Piso efetivo ${Formatters.brl(BidRuleEngine.effectiveFloor(session.rule))}. Alterar o piso exige confirmação e permissão.", Tone.WARNING)
+                        is BidDecision.Blocked -> AlertBanner("Sem sugestão", d.reason, Tone.DANGER)
+                        is BidDecision.Place, is BidDecision.RequestAuthorization -> Text("Sem sugestão disponível.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    SecondaryButton("Estratégia, piso e margem", { navigator.navigate(Routes.robotConfig(session.id)) }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Tune, tone = Tone.NEUTRAL)
+                }
+            }
+
+            item("portal") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrimaryButton("Abrir portal", { navigator.navigate(Routes.portalWeb(session.portal)) }, Modifier.weight(1f), icon = Icons.Outlined.Language, tone = Tone.INFO)
+                    PrimaryButton("Encerrar com resultado", { dialog = Dialog.FINISH }, Modifier.weight(1f), enabled = canAct, tone = Tone.WARNING)
                 }
                 Spacer(Modifier.height(6.dp))
-                InfoRow("Modo", session.rule.mode.label)
-                InfoRow("Estratégia", session.rule.strategy.label)
-                InfoRow("Intervalo mínimo", "${session.rule.minIntervalSeconds} s")
-                InfoRow("Autorização", if (session.rule.mode == RobotMode.SUPERVISIONADO) "A cada lance" else "A menos de ${Formatters.percent(session.rule.authorizationThresholdPct, 0)} do piso ou margem < ${Formatters.percent(session.rule.minMarginPct, 0)}")
-                if (suggestion != null && sessionOpen) {
-                    Spacer(Modifier.height(6.dp))
-                    AlertBanner(
-                        if (session.rule.mode == RobotMode.MANUAL) "Sugestão do robô (modo manual)" else "Próximo lance calculado",
-                        "${Formatters.brl(suggestion)} · margem ${Formatters.percent(session.rule.marginPct(suggestion))}",
-                        Tone.INFO, actionLabel = "Usar", onAction = { bidText = String.format(java.util.Locale.US, "%.2f", suggestion) },
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    when (session.robotStatus) {
-                        RobotStatus.INATIVO, RobotStatus.ENCERRADO, RobotStatus.CONTROLE_MANUAL, RobotStatus.PARADO_NO_PISO ->
-                            PrimaryButton("Iniciar robô", { vm.start() }, Modifier.weight(1f), enabled = sessionOpen && state.canOperate && !state.busy, icon = Icons.Outlined.PlayArrow, tone = Tone.SUCCESS)
-                        RobotStatus.PAUSADO ->
-                            PrimaryButton("Retomar robô", { vm.resume() }, Modifier.weight(1f), enabled = sessionOpen && state.canOperate && !state.busy, icon = Icons.Outlined.PlayArrow, tone = Tone.SUCCESS)
-                        RobotStatus.ATIVO, RobotStatus.AGUARDANDO_AUTORIZACAO, RobotStatus.BLOQUEADO_CAPTCHA ->
-                            PrimaryButton("Pausar robô", { vm.pause() }, Modifier.weight(1f), enabled = !state.busy, icon = Icons.Outlined.Pause, tone = Tone.WARNING)
-                        RobotStatus.ERRO ->
-                            SecondaryButton("Bloqueado por erro", {}, Modifier.weight(1f), enabled = false, tone = Tone.DANGER)
-                    }
-                    SecondaryButton("Alterar estratégia", { navigator.navigate(Routes.robotConfig(session.id)) }, Modifier.weight(1f), enabled = sessionOpen, icon = Icons.Outlined.Tune)
-                }
-                if (session.robotStatus !in setOf(RobotStatus.INATIVO, RobotStatus.ENCERRADO, RobotStatus.ERRO) && sessionOpen) {
-                    Spacer(Modifier.height(8.dp))
-                    SecondaryButton("Encerrar robô (sessão continua)", { confirmStop = true }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Stop, tone = Tone.DANGER)
-                }
-                if (!state.canOperate) {
-                    Spacer(Modifier.height(6.dp))
-                    Text("Seu perfil (${state.role?.label ?: "—"}) não pode iniciar robôs nem enviar lances; pausar é sempre permitido.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-                }
+                Text("Com sessão salva, o portal abre direto. CAPTCHA/MFA: sempre você, no portal.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
             }
-        }
-
-        if (sessionOpen) {
-            item("manual") {
-                LicitaCard(Modifier.fillMaxWidth()) {
-                    Text("Lance manual (simulado)", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Precisa ser inferior ao melhor lance (${Formatters.brl(session.bestBid)}) e nunca abaixo do piso (${Formatters.brl(BidRuleEngine.effectiveFloor(session.rule))}).", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-                    Spacer(Modifier.height(10.dp))
-                    val parsed = parseMoney(bidText)
-                    val validation = parsed?.let { BidRuleEngine.validateBid(session.rule, it, session.bestBid, session.captchaPending) }
-                    OutlinedTextField(
-                        value = bidText, onValueChange = { bidText = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                        label = { Text("Valor do lance") }, prefix = { Text("R$ ", color = LicitaColors.TextMuted) },
-                        isError = bidText.isNotBlank() && (parsed == null || validation != null),
-                        supportingText = {
-                            val msg = when {
-                                bidText.isBlank() -> "Use vírgula para centavos (ex.: 150.000,00)."
-                                parsed == null -> "Valor inválido."
-                                validation != null -> validation
-                                else -> "Margem ${Formatters.percent(session.rule.marginPct(parsed))}"
-                            }
-                            Text(msg, color = if (bidText.isNotBlank() && (parsed == null || validation != null)) LicitaColors.Red else LicitaColors.TextMuted)
-                        },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = LicitaColors.Blue, unfocusedBorderColor = LicitaColors.Outline, cursorColor = LicitaColors.Blue,
-                            focusedTextColor = LicitaColors.TextPrimary, unfocusedTextColor = LicitaColors.TextPrimary,
-                            focusedLabelColor = LicitaColors.BlueBright, unfocusedLabelColor = LicitaColors.TextSecondary,
-                        ),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    PrimaryButton(
-                        "Envio integrado indisponível", { parsed?.let { bidToConfirm = it } }, Modifier.fillMaxWidth(),
-                        enabled = false, icon = Icons.Outlined.Send,
-                    )
-                }
-            }
-            item("takeover") {
+            item("stop") {
                 Column {
-                    DangerButton("PARAR E ASSUMIR", { confirmTakeOver = true }, icon = Icons.Outlined.FrontHand, enabled = session.robotStatus != RobotStatus.CONTROLE_MANUAL)
+                    DangerButton("Encerrar acompanhamento", { dialog = Dialog.CLOSE }, icon = Icons.Outlined.Close, enabled = state.canOperate && !state.busy)
                     Spacer(Modifier.height(6.dp))
-                    Text("Interrompe imediatamente toda automação desta sessão e deixa o controle 100% com você. As demais sessões não são afetadas.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                    Text("Encerra esta sessão sem informar resultado. As demais sessões não são afetadas.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                 }
             }
-            item("tools") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SecondaryButton("Abrir portal", { navigator.navigate(Routes.portalWeb(session.portal)) }, Modifier.weight(1f), icon = Icons.Outlined.Language, tone = Tone.NEUTRAL)
-                    Text("CAPTCHA/MFA: resolva no portal oficial.", style = MaterialTheme.typography.bodySmall)
-                }
+        } else {
+            item("remove") {
+                SecondaryButton("Remover da lista", { dialog = Dialog.CLOSE }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Close, tone = Tone.DANGER, enabled = state.canOperate && !state.busy)
             }
-        }
-        item("close") {
-            SecondaryButton(if (sessionOpen) "Encerrar sessão" else "Remover sessão", { confirmClose = true }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Close, tone = Tone.DANGER)
         }
 
         item("logHeader") { SectionHeader("Log da sessão (${state.events.size})") }
@@ -367,72 +323,220 @@ private fun SessionContent(session: LiveSession, state: LiveSessionUiState, vm: 
         item("foot") { Spacer(Modifier.height(24.dp)) }
     }
 
-    if (confirmCaptcha) {
-        ConfirmDialog(
-            title = "Confirmar resolução do CAPTCHA",
-            message = "Confirme apenas se você já resolveu o CAPTCHA/MFA diretamente no portal. A automação desta sessão será retomada somente após esta confirmação.",
-            onConfirm = { confirmCaptcha = false; vm.confirmCaptcha() },
-            onDismiss = { confirmCaptcha = false },
-            confirmLabel = "Já resolvi — retomar",
-            tone = Tone.SUCCESS,
-        )
-    }
-    if (confirmTakeOver) {
-        ConfirmDialog(
-            title = "Parar e assumir?",
-            message = "O robô desta sessão será interrompido agora e nenhum lance automático será enviado. Você passa a operar manualmente.",
-            onConfirm = { confirmTakeOver = false; vm.takeOver() },
-            onDismiss = { confirmTakeOver = false },
-            confirmLabel = "PARAR E ASSUMIR",
-            tone = Tone.DANGER,
-        )
-    }
-    if (confirmStop) {
-        ConfirmDialog(
-            title = "Encerrar robô?",
-            message = "O robô deixa de atuar nesta sessão. A sessão continua aberta para acompanhamento e lances manuais.",
-            onConfirm = { confirmStop = false; vm.stop() },
-            onDismiss = { confirmStop = false },
-            confirmLabel = "Encerrar robô",
-            tone = Tone.DANGER,
-        )
-    }
-    if (confirmClose) {
-        ConfirmDialog(
-            title = if (sessionOpen) "Encerrar sessão?" else "Remover sessão?",
-            message = if (sessionOpen) "A sessão deixará de ser acompanhada e o robô será encerrado. Esta ação fica registrada no log." else "A sessão encerrada será removida da lista.",
-            onConfirm = { confirmClose = false; vm.close { navigator.back() } },
-            onDismiss = { confirmClose = false },
-            confirmLabel = "Confirmar",
-            tone = Tone.DANGER,
-        )
-    }
-    bidToConfirm?.let { value ->
-        BindingConfirmDialog(
-            title = "Confirmar lance manual",
-            details = listOf(
-                "Portal" to session.portal.displayName,
-                "Pregão" to session.tenderNumber,
-                "Item" to session.itemLabel,
-                "Valor do lance" to Formatters.brl(value),
-                "Melhor lance atual" to Formatters.brl(session.bestBid),
-                "Piso" to Formatters.brl(session.rule.floorPrice),
-                "Margem" to Formatters.percent(session.rule.marginPct(value)),
-            ),
-            acknowledgeText = "Confirmo que revisei o valor e autorizo este lance em meu nome (${state.userName}).",
-            onConfirm = {
-                bidToConfirm = null
-                vm.manualBid(value) { result ->
-                    when (result) {
-                        is BidResult.Accepted -> { bidText = ""; navigator.showMessage("Lance de ${Formatters.brl(result.value)} registrado (simulação) — ${result.position}º lugar.") }
-                        is BidResult.Rejected -> navigator.showMessage("Lance recusado: ${result.reason}")
+    when (dialog) {
+        Dialog.OUR_BID -> BidDialog(
+            title = "Registrar nosso lance",
+            hint = "Valor que você JÁ enviou no portal. Piso efetivo ${Formatters.brl(BidRuleEngine.effectiveFloor(session.rule))}" + (session.bestBid?.let { " · melhor lance ${Formatters.brl(it)}" } ?: ""),
+            initial = prefill,
+            validate = { AssistedBidding.validateOurBid(session.rule, it, session.captchaPending) },
+            preview = { v ->
+                val best = session.bestBid
+                "Margem ${Formatters.percent(session.rule.marginPct(v))} · ${Formatters.brl(AssistedBidding.distanceToFloor(session.rule, v))} acima do piso" +
+                    (if (best != null && v >= best) " · não cobre o melhor lance (intermediário)" else "")
+            },
+            confirmLabel = "Registrar lance",
+            onConfirm = { v ->
+                dialog = null
+                vm.recordOurBid(v) { r ->
+                    when (r) {
+                        is BidResult.Accepted -> navigator.showMessage("Lance de ${Formatters.brl(r.value)} registrado — ${r.position}º lugar.")
+                        is BidResult.Rejected -> navigator.showMessage("Registro recusado: ${r.reason}")
                     }
                 }
             },
-            onDismiss = { bidToConfirm = null },
-            confirmLabel = "Enviar lance",
+            onDismiss = { dialog = null },
         )
+        Dialog.COMPETITOR_BID -> BidDialog(
+            title = "Registrar melhor lance concorrente",
+            hint = "Melhor lance visível no portal que não é nosso.",
+            initial = prefill,
+            validate = { AssistedBidding.validateCompetitorBid(it) },
+            preview = { v ->
+                val ours = session.ourLastBid
+                when {
+                    ours == null -> "Ainda não registramos lance nosso."
+                    v < ours -> "Esse lance nos tira da 1ª posição."
+                    else -> "Nosso lance continua melhor."
+                }
+            },
+            confirmLabel = "Registrar concorrente",
+            onConfirm = { v ->
+                dialog = null
+                vm.recordCompetitorBid(v) { r ->
+                    when (r) {
+                        is BidResult.Accepted -> navigator.showMessage("Lance concorrente ${Formatters.brl(r.value)} registrado.")
+                        is BidResult.Rejected -> navigator.showMessage(r.reason)
+                    }
+                }
+            },
+            onDismiss = { dialog = null },
+        )
+        Dialog.TIMER -> TimerDialog(onStart = { secs -> dialog = null; vm.startTimer(secs) }, onDismiss = { dialog = null })
+        Dialog.POSITION -> PositionDialog(session.position, onPick = { p -> dialog = null; vm.setPosition(p) }, onDismiss = { dialog = null })
+        Dialog.FINISH -> FinishDialog(
+            session,
+            onConfirm = { won, value -> dialog = null; vm.finish(won, value) { navigator.showMessage(if (won) "Resultado registrado: vencemos. Concorrência atualizada." else "Resultado registrado: perdemos. Concorrência atualizada.") } },
+            onDismiss = { dialog = null },
+        )
+        Dialog.CLOSE -> ConfirmDialog(
+            title = if (sessionOpen) "Encerrar acompanhamento?" else "Remover sessão?",
+            message = if (sessionOpen) "A sessão deixa de ser acompanhada sem registrar resultado. Para gerar o histórico de concorrência, use “Encerrar com resultado”. Esta ação fica no log." else "A sessão encerrada será removida da lista (o log e a concorrência permanecem).",
+            onConfirm = { dialog = null; vm.close { navigator.back() } },
+            onDismiss = { dialog = null },
+            confirmLabel = "Confirmar",
+            tone = Tone.DANGER,
+        )
+        null -> Unit
     }
+}
+
+@Composable
+private fun BidDialog(
+    title: String,
+    hint: String,
+    initial: String,
+    validate: (Double) -> String?,
+    preview: (Double) -> String,
+    confirmLabel: String,
+    onConfirm: (Double) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    val parsed = parseMoney(text)
+    val error = parsed?.let(validate)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LicitaColors.SurfaceElevated,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(hint, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    label = { Text("Valor") }, prefix = { Text("R$ ", color = LicitaColors.TextMuted) },
+                    isError = text.isNotBlank() && (parsed == null || error != null),
+                    supportingText = {
+                        val msg = when {
+                            text.isBlank() -> "Use vírgula para centavos (ex.: 150.000,00)."
+                            parsed == null -> "Valor inválido."
+                            error != null -> error
+                            else -> preview(parsed)
+                        }
+                        Text(msg, color = if (text.isNotBlank() && (parsed == null || error != null)) LicitaColors.Red else LicitaColors.TextMuted)
+                    },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                    colors = fieldColors(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { parsed?.let(onConfirm) }, enabled = parsed != null && error == null, colors = ButtonDefaults.buttonColors(containerColor = LicitaColors.Green)) { Text(confirmLabel) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
+private fun TimerDialog(onStart: (Int) -> Unit, onDismiss: () -> Unit) {
+    var minutes by remember { mutableStateOf("") }
+    var seconds by remember { mutableStateOf("") }
+    val total = (minutes.trim().toIntOrNull() ?: 0) * 60 + (seconds.trim().toIntOrNull() ?: 0)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LicitaColors.SurfaceElevated,
+        title = { Text("Cronômetro da disputa") },
+        text = {
+            Column {
+                Text("Informe o tempo mostrado no portal (ex.: tempo aleatório ou iminência de fechamento). Abaixo de ${AssistedBidding.TIMER_ALERT_SECONDS} s o app alerta.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(2 to "2 min", 5 to "5 min", 10 to "10 min").forEach { (m, label) -> SelectChip(label, minutes == m.toString() && seconds.isBlank(), { minutes = m.toString(); seconds = "" }) }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = minutes, onValueChange = { minutes = it.filter(Char::isDigit).take(3) }, modifier = Modifier.weight(1f), singleLine = true,
+                        label = { Text("min") }, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number), colors = fieldColors(),
+                    )
+                    OutlinedTextField(
+                        value = seconds, onValueChange = { seconds = it.filter(Char::isDigit).take(2) }, modifier = Modifier.weight(1f), singleLine = true,
+                        label = { Text("s") }, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number), colors = fieldColors(),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onStart(total) }, enabled = total in 1..(24 * 3600), colors = ButtonDefaults.buttonColors(containerColor = LicitaColors.Blue)) { Text("Iniciar ${Formatters.countdown(total)}") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
+private fun PositionDialog(current: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LicitaColors.SurfaceElevated,
+        title = { Text("Nossa posição no portal") },
+        text = {
+            Column {
+                Text("Informe a classificação atual mostrada pelo portal.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (1..4).forEach { p -> SelectChip("${p}º", current == p, { onPick(p) }, color = if (p == 1) LicitaColors.Green else LicitaColors.Yellow) }
+                    SelectChip("5º+", current >= 5, { onPick(5) }, color = LicitaColors.Red)
+                }
+                Spacer(Modifier.height(8.dp))
+                SelectChip("Sem lance", current == 0, { onPick(0) }, color = LicitaColors.TextMuted)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Fechar") } },
+    )
+}
+
+@Composable
+private fun FinishDialog(session: LiveSession, onConfirm: (Boolean, Double) -> Unit, onDismiss: () -> Unit) {
+    var won by remember { mutableStateOf(session.isWinning) }
+    var text by remember { mutableStateOf((if (session.isWinning) session.ourLastBid else session.bestBid)?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: "") }
+    val parsed = parseMoney(text)
+    val floorBlock = if (won && parsed != null) AssistedBidding.validateOurBid(session.rule, parsed) else null
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = LicitaColors.SurfaceElevated,
+        title = { Text("Encerrar com resultado") },
+        text = {
+            Column {
+                Text("Resultado publicado pelo portal. Gera um registro de concorrência" + (if (session.tenderId != null) " e atualiza a licitação (vencida/perdida)." else "."), style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SelectChip("Vencemos", won, { won = true; text = session.ourLastBid?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: text }, Modifier.weight(1f), color = LicitaColors.Green)
+                    SelectChip("Perdemos", !won, { won = false; text = session.bestBid?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: text }, Modifier.weight(1f), color = LicitaColors.Red)
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    label = { Text(if (won) "Nosso valor final" else "Lance vencedor") }, prefix = { Text("R$ ", color = LicitaColors.TextMuted) },
+                    isError = text.isNotBlank() && (parsed == null || floorBlock != null),
+                    supportingText = {
+                        val msg = when {
+                            parsed == null -> "Informe o valor final."
+                            floorBlock != null -> floorBlock
+                            won -> "Margem final ${Formatters.percent(session.rule.marginPct(parsed))}"
+                            else -> "Nosso último lance: ${Formatters.brl(session.ourLastBid)}"
+                        }
+                        Text(msg, color = if (text.isNotBlank() && (parsed == null || floorBlock != null)) LicitaColors.Red else LicitaColors.TextMuted)
+                    },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                    colors = fieldColors(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { parsed?.let { onConfirm(won, it) } }, enabled = parsed != null && floorBlock == null, colors = ButtonDefaults.buttonColors(containerColor = if (won) LicitaColors.Green else LicitaColors.Red)) { Text(if (won) "Registrar vitória" else "Registrar derrota") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }
 
 @Composable
@@ -443,11 +547,12 @@ private fun HeaderCard(session: LiveSession) {
             Spacer(Modifier.width(8.dp))
             StatusBadge(session.status.label, session.status.tone(), pulsing = session.status == LiveStatus.EM_DISPUTA)
             Spacer(Modifier.weight(1f))
-            StatusBadge("Registro local", Tone.INFO)
+            StatusBadge("Modo assistido", Tone.INFO)
         }
         Spacer(Modifier.height(8.dp))
         Text(session.objectDescription, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
         Text(session.agency, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+        if (session.tenderId != null) Text("Vinculada a uma licitação de interesse", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
     }
 }
 
@@ -457,8 +562,18 @@ private fun TelemetryCard(session: LiveSession) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             PositionBadge(session.position, session.competitors)
             Column(horizontalAlignment = Alignment.End) {
-                Text(Formatters.countdown(session.remainingSeconds), style = MaterialTheme.typography.headlineSmall, color = if ((session.remainingSeconds ?: 999) < 120) LicitaColors.Yellow else LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
-                Text("tempo restante", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                val secs = session.remainingSeconds
+                Text(
+                    Formatters.countdown(secs),
+                    style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
+                    color = when {
+                        secs == null -> LicitaColors.TextMuted
+                        session.timerRunning && secs <= AssistedBidding.TIMER_ALERT_SECONDS -> LicitaColors.RedBright
+                        session.timerRunning -> LicitaColors.TextPrimary
+                        else -> LicitaColors.TextSecondary
+                    },
+                )
+                Text(when { secs == null -> "sem cronômetro"; session.timerRunning -> "em contagem"; else -> "cronômetro parado" }, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -468,7 +583,7 @@ private fun TelemetryCard(session: LiveSession) {
         }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Telemetry("Piso", Formatters.brl(session.rule.floorPrice), LicitaColors.Yellow)
+            Telemetry("Piso", Formatters.brl(BidRuleEngine.effectiveFloor(session.rule)), LicitaColors.Yellow)
             Telemetry("Custo", Formatters.brl(session.rule.costPrice), LicitaColors.TextSecondary)
         }
         Spacer(Modifier.height(12.dp))
@@ -481,8 +596,9 @@ private fun TelemetryCard(session: LiveSession) {
         )
         Spacer(Modifier.height(10.dp))
         MarginToFloorBar(session)
-        Spacer(Modifier.height(8.dp))
-        Text("${session.competitors} concorrente(s) · ${session.unreadMessages} mensagem(ns) do pregoeiro nesta sessão", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+        val ref = session.ourLastBid ?: session.rule.initialPrice
+        InfoRow("Diferença para o piso", "${Formatters.brl(AssistedBidding.distanceToFloor(session.rule, ref))} (${Formatters.percent(AssistedBidding.distanceToFloorPct(session.rule, ref))})", valueColor = if (AssistedBidding.isNearFloor(session.rule, ref)) LicitaColors.RedBright else LicitaColors.TextPrimary)
+        Text("${session.competitors} concorrente(s) estimado(s) · ${if (session.ourLastBid == null) "margem calculada sobre o preço inicial" else "margem sobre o nosso último lance"}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
     }
 }
 

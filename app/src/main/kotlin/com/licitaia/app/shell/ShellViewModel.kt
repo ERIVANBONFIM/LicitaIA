@@ -1,9 +1,11 @@
 package com.licitaia.app.shell
 
+import androidx.biometric.BiometricPrompt
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.nav.ShellState
 import com.licitaia.domain.auth.IdentitySignOut
+import com.licitaia.domain.auth.PinVerification
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.model.AppNotification
 import com.licitaia.domain.model.AppSettings
@@ -135,16 +137,26 @@ class ShellViewModel @Inject constructor(
         }
     }
 
-    fun unlockWithPin(pin: String, onResult: (Boolean) -> Unit) {
+    /**
+     * Desbloqueio por PIN. O repositório aplica o bloqueio progressivo (5 erros → 30 s, 1 min, 5 min…),
+     * persistido no cofre, e audita falhas/bloqueios; aqui só se reflete o resultado na UI.
+     */
+    fun unlockWithPin(pin: String, onResult: (PinVerification) -> Unit) {
         viewModelScope.launch {
-            val ok = runCatching { authRepository.verifyPin(pin) }.getOrDefault(false)
-            if (ok) _locked.value = false
-            onResult(ok)
+            val outcome = runCatching { authRepository.verifyPinDetailed(pin) }
+                .getOrElse { PinVerification.Wrong(remainingAttempts = 0) }
+            if (outcome is PinVerification.Success) _locked.value = false
+            onResult(outcome)
         }
     }
 
-    /** Chamado após autenticação biométrica bem-sucedida. */
-    fun unlock() {
+    /**
+     * Desbloqueio por biometria/credencial do aparelho. Exige o [BiometricPrompt.AuthenticationResult]
+     * entregue pelo callback `onAuthenticationSucceeded`: não há caminho para desbloquear sem ele.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun unlock(result: BiometricPrompt.AuthenticationResult) {
+        // O parâmetro não nulo é a prova: só o BiometricPrompt constrói um AuthenticationResult.
         _locked.value = false
     }
 }

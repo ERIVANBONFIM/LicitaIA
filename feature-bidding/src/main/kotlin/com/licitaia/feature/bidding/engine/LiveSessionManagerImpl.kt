@@ -1,23 +1,14 @@
 package com.licitaia.feature.bidding.engine
 
-import com.licitaia.connector.api.BidSubmission
-import com.licitaia.connector.api.ConnectorRegistry
-import com.licitaia.connector.api.HumanConfirmation
-import com.licitaia.connector.api.LiveSessionHandle
-import com.licitaia.connector.api.PortalLiveEvent
-import com.licitaia.connector.mock.MockSessionControl
 import com.licitaia.core.ui.nav.Routes
-import com.licitaia.domain.bidding.BidContext
-import com.licitaia.domain.bidding.BidDecision
+import com.licitaia.domain.bidding.AssistedBidding
+import com.licitaia.domain.bidding.AssistedBidding.AlertKind
 import com.licitaia.domain.bidding.BidRuleEngine
-import com.licitaia.domain.bidding.DemoSessionSpecs
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.live.LiveSessionStore
-import com.licitaia.domain.model.AuctioneerMessage
 import com.licitaia.domain.model.AuditAction
 import com.licitaia.domain.model.AuditOrigin
 import com.licitaia.domain.model.AuditResult
-import com.licitaia.domain.model.BidAuthorization
 import com.licitaia.domain.model.BidEvent
 import com.licitaia.domain.model.BidEventType
 import com.licitaia.domain.model.BidResult
@@ -26,15 +17,22 @@ import com.licitaia.domain.model.LiveSession
 import com.licitaia.domain.model.LiveSessionSpec
 import com.licitaia.domain.model.LiveStatus
 import com.licitaia.domain.model.NotificationCategory
+import com.licitaia.domain.model.RobotMode
 import com.licitaia.domain.model.RobotStatus
+import com.licitaia.domain.model.Segment
+import com.licitaia.domain.model.TenderStatus
+import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AppNotifier
 import com.licitaia.domain.repository.AuditRepository
 import com.licitaia.domain.repository.AuthRepository
-import com.licitaia.domain.repository.MessageRepository
-import com.licitaia.domain.repository.SettingsRepository
+import com.licitaia.domain.repository.CompetitionRepository
+import com.licitaia.domain.repository.TenderRepository
+import com.licitaia.domain.security.Permission
+import com.licitaia.domain.security.Rbac
 import com.licitaia.domain.util.Formatters
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,10 +43,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -58,63 +55,101 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.min
 
 /**
- * Motor de pregões ao vivo. Cada sessão é um ator independente: estado, handle do portal,
- * fila de comandos, log, CAPTCHA e autorização pendente são exclusivos da sessão. Robôs
- * permanecem inativos em modo pessoal; a operação ocorre no navegador oficial.
+ * Motor de pregões em MODO ASSISTIDO. Cada sessão é um ator independente (estado, fila de comandos,
+ * log e cronômetro exclusivos). Nada aqui fala com portal: os lances são registrados pelo usuário
+ * depois de dados no site oficial; o motor valida piso, calcula margem, alerta e audita.
  */
 @Singleton
 class LiveSessionManagerImpl @Inject constructor(
-    private val connectors: ConnectorRegistry,
     private val store: LiveSessionStore,
     private val notifier: AppNotifier,
     private val audit: AuditRepository,
-    private val messages: MessageRepository,
-    private val settings: SettingsRepository,
     private val auth: AuthRepository,
+    private val competition: CompetitionRepository,
+    private val tenders: TenderRepository,
 ) : LiveSessionManager {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** Construtor para testes JVM: permite trocar o dispatcher e o relógio. */
+    internal constructor(
+        store: LiveSessionStore,
+        notifier: AppNotifier,
+        audit: AuditRepository,
+        auth: AuthRepository,
+        competition: CompetitionRepository,
+        tenders: TenderRepository,
+        dispatcher: CoroutineDispatcher,
+        clock: () -> Long,
+    ) : this(store, notifier, audit, auth, competition, tenders) {
+        this.clock = clock
+        this.scope = CoroutineScope(SupervisorJob() + dispatcher)
+        bindAuth()
+    }
+
+    private var clock: () -> Long = { System.currentTimeMillis() }
+    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val runtimes = ConcurrentHashMap<String, SessionRuntime>()
     private val states = MutableStateFlow<Map<String, LiveSession>>(emptyMap())
     private val activeCompany = MutableStateFlow<Long?>(null)
     private val loadedCompanies = ConcurrentHashMap.newKeySet<Long>()
     private val restoreMutex = Mutex()
+    private val muted = MutableStateFlow(false)
+    private var authJob: Job? = null
 
-    override val sessions: StateFlow<List<LiveSession>> =
+    override val sessions: StateFlow<List<LiveSession>> by lazy {
         combine(states, activeCompany) { map, company ->
             map.values.filter { it.companyId == company }.sortedBy { it.startedAt }
         }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+    }
 
-    init {
-        scope.launch { auth.session.collect { session ->
-            val company = session?.activeCompany?.id
-            runtimes.values.filter { it.state.companyId != company }.forEach { runtime ->
-                runtime.teardown(); runtimes.remove(runtime.id); states.update { it - runtime.id }
+    override val alertsMuted: StateFlow<Boolean> = muted.asStateFlow()
+
+    init { bindAuth() }
+
+    private fun bindAuth() {
+        authJob?.cancel()
+        authJob = scope.launch {
+            auth.session.collect { session ->
+                val company = session?.activeCompany?.id
+                runtimes.values.filter { it.state.companyId != company }.forEach { runtime ->
+                    runtime.teardown(); runtimes.remove(runtime.id); states.update { it - runtime.id }
+                }
+                loadedCompanies.removeIf { it != company }
+                if (activeCompany.value != company) muted.value = false
+                activeCompany.value = company
             }
-            loadedCompanies.removeIf { it != company }
-            activeCompany.value = company
-        } }
+        }
     }
 
     override fun observeSession(sessionId: String): Flow<LiveSession?> =
-        combine(states, auth.session) { map, session -> map[sessionId]?.takeIf { it.companyId == session?.activeCompany?.id && session.user.demo == false && it.companyId in session.user.companyIds } }.distinctUntilChanged()
+        combine(states, auth.session) { map, session ->
+            map[sessionId]?.takeIf { it.companyId == session?.activeCompany?.id && session.user.demo == false && it.companyId in session.user.companyIds }
+        }.distinctUntilChanged()
 
     override fun observeEvents(sessionId: String): Flow<List<BidEvent>> = store.observeEvents(sessionId)
 
-    private fun requireCompany(companyId: Long) {
+    /** Usuário logado, fora do modo demo, com a empresa ativa = [companyId]. Basta para VISUALIZAR/restaurar. */
+    private fun requireMember(companyId: Long): UserRole {
         val session = auth.session.value ?: error("Sessão encerrada.")
         check(!session.user.demo && companyId == session.activeCompany.id && companyId in session.user.companyIds) { "Empresa não autorizada." }
-        check(com.licitaia.domain.security.Rbac.can(session.user.role, com.licitaia.domain.security.Permission.OPERAR_SESSOES)) { "Perfil sem permissão para operar sessões." }
+        return session.user.role
     }
+
+    /** Membro da empresa com permissão de OPERAR sessões (registrar lances, cronômetro, encerrar). */
+    private fun requireCompany(companyId: Long) {
+        val role = requireMember(companyId)
+        check(Rbac.can(role, Permission.OPERAR_SESSOES)) { "Perfil sem permissão para operar sessões." }
+    }
+
     private fun authorizedRuntime(id: String): SessionRuntime? = runtimes[id]?.also { requireCompany(it.state.companyId) }
 
     // ------------------------------------------------------------------ ciclo de vida
 
     override suspend fun restoreOrSeed(companyId: Long): Unit = restoreMutex.withLock {
-        requireCompany(companyId)
+        // Visualizar/restaurar exige apenas pertencer à empresa (Diretoria/Financeiro acompanham sem operar).
+        requireMember(companyId)
         activeCompany.value = companyId
         if (!loadedCompanies.add(companyId)) return@withLock
         val saved = try {
@@ -124,19 +159,51 @@ class LiveSessionManagerImpl @Inject constructor(
         } catch (e: Exception) {
             emptyList()
         }
-        val alive = saved.filter { it.status != LiveStatus.ENCERRADA && !runtimes.containsKey(it.id) }
-        val hasAny = alive.isNotEmpty() || runtimes.values.any { it.state.companyId == companyId }
-        if (hasAny) {
-            alive.forEach { restore(it) }
-        } else {
-            // No fabricated auctions or competitors are seeded in personal mode.
-        }
+        saved.filter { it.status != LiveStatus.ENCERRADA && !runtimes.containsKey(it.id) }.forEach { restore(it) }
+        // Nenhuma sessão fictícia é criada: só o que o usuário abriu.
     }
 
-    override suspend fun openSession(spec: LiveSessionSpec): String { requireCompany(spec.companyId); return create(spec).id }
+    override suspend fun openSession(spec: LiveSessionSpec): String {
+        requireCompany(spec.companyId)
+        val rule = spec.rule.copy(mode = RobotMode.MANUAL, simulation = true)
+        check(BidRuleEngine.isOperable(rule)) { BidRuleEngine.validateRule(rule).firstOrNull() ?: "Parâmetros inválidos." }
+        val now = clock()
+        val session = LiveSession(
+            id = "ls-" + UUID.randomUUID().toString().replace("-", "").take(12),
+            companyId = spec.companyId,
+            tenderId = spec.tenderId,
+            portal = spec.portal,
+            tenderNumber = spec.tenderNumber.trim(),
+            agency = spec.agency.trim(),
+            itemLabel = spec.itemLabel.trim(),
+            objectDescription = spec.objectDescription.trim(),
+            status = LiveStatus.AGUARDANDO,
+            robotStatus = RobotStatus.INATIVO,
+            position = 0,
+            competitors = spec.competitors.coerceAtLeast(0),
+            ourLastBid = null,
+            bestBid = null,
+            rule = rule,
+            remainingSeconds = null,
+            startedAt = now,
+            updatedAt = now,
+        )
+        val runtime = SessionRuntime(session, restored = false)
+        runtimes[session.id] = runtime
+        runtime.start()
+        return session.id
+    }
 
     override suspend fun closeSession(sessionId: String) {
-        val runtime = authorizedRuntime(sessionId) ?: return
+        val runtime = runtimes[sessionId]
+        if (runtime == null) {
+            // Sessão já encerrada com resultado (runtime desmontado): apenas sai da lista.
+            val finished = states.value[sessionId] ?: return
+            requireCompany(finished.companyId)
+            states.update { it - sessionId }
+            return
+        }
+        requireCompany(runtime.state.companyId)
         runtime.call { closeByUser() }
         runtime.teardown()
         runtimes.remove(sessionId, runtime)
@@ -144,88 +211,71 @@ class LiveSessionManagerImpl @Inject constructor(
         runCatching { notifier.cancelSessionAlerts(sessionId) }
     }
 
-    private fun create(spec: LiveSessionSpec, startedAtOffset: Long = 0): SessionRuntime {
-        val now = System.currentTimeMillis() + startedAtOffset
-        val session = LiveSession(
-            id = "ls-" + UUID.randomUUID().toString().replace("-", "").take(12),
-            companyId = spec.companyId,
-            tenderId = spec.tenderId,
-            portal = spec.portal,
-            tenderNumber = spec.tenderNumber,
-            agency = spec.agency,
-            itemLabel = spec.itemLabel,
-            objectDescription = spec.objectDescription,
-            status = LiveStatus.EM_DISPUTA,
-            robotStatus = RobotStatus.INATIVO,
-            position = 0,
-            competitors = spec.competitors,
-            ourLastBid = null,
-            bestBid = null,
-            rule = spec.rule.copy(simulation = true),
-            remainingSeconds = null,
-            startedAt = now,
-            updatedAt = now,
-        )
-        return SessionRuntime(session, restored = false).also { runtimes[session.id] = it; it.start() }
-    }
-
     private fun restore(saved: LiveSession) {
-        var s = saved.copy(rule = saved.rule.copy(simulation = true), pendingAuthorization = null)
-        // Segurança: nenhum robô volta a operar sozinho após o app reabrir.
-        if (s.robotStatus == RobotStatus.ATIVO || s.robotStatus == RobotStatus.AGUARDANDO_AUTORIZACAO) {
-            s = s.copy(robotStatus = RobotStatus.PAUSADO)
-        }
-        if (s.status == LiveStatus.AGUARDANDO || s.status == LiveStatus.PAUSADA) s = s.copy(status = LiveStatus.EM_DISPUTA)
-        SessionRuntime(s, restored = true, robotWasRunning = saved.robotRunning).also { runtimes[s.id] = it; it.start() }
+        // Segurança: nada volta a "rodar" sozinho; cronômetro parado até o usuário reiniciar.
+        val s = saved.copy(
+            rule = saved.rule.copy(mode = RobotMode.MANUAL, simulation = true),
+            robotStatus = RobotStatus.INATIVO,
+            pendingAuthorization = null,
+            timerRunning = false,
+            status = if (saved.status == LiveStatus.PAUSADA || saved.status == LiveStatus.CAPTCHA_PENDENTE) LiveStatus.EM_DISPUTA else saved.status,
+        )
+        SessionRuntime(s, restored = true).also { runtimes[s.id] = it; it.start() }
     }
 
-    // ------------------------------------------------------------------ API pública (delegada ao ator da sessão)
+    // ------------------------------------------------------------------ API pública (delegada ao ator)
 
-    override suspend fun startRobot(sessionId: String) { authorizedRuntime(sessionId)?.call { startRobot() } }
-    override suspend fun pauseRobot(sessionId: String, reason: String) { authorizedRuntime(sessionId)?.call { pauseRobot(reason, emergency = false) } }
-    override suspend fun resumeRobot(sessionId: String) { startRobot(sessionId) }
-    override suspend fun stopRobot(sessionId: String) { authorizedRuntime(sessionId)?.call { stopRobot() } }
-    override suspend fun takeOverManually(sessionId: String) { authorizedRuntime(sessionId)?.call { takeOver() } }
+    override suspend fun startDispute(sessionId: String) { authorizedRuntime(sessionId)?.call { startDispute() } }
 
-    override suspend fun submitManualBid(sessionId: String, value: Double): BidResult =
-        authorizedRuntime(sessionId)?.call { manualBid(value) } ?: BidResult.Rejected("Sessão não encontrada.")
+    override suspend fun recordOurBid(sessionId: String, value: Double): BidResult =
+        authorizedRuntime(sessionId)?.call { ourBid(value) } ?: BidResult.Rejected("Sessão não encontrada.")
+
+    override suspend fun recordCompetitorBid(sessionId: String, value: Double, alias: String): BidResult =
+        authorizedRuntime(sessionId)?.call { competitorBid(value, alias) } ?: BidResult.Rejected("Sessão não encontrada.")
+
+    override suspend fun setPosition(sessionId: String, position: Int) { authorizedRuntime(sessionId)?.call { setPosition(position) } }
+
+    override suspend fun startTimer(sessionId: String, seconds: Int) { authorizedRuntime(sessionId)?.call { startTimer(seconds) } }
+
+    override suspend fun stopTimer(sessionId: String) { authorizedRuntime(sessionId)?.call { stopTimer(byUser = true) } }
+
+    override suspend fun finishSession(sessionId: String, won: Boolean, finalValue: Double) {
+        val runtime = authorizedRuntime(sessionId) ?: return
+        runtime.call { finish(won, finalValue) }
+        runtime.teardown(keepState = true)
+        runtimes.remove(sessionId, runtime)
+        runCatching { notifier.cancelSessionAlerts(sessionId) }
+    }
 
     override suspend fun updateRule(sessionId: String, rule: BidRule) {
-        val runtime = authorizedRuntime(sessionId) ?: return
-        val role = auth.session.value?.user?.role ?: return
-        check(com.licitaia.domain.security.Rbac.can(role, com.licitaia.domain.security.Permission.ALTERAR_REGRAS)) { "Perfil sem permissão para alterar regras." }
-        if (runtime.state.rule.floorPrice != rule.floorPrice) check(com.licitaia.domain.security.Rbac.can(role, com.licitaia.domain.security.Permission.APROVAR_PISO)) { "Perfil sem permissão para alterar piso." }
-        runtime.call { updateRule(rule) }
+        val runtime = runtimes[sessionId] ?: error("Sessão não encontrada.")
+        val role = requireMember(runtime.state.companyId)
+        val current = runtime.state.rule
+        val normalized = rule.copy(mode = RobotMode.MANUAL, simulation = true)
+        val floorChanged = current.floorPrice != normalized.floorPrice
+        val othersChanged = current.copy(floorPrice = normalized.floorPrice) != normalized
+        // RBAC por tipo de mudança: piso → APROVAR_PISO (Diretoria/Financeiro/Admin); demais → ALTERAR_REGRAS (Diretoria/Admin).
+        if (floorChanged) check(Rbac.can(role, Permission.APROVAR_PISO)) { "Perfil sem permissão para alterar o piso (exige “${Permission.APROVAR_PISO.label}”)." }
+        if (othersChanged) check(Rbac.can(role, Permission.ALTERAR_REGRAS)) { "Perfil sem permissão para alterar regras (exige “${Permission.ALTERAR_REGRAS.label}”)." }
+        if (!floorChanged && !othersChanged) return
+        val outcome = runtime.call { updateRule(normalized) } ?: error("Sessão não encontrada.")
+        if (outcome.isNotEmpty()) error(outcome)
     }
-    override suspend fun confirmCaptchaResolved(sessionId: String) { authorizedRuntime(sessionId)?.call { captchaResolved() } }
 
-    override suspend fun triggerDemoCaptcha(sessionId: String) { /* No simulated challenges in personal mode. */ }
-
-    override suspend fun respondAuthorization(sessionId: String, authorizationId: String, approved: Boolean) {
-        authorizedRuntime(sessionId) // Ownership check; binding actions require the official portal.
-    }
-
-    override suspend fun pauseAllRobots(reason: String): Int {
-        var paused = 0
-        for (runtime in runtimes.values.filter { it.state.companyId == auth.session.value?.activeCompany?.id }) {
-            if (runtime.call { pauseRobot(reason, emergency = true) } == true) paused++
-        }
+    override suspend fun setAlertsMuted(muted: Boolean): Int {
+        val company = auth.session.value?.activeCompany?.id ?: return 0
+        val role = requireMember(company)
+        check(Rbac.can(role, Permission.OPERAR_SESSOES) || Rbac.can(role, Permission.ALTERAR_REGRAS)) { "Perfil sem permissão para silenciar alertas." }
+        this.muted.value = muted
+        val affected = runtimes.values.count { it.state.companyId == company && it.state.isOpen }
         safely {
             audit.record(
-                AuditAction.EMERGENCIA, AuditResult.SUCESSO, AuditOrigin.USUARIO,
-                reason = reason, newValue = "$paused robô(s) pausado(s)", details = "Sessões mantidas abertas.",
+                AuditAction.CONFIGURACAO, AuditResult.SUCESSO, AuditOrigin.USUARIO,
+                newValue = if (muted) "Alertas silenciados" else "Alertas reativados",
+                details = "Sala de Guerra: $affected sessão(ões) aberta(s) mantida(s).",
             )
         }
-        if (paused > 0) {
-            safely {
-                notifier.notify(
-                    NotificationCategory.CRITICA, "Parada de emergência",
-                    "$paused robô(s) pausado(s). As sessões continuam abertas para controle manual.",
-                    critical = false, route = Routes.WARROOM, companyId = activeCompany.value,
-                )
-            }
-        }
-        return paused
+        return affected
     }
 
     private suspend inline fun safely(block: () -> Unit) {
@@ -241,27 +291,19 @@ class LiveSessionManagerImpl @Inject constructor(
 
     // ================================================================== ator de UMA sessão
 
-    private inner class SessionRuntime(
-        initial: LiveSession,
-        private val restored: Boolean,
-        private val robotWasRunning: Boolean = false,
-    ) {
+    private inner class SessionRuntime(initial: LiveSession, private val restored: Boolean) {
         val id: String = initial.id
         @Volatile var state: LiveSession = initial
             private set
 
         private val mailbox = Channel<suspend () -> Unit>(Channel.UNLIMITED)
         private var actor: Job? = null
-        private var collector: Job? = null
-        private var captchaAlerts: Job? = null
-        private var handle: LiveSessionHandle? = null
-        private var lastBidAt: Long? = null
-        private var lastAuthNotifyAt = 0L
+        private var timer: Job? = null
         private var ticksSincePersist = 0
-        private var robotBeforeCaptcha: RobotStatus? = null
+        private var bidsCount = 0
+        private val alerted = mutableSetOf<AlertKind>()
 
-        private val connector get() = connectors.get(state.portal)
-        private val now get() = System.currentTimeMillis()
+        private val now get() = clock()
 
         fun start() {
             states.update { it + (id to state) }
@@ -271,7 +313,7 @@ class LiveSessionManagerImpl @Inject constructor(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    critical("Falha ao abrir a sessão no portal: ${e.message ?: e.javaClass.simpleName}")
+                    critical("Falha ao abrir a sessão: ${e.message ?: e.javaClass.simpleName}")
                 }
                 for (task in mailbox) {
                     try {
@@ -300,28 +342,23 @@ class LiveSessionManagerImpl @Inject constructor(
             return try { reply.await() } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
         }
 
-        fun teardown() {
-            captchaAlerts?.cancel()
-            collector?.cancel()
+        fun teardown(keepState: Boolean = false) {
+            timer?.cancel()
             mailbox.close()
-            val h = handle
-            handle = null
-            scope.launch { runCatching { h?.close() } }
+            if (!keepState) states.update { it - id }
         }
 
         private suspend fun open() {
-            if (state.status == LiveStatus.ERRO || state.status == LiveStatus.ENCERRADA) return
-            set { copy(robotStatus = RobotStatus.CONTROLE_MANUAL, remainingSeconds = null, pendingAuthorization = null) }
+            if (!state.isOpen) return
+            // A linha da sessão precisa existir antes do primeiro evento (o store valida sessão/empresa ao gravar o log).
             persist()
-            log(BidEventType.SESSION_OPENED, "Registro local assistido. Nenhuma conexão autenticada com o portal; acompanhe e opere no site oficial.")
-            persist()
+            if (restored) {
+                log(BidEventType.SESSION_OPENED, "Acompanhamento restaurado. Cronômetro parado; registre os lances atuais do portal para atualizar a telemetria.")
+            } else {
+                log(BidEventType.SESSION_OPENED, "Acompanhamento assistido iniciado por ${currentUserName()}. Nenhum lance é enviado pelo app: opere no portal e registre aqui.", actor = currentUserName())
+                auditRecord(AuditAction.CADASTRO, details = "Sessão assistida criada — piso ${Formatters.brl(state.rule.floorPrice)}, custo ${Formatters.brl(state.rule.costPrice)}")
+            }
         }
-
-        private fun spec() = LiveSessionSpec(
-            companyId = state.companyId, tenderId = state.tenderId, portal = state.portal,
-            tenderNumber = state.tenderNumber, agency = state.agency, itemLabel = state.itemLabel,
-            objectDescription = state.objectDescription, rule = state.rule, competitors = state.competitors,
-        )
 
         // ------------------------------------------------------------ utilitários de estado
 
@@ -335,7 +372,7 @@ class LiveSessionManagerImpl @Inject constructor(
             safely { store.saveSession(state) }
         }
 
-        suspend fun log(type: BidEventType, description: String, value: Double? = null, actor: String = "Sistema") {
+        private suspend fun log(type: BidEventType, description: String, value: Double? = null, actor: String = "Sistema") {
             safely { store.appendEvent(BidEvent(sessionId = id, timestamp = now, type = type, value = value, actor = actor, description = description)) }
         }
 
@@ -363,384 +400,230 @@ class LiveSessionManagerImpl @Inject constructor(
         private val sessionLabel get() = "${state.portal.shortName} · ${state.tenderNumber} · ${state.itemLabel}"
 
         private suspend fun critical(message: String) {
-            captchaAlerts?.cancel()
-            set { copy(status = LiveStatus.ERRO, robotStatus = RobotStatus.ERRO, lastError = message, pendingAuthorization = null) }
+            timer?.cancel()
+            set { copy(status = LiveStatus.ERRO, robotStatus = RobotStatus.ERRO, lastError = message, timerRunning = false) }
             log(BidEventType.ERROR, message)
             auditRecord(AuditAction.ERRO, AuditResult.FALHA, AuditOrigin.SISTEMA, details = message)
-            notify(NotificationCategory.CRITICA, "Erro crítico na sessão", "$sessionLabel: $message. O robô foi interrompido.", critical = true)
+            notify(NotificationCategory.CRITICA, "Erro na sessão assistida", "$sessionLabel: $message", critical = true)
             persist()
         }
 
-        private val sessionOpen get() = state.status != LiveStatus.ERRO && state.status != LiveStatus.ENCERRADA
+        // ------------------------------------------------------------ operação assistida
 
-        // ------------------------------------------------------------ eventos do portal
-
-        private suspend fun onPortalEvent(event: PortalLiveEvent) {
-            if (!sessionOpen) return
-            when (event) {
-                is PortalLiveEvent.CompetitorBid -> onCompetitorBid(event)
-                is PortalLiveEvent.TimerTick -> {
-                    set { copy(remainingSeconds = event.remainingSeconds) }
-                    if (++ticksSincePersist >= 20) persist()
-                    evaluateRobot()
-                }
-                is PortalLiveEvent.Message -> onMessage(event)
-                PortalLiveEvent.CaptchaRequired -> onCaptcha("CAPTCHA")
-                PortalLiveEvent.MfaRequired -> onCaptcha("MFA")
-                is PortalLiveEvent.Error -> {
-                    if (event.critical) {
-                        critical(event.message)
-                    } else {
-                        set { copy(lastError = event.message) }
-                        log(BidEventType.ERROR, event.message, actor = "Portal")
-                    }
-                }
-                is PortalLiveEvent.Closed -> onClosed(event)
-            }
+        suspend fun startDispute() {
+            if (!state.isOpen || state.status == LiveStatus.EM_DISPUTA) return
+            val user = currentUserName()
+            set { copy(status = LiveStatus.EM_DISPUTA) }
+            log(BidEventType.POSITION_CHANGED, "Disputa iniciada no portal (informado por $user).", actor = user)
+            persist()
         }
 
-        private suspend fun onCompetitorBid(event: PortalLiveEvent.CompetitorBid) {
+        suspend fun ourBid(value: Double): BidResult {
+            if (!state.isOpen) return BidResult.Rejected("A sessão já foi encerrada.")
+            val user = currentUserName()
+            val blocked = AssistedBidding.validateOurBid(state.rule, value, state.captchaPending)
+            if (blocked != null) {
+                log(BidEventType.BID_BLOCKED, "Registro de lance recusado (${Formatters.brl(value)}): $blocked", value, actor = user)
+                auditRecord(AuditAction.LANCE, AuditResult.BLOQUEADO, AuditOrigin.USUARIO, newValue = Formatters.brl(value), reason = blocked, details = "Registro assistido")
+                return BidResult.Rejected(blocked)
+            }
             val wasWinning = state.isWinning
-            val snapshot = runCatching { connector.readCurrentBidState(id) }.getOrNull()
-            val best = min(state.bestBid ?: event.value, event.value)
-            val position = snapshot?.ourPosition ?: when {
-                state.ourLastBid == null -> 0
-                else -> 2
-            }
-            set { copy(bestBid = snapshot?.bestBid ?: best, position = position, competitors = snapshot?.competitors ?: competitors) }
-            log(BidEventType.COMPETITOR_BID, "${event.alias} ofertou ${Formatters.brl(event.value)}.", event.value, actor = event.alias)
+            set { AssistedBidding.applyOurBid(this, value) }
+            bidsCount++
+            val margin = Formatters.percent(state.rule.marginPct(value))
+            val floorGap = Formatters.brl(AssistedBidding.distanceToFloor(state.rule, value))
+            log(BidEventType.OUR_BID, "Lance registrado por $user: ${Formatters.brl(value)} — ${state.position}º lugar, margem $margin, $floorGap acima do piso.", value, actor = user)
+            if (!wasWinning && state.isWinning) log(BidEventType.POSITION_CHANGED, "Assumimos a 1ª posição.", actor = user)
+            auditRecord(AuditAction.LANCE, AuditResult.SUCESSO, AuditOrigin.USUARIO, newValue = Formatters.brl(value), details = "Registro assistido (lance dado pelo usuário no portal); posição ${state.position}; margem $margin")
+            persist()
+            evaluateAlerts()
+            return BidResult.Accepted(value, state.position)
+        }
+
+        suspend fun competitorBid(value: Double, alias: String): BidResult {
+            if (!state.isOpen) return BidResult.Rejected("A sessão já foi encerrada.")
+            AssistedBidding.validateCompetitorBid(value)?.let { return BidResult.Rejected(it) }
+            val wasWinning = state.isWinning
+            val who = alias.ifBlank { "Concorrente" }
+            set { AssistedBidding.applyCompetitorBid(this, value) }
+            log(BidEventType.COMPETITOR_BID, "$who ofertou ${Formatters.brl(value)} (registrado por ${currentUserName()}).", value, actor = who)
             if (wasWinning && !state.isWinning) {
-                log(BidEventType.POSITION_CHANGED, "Perdemos a 1ª posição para ${event.alias}.", actor = "Portal")
-            }
-            val pending = state.pendingAuthorization
-            if (pending != null && event.value <= pending.proposedValue + 0.001) {
-                set { copy(pendingAuthorization = null, robotStatus = if (robotStatus == RobotStatus.AGUARDANDO_AUTORIZACAO) RobotStatus.ATIVO else robotStatus) }
-                log(BidEventType.AUTH_DENIED, "Autorização expirada: o melhor lance mudou antes da decisão.", pending.proposedValue, actor = "Robô")
+                log(BidEventType.POSITION_CHANGED, "Perdemos a 1ª posição para $who.", actor = "Portal")
             }
             persist()
-            evaluateRobot()
+            evaluateAlerts()
+            return BidResult.Accepted(value, state.position)
         }
 
-        private suspend fun onMessage(event: PortalLiveEvent.Message) {
-            val m = event.message
-            var messageId: Long? = null
-            safely {
-                messageId = messages.insert(
-                    AuctioneerMessage(
-                        companyId = state.companyId, sessionId = id, portal = state.portal, tenderNumber = state.tenderNumber,
-                        sender = m.sender, body = m.body, receivedAt = m.timestamp, urgent = m.urgent, responseDeadline = m.responseDeadline,
-                    ),
-                )
-            }
-            set { copy(unreadMessages = unreadMessages + 1) }
-            log(BidEventType.MESSAGE, m.body, actor = m.sender)
-            notify(
-                NotificationCategory.MENSAGENS,
-                if (m.urgent) "Mensagem urgente do pregoeiro" else "Mensagem do pregoeiro",
-                "${state.portal.shortName} · ${state.tenderNumber}: ${m.body}",
-                critical = m.urgent,
-                route = messageId?.let { Routes.message(it) } ?: Routes.MESSAGES,
-            )
+        suspend fun setPosition(position: Int) {
+            if (!state.isOpen) return
+            val p = position.coerceIn(0, 99)
+            if (p == state.position) return
+            val user = currentUserName()
+            val old = state.position
+            set { copy(position = p, status = if (status == LiveStatus.AGUARDANDO) LiveStatus.EM_DISPUTA else status) }
+            log(BidEventType.POSITION_CHANGED, "Posição informada por $user: ${if (old == 0) "—" else "${old}º"} → ${if (p == 0) "—" else "${p}º"}.", actor = user)
             persist()
+            evaluateAlerts()
         }
 
-        private suspend fun onClosed(event: PortalLiveEvent.Closed) {
-            captchaAlerts?.cancel()
-            val ours = state.ourLastBid
-            val finalValue = event.finalValue
-            val won = ours != null && finalValue != null && ours <= finalValue + 0.001
-            set {
-                copy(
-                    status = LiveStatus.ENCERRADA, robotStatus = RobotStatus.ENCERRADO, remainingSeconds = 0,
-                    pendingAuthorization = null, captchaPending = false, captchaSince = null,
-                    bestBid = event.finalValue ?: bestBid, position = if (won) 1 else position,
-                )
-            }
-            val result = if (won) "VENCEMOS com ${Formatters.brl(event.finalValue)}" else "melhor lance final ${Formatters.brl(event.finalValue)} (${event.winnerAlias ?: "sem vencedor"})"
-            log(BidEventType.SESSION_CLOSED, "Disputa encerrada pelo portal — $result.", event.finalValue, actor = "Portal")
-            auditRecord(AuditAction.ROBO_ENCERRADO, origin = AuditOrigin.SISTEMA, details = "Disputa encerrada pelo portal: $result")
-            notify(NotificationCategory.SESSOES, if (won) "Disputa encerrada — vencemos!" else "Disputa encerrada", "$sessionLabel: $result.")
-            runCatching { notifier.cancelSessionAlerts(id) }
+        suspend fun startTimer(seconds: Int) {
+            if (!state.isOpen) return
+            val total = seconds.coerceIn(1, 24 * 3600)
+            timer?.cancel()
+            alerted -= AlertKind.TEMPO_CRITICO
+            val user = currentUserName()
+            set { copy(remainingSeconds = total, timerRunning = true, status = if (status == LiveStatus.AGUARDANDO) LiveStatus.EM_DISPUTA else status) }
+            log(BidEventType.RULE_CHANGED, "Cronômetro iniciado por $user: ${Formatters.countdown(total)}.", actor = user)
             persist()
-        }
-
-        // ------------------------------------------------------------ CAPTCHA / MFA
-
-        private suspend fun onCaptcha(kind: String) {
-            if (state.captchaPending) return
-            robotBeforeCaptcha = state.robotStatus
-            set {
-                copy(
-                    captchaPending = true, captchaSince = now, status = LiveStatus.CAPTCHA_PENDENTE, pendingAuthorization = null,
-                    robotStatus = if (robotRunning) RobotStatus.BLOQUEADO_CAPTCHA else robotStatus,
-                )
-            }
-            runCatching { connector.pauseAutomation(id) }
-            log(BidEventType.CAPTCHA_DETECTED, "$kind detectado pelo portal. Automação desta sessão pausada até resolução manual.", actor = "Portal")
-            auditRecord(AuditAction.CAPTCHA, AuditResult.PENDENTE, AuditOrigin.SISTEMA, details = "$kind pendente; sessão pausada")
-            startCaptchaAlerts(notifyNow = true)
-            persist()
-        }
-
-        private fun startCaptchaAlerts(notifyNow: Boolean) {
-            captchaAlerts?.cancel()
-            captchaAlerts = scope.launch {
-                if (notifyNow) notifyCaptcha()
-                settings.settings.map { it.captchaRepeatMinutes }.distinctUntilChanged().collectLatest { minutes ->
-                    if (minutes <= 0) return@collectLatest
-                    while (true) {
-                        delay(minutes * 60_000L)
-                        if (!state.captchaPending) return@collectLatest
-                        notifyCaptcha()
-                    }
+            evaluateAlerts()
+            timer = scope.launch {
+                while (true) {
+                    delay(1_000)
+                    val done = call { tick() } ?: true
+                    if (done) break
                 }
             }
         }
 
-        private suspend fun notifyCaptcha() {
-            notify(
-                NotificationCategory.CAPTCHA, "CAPTCHA aguardando — sessão pausada.",
-                "$sessionLabel. Resolva manualmente no portal e confirme no app para retomar.", critical = true,
-            )
-        }
-
-        suspend fun captchaResolved() {
-            if (!state.captchaPending) return
-            captchaAlerts?.cancel()
-            captchaAlerts = null
-            (connector as? MockSessionControl)?.confirmCaptchaResolved(id)
-            val resume = state.robotStatus == RobotStatus.BLOQUEADO_CAPTCHA
-            set {
-                copy(
-                    captchaPending = false, captchaSince = null,
-                    status = if (status == LiveStatus.CAPTCHA_PENDENTE) LiveStatus.EM_DISPUTA else status,
-                    robotStatus = if (resume) RobotStatus.ATIVO else robotStatus,
-                )
+        /** @return true quando a contagem terminou. */
+        private suspend fun tick(): Boolean {
+            if (!state.timerRunning || !state.isOpen) return true
+            val next = (state.remainingSeconds ?: 0) - 1
+            if (next <= 0) {
+                set { copy(remainingSeconds = 0, timerRunning = false) }
+                log(BidEventType.FLOOR_REACHED, "Cronômetro zerado. Confira no portal se a disputa foi encerrada e registre o resultado.")
+                if (!muted.value) notify(NotificationCategory.LANCES, "Tempo esgotado", "$sessionLabel: cronômetro zerado. Confira o portal e registre o resultado.", critical = true)
+                persist()
+                return true
             }
-            robotBeforeCaptcha = null
-            runCatching { notifier.cancelSessionAlerts(id) }
-            val user = currentUserName()
-            log(BidEventType.CAPTCHA_RESOLVED, "CAPTCHA resolvido manualmente por $user." + if (resume) " Automação retomada." else "", actor = user)
-            auditRecord(AuditAction.CAPTCHA, AuditResult.SUCESSO, details = "Resolvido manualmente pelo usuário" + if (resume) "; robô retomado" else "")
-            persist()
-            if (resume) evaluateRobot()
+            set { copy(remainingSeconds = next) }
+            if (++ticksSincePersist >= 20) persist()
+            evaluateAlerts()
+            return false
         }
 
-        // ------------------------------------------------------------ controle do robô
-
-        suspend fun startRobot() {
-            log(BidEventType.ERROR, "Automação indisponível: opere manualmente no site oficial.")
-        }
-
-        /** @return true se havia automação a pausar. */
-        suspend fun pauseRobot(reason: String, emergency: Boolean): Boolean {
-            val pausable = state.robotRunning || state.robotStatus == RobotStatus.BLOQUEADO_CAPTCHA
-            if (!pausable) return false
-            // Pausa manual encerra a repetição do alerta de CAPTCHA (o CAPTCHA continua pendente).
-            captchaAlerts?.cancel()
-            captchaAlerts = null
-            set { copy(robotStatus = RobotStatus.PAUSADO, pendingAuthorization = null) }
-            val user = currentUserName()
-            log(BidEventType.ROBOT_PAUSED, (if (emergency) "PARADA DE EMERGÊNCIA — " else "") + "Robô pausado: $reason.", actor = user)
-            auditRecord(AuditAction.ROBO_PAUSADO, reason = reason, details = if (emergency) "Parada de emergência" else "")
-            persist()
-            return true
-        }
-
-        suspend fun resumeRobot() {
-            if (state.robotStatus != RobotStatus.PAUSADO || !sessionOpen) return
-            val user = currentUserName()
-            val blocked = state.captchaPending
-            set { copy(robotStatus = if (blocked) RobotStatus.BLOQUEADO_CAPTCHA else RobotStatus.ATIVO) }
-            log(BidEventType.ROBOT_RESUMED, "Robô retomado por $user." + if (blocked) " Aguardando resolução do CAPTCHA." else "", actor = user)
-            auditRecord(AuditAction.ROBO_ATIVADO, details = "Retomada")
-            if (blocked) startCaptchaAlerts(notifyNow = true)
-            persist()
-            evaluateRobot()
-        }
-
-        suspend fun stopRobot() {
-            if (state.robotStatus == RobotStatus.ENCERRADO || state.robotStatus == RobotStatus.INATIVO) return
-            captchaAlerts?.cancel()
-            captchaAlerts = null
-            val user = currentUserName()
-            set { copy(robotStatus = RobotStatus.ENCERRADO, pendingAuthorization = null) }
-            log(BidEventType.ROBOT_STOPPED, "Robô encerrado por $user. A sessão continua aberta.", actor = user)
-            auditRecord(AuditAction.ROBO_ENCERRADO)
+        suspend fun stopTimer(byUser: Boolean) {
+            timer?.cancel()
+            timer = null
+            if (!state.timerRunning) return
+            set { copy(timerRunning = false) }
+            if (byUser) log(BidEventType.RULE_CHANGED, "Cronômetro pausado por ${currentUserName()} em ${Formatters.countdown(state.remainingSeconds)}.", actor = currentUserName())
             persist()
         }
 
-        suspend fun takeOver() {
-            if (!sessionOpen) return
-            captchaAlerts?.cancel()
-            captchaAlerts = null
-            runCatching { connector.pauseAutomation(id) }
-            val user = currentUserName()
-            set { copy(robotStatus = RobotStatus.CONTROLE_MANUAL, pendingAuthorization = null) }
-            log(BidEventType.MANUAL_TAKEOVER, "PARAR E ASSUMIR: $user assumiu o controle manual. Nenhum lance automático será enviado.", actor = user)
-            auditRecord(AuditAction.CONTROLE_MANUAL, details = "Automação interrompida pelo operador")
-            persist()
-        }
-
-        suspend fun closeByUser() {
-            captchaAlerts?.cancel()
-            captchaAlerts = null
-            val user = currentUserName()
-            if (state.robotRunning || state.robotStatus == RobotStatus.BLOQUEADO_CAPTCHA) {
-                log(BidEventType.ROBOT_STOPPED, "Robô encerrado junto com a sessão.", actor = user)
-                auditRecord(AuditAction.ROBO_ENCERRADO, details = "Sessão encerrada pelo usuário")
-            }
-            set { copy(status = LiveStatus.ENCERRADA, robotStatus = RobotStatus.ENCERRADO, pendingAuthorization = null, captchaPending = false, captchaSince = null) }
-            log(BidEventType.SESSION_CLOSED, "Sessão encerrada por $user.", actor = user)
-            persist()
-        }
-
-        // ------------------------------------------------------------ regra / autorização
-
-        suspend fun updateRule(newRule: BidRule) {
-            if (!sessionOpen) return
-            val rule = newRule.copy(simulation = true)
+        /** @return "" quando aplicada; mensagem de erro quando rejeitada. */
+        suspend fun updateRule(newRule: BidRule): String {
+            if (!state.isOpen) return "A sessão já foi encerrada."
+            val rule = newRule.copy(mode = RobotMode.MANUAL, simulation = true)
             if (!BidRuleEngine.isOperable(rule)) {
-                log(BidEventType.ERROR, "Regra rejeitada: " + BidRuleEngine.validateRule(rule).joinToString(" "), actor = currentUserName())
-                return
+                val reason = BidRuleEngine.validateRule(rule).joinToString(" ").ifBlank { "Parâmetros inválidos." }
+                log(BidEventType.ERROR, "Regra rejeitada: $reason", actor = currentUserName())
+                return reason
             }
             val old = state.rule
-            if (old == rule) return
+            if (old == rule) return ""
             val user = currentUserName()
-            set { copy(rule = rule, pendingAuthorization = null, robotStatus = if (robotStatus == RobotStatus.AGUARDANDO_AUTORIZACAO) RobotStatus.ATIVO else robotStatus) }
+            set { copy(rule = rule) }
             if (old.floorPrice != rule.floorPrice) {
                 log(BidEventType.RULE_CHANGED, "Piso alterado por $user: ${Formatters.brl(old.floorPrice)} → ${Formatters.brl(rule.floorPrice)}.", rule.floorPrice, actor = user)
-                auditRecord(AuditAction.MUDANCA_PISO, previousValue = Formatters.brl(old.floorPrice), newValue = Formatters.brl(rule.floorPrice))
+                auditRecord(AuditAction.MUDANCA_PISO, previousValue = Formatters.brl(old.floorPrice), newValue = Formatters.brl(rule.floorPrice), details = "Confirmado pelo usuário na tela de parâmetros")
             }
             val changes = buildList {
-                if (old.mode != rule.mode) add("modo ${old.mode.label} → ${rule.mode.label}")
                 if (old.strategy != rule.strategy) add("estratégia ${old.strategy.label} → ${rule.strategy.label}")
                 if (old.initialPrice != rule.initialPrice) add("preço inicial ${Formatters.brl(old.initialPrice)} → ${Formatters.brl(rule.initialPrice)}")
                 if (old.costPrice != rule.costPrice) add("custo ${Formatters.brl(old.costPrice)} → ${Formatters.brl(rule.costPrice)}")
                 if (old.reductionValue != rule.reductionValue) add("redução ${Formatters.brl(old.reductionValue)} → ${Formatters.brl(rule.reductionValue)}")
                 if (old.minMarginPct != rule.minMarginPct) add("margem mínima ${Formatters.percent(old.minMarginPct)} → ${Formatters.percent(rule.minMarginPct)}")
                 if (old.lossLimit != rule.lossLimit) add("limite de perda ${Formatters.brl(old.lossLimit)} → ${Formatters.brl(rule.lossLimit)}")
-                if (old.minIntervalSeconds != rule.minIntervalSeconds) add("intervalo ${old.minIntervalSeconds}s → ${rule.minIntervalSeconds}s")
-                if (old.authorizationThresholdPct != rule.authorizationThresholdPct) add("limiar de autorização ${Formatters.percent(old.authorizationThresholdPct)} → ${Formatters.percent(rule.authorizationThresholdPct)}")
+                if (old.authorizationThresholdPct != rule.authorizationThresholdPct) add("alerta de piso ${Formatters.percent(old.authorizationThresholdPct)} → ${Formatters.percent(rule.authorizationThresholdPct)}")
             }
             if (changes.isNotEmpty()) {
-                log(BidEventType.RULE_CHANGED, "Regra alterada por $user: ${changes.joinToString("; ")}.", actor = user)
+                log(BidEventType.RULE_CHANGED, "Parâmetros alterados por $user: ${changes.joinToString("; ")}.", actor = user)
                 auditRecord(AuditAction.MUDANCA_REGRA, newValue = changes.joinToString("; "))
             }
+            alerted.clear()
             persist()
-            evaluateRobot()
+            evaluateAlerts()
+            return ""
         }
 
-        suspend fun respondAuthorization(authorizationId: String, approved: Boolean) {
-            val pending = state.pendingAuthorization ?: return
-            if (pending.id != authorizationId) return
+        suspend fun closeByUser() {
+            timer?.cancel()
             val user = currentUserName()
-            if (!approved) {
-                set { copy(pendingAuthorization = null, robotStatus = RobotStatus.PAUSADO) }
-                log(BidEventType.AUTH_DENIED, "Autorização negada por $user para ${Formatters.brl(pending.proposedValue)}. Robô pausado.", pending.proposedValue, actor = user)
-                auditRecord(AuditAction.REJEICAO, newValue = Formatters.brl(pending.proposedValue), reason = pending.reason)
-                runCatching { notifier.cancelSessionAlerts(id) }
-                persist()
-                return
+            if (state.isOpen) {
+                set { copy(status = LiveStatus.ENCERRADA, robotStatus = RobotStatus.ENCERRADO, timerRunning = false) }
+                log(BidEventType.SESSION_CLOSED, "Acompanhamento encerrado por $user sem resultado informado.", actor = user)
+                auditRecord(AuditAction.CONTROLE_MANUAL, details = "Acompanhamento encerrado sem resultado")
             }
-            set { copy(pendingAuthorization = null, robotStatus = if (robotStatus == RobotStatus.AGUARDANDO_AUTORIZACAO) RobotStatus.ATIVO else robotStatus) }
-            log(BidEventType.AUTH_GRANTED, "Autorização concedida por $user para ${Formatters.brl(pending.proposedValue)}.", pending.proposedValue, actor = user)
-            auditRecord(AuditAction.APROVACAO, newValue = Formatters.brl(pending.proposedValue), reason = pending.reason)
-            runCatching { notifier.cancelSessionAlerts(id) }
-            submit(pending.proposedValue, actor = "Robô", origin = AuditOrigin.ROBO, confirmation = HumanConfirmation(user, now), note = "Lance autorizado por $user")
             persist()
-            evaluateRobot()
         }
 
-        // ------------------------------------------------------------ lances
-
-        suspend fun manualBid(value: Double): BidResult {
-            return BidResult.Rejected("Envio indisponível. Confira o valor e confirme o lance no site oficial.")
-        }
-
-        /** Caminho único de envio (robô, autorizado ou manual): valida piso/CAPTCHA/melhor lance e registra tudo. */
-        private suspend fun submit(value: Double, actor: String, origin: AuditOrigin, confirmation: HumanConfirmation?, note: String): BidResult {
-            val blocked = BidRuleEngine.validateBid(state.rule, value, state.bestBid, state.captchaPending)
-            if (blocked != null) {
-                lastBidAt = now
-                log(BidEventType.BID_BLOCKED, "$note bloqueado (${Formatters.brl(value)}): $blocked", value, actor = actor)
-                auditRecord(AuditAction.LANCE, AuditResult.BLOQUEADO, origin, newValue = Formatters.brl(value), reason = blocked)
-                return BidResult.Rejected(blocked)
-            }
-            val result = try {
-                connector.submitBid(id, state.itemLabel, value, confirmation)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                BidSubmission.Rejected("Falha de comunicação com o portal: ${e.message ?: "erro desconhecido"}")
-            }
-            return when (result) {
-                is BidSubmission.Accepted -> {
-                    lastBidAt = now
-                    val wasWinning = state.isWinning
-                    set { copy(ourLastBid = result.value, bestBid = min(bestBid ?: result.value, result.value), position = result.position) }
-                    val margin = Formatters.percent(state.rule.marginPct(result.value))
-                    log(BidEventType.OUR_BID, "$note (SIMULAÇÃO): ${Formatters.brl(result.value)} — ${result.position}º lugar, margem $margin.", result.value, actor = actor)
-                    if (!wasWinning && state.isWinning) log(BidEventType.POSITION_CHANGED, "Assumimos a 1ª posição.", actor = actor)
-                    auditRecord(AuditAction.LANCE, AuditResult.SUCESSO, origin, newValue = Formatters.brl(result.value), details = "$note; simulação; posição ${result.position}")
-                    persist()
-                    BidResult.Accepted(result.value, result.position)
-                }
-                is BidSubmission.Rejected -> {
-                    lastBidAt = now
-                    log(BidEventType.BID_BLOCKED, "$note recusado pelo portal (${Formatters.brl(value)}): ${result.reason}", value, actor = "Portal")
-                    auditRecord(AuditAction.LANCE, AuditResult.FALHA, origin, newValue = Formatters.brl(value), reason = result.reason)
-                    BidResult.Rejected(result.reason)
-                }
-                BidSubmission.CaptchaRequired -> {
-                    onCaptcha("CAPTCHA")
-                    BidResult.Rejected("O portal exige CAPTCHA antes de aceitar lances. Sessão pausada.")
-                }
-            }
-        }
-
-        private suspend fun evaluateRobot() {
-            if (state.robotStatus != RobotStatus.ATIVO || state.status != LiveStatus.EM_DISPUTA) return
-            val decision = BidRuleEngine.decide(
-                BidContext(
-                    rule = state.rule, ourLastBid = state.ourLastBid, bestBid = state.bestBid, position = state.position,
-                    captchaPending = state.captchaPending, nowMillis = now, lastBidAtMillis = lastBidAt,
-                    minDecrement = 0.01,
-                ),
-            )
-            when (decision) {
-                is BidDecision.Place -> submit(decision.value, actor = "Robô", origin = AuditOrigin.ROBO, confirmation = null, note = "Lance automático — ${decision.reason}")
-                is BidDecision.RequestAuthorization -> requestAuthorization(decision.value, decision.reason)
-                is BidDecision.StopAtFloor -> {
-                    set { copy(robotStatus = RobotStatus.PARADO_NO_PISO) }
-                    log(BidEventType.FLOOR_REACHED, "${decision.reason} Piso: ${Formatters.brl(BidRuleEngine.effectiveFloor(state.rule))}.", BidRuleEngine.effectiveFloor(state.rule), actor = "Robô")
-                    auditRecord(AuditAction.ROBO_PAUSADO, AuditResult.BLOQUEADO, AuditOrigin.ROBO, reason = "Piso atingido")
-                    notify(NotificationCategory.LANCES, "Robô parado no piso", "$sessionLabel: cobrir o concorrente exigiria vender abaixo do piso.", critical = false)
-                    persist()
-                }
-                is BidDecision.Blocked -> if (state.captchaPending) onCaptcha("CAPTCHA")
-                is BidDecision.Suggest, is BidDecision.Wait -> Unit
-            }
-        }
-
-        private suspend fun requestAuthorization(value: Double, reason: String) {
-            val authorization = BidAuthorization(
-                id = UUID.randomUUID().toString(), sessionId = id, proposedValue = value, reason = reason, requestedAt = now,
-            )
-            set { copy(pendingAuthorization = authorization, robotStatus = RobotStatus.AGUARDANDO_AUTORIZACAO) }
-            log(BidEventType.AUTH_REQUESTED, "Robô solicita autorização para ${Formatters.brl(value)}: $reason", value, actor = "Robô")
-            if (now - lastAuthNotifyAt > AUTH_NOTIFY_THROTTLE_MS) {
-                lastAuthNotifyAt = now
-                notify(
-                    NotificationCategory.LANCES, "Autorização de lance pendente",
-                    "$sessionLabel: ${Formatters.brl(value)} aguardando sua decisão. $reason",
+        suspend fun finish(won: Boolean, finalValue: Double) {
+            if (!state.isOpen) return
+            timer?.cancel()
+            val user = currentUserName()
+            val value = finalValue.takeIf { !it.isNaN() && !it.isInfinite() && it > 0.0 } ?: (state.ourLastBid ?: state.rule.initialPrice)
+            set {
+                copy(
+                    status = LiveStatus.ENCERRADA, robotStatus = RobotStatus.ENCERRADO, timerRunning = false,
+                    bestBid = value, position = if (won) 1 else maxOf(position, 2), ourLastBid = if (won) value else ourLastBid,
                 )
             }
+            val segment = auth.session.value?.activeCompany?.segment ?: Segment.PERSONALIZADO
+            val record = AssistedBidding.closingRecord(state, won, value, bidsCount, segment, now)
+            var recorded = false
+            safely { competition.insert(record); recorded = true }
+            var tenderUpdated = false
+            state.tenderId?.let { tenderId ->
+                safely { tenders.updateStatus(tenderId, if (won) TenderStatus.VENCIDA else TenderStatus.PERDIDA); tenderUpdated = true }
+            }
+            val result = if (won) "VENCEMOS com ${Formatters.brl(value)}" else "PERDEMOS — lance vencedor ${Formatters.brl(value)}"
+            log(
+                BidEventType.SESSION_CLOSED,
+                "Disputa encerrada ($result), informado por $user. Margem final ${Formatters.percent(record.ourMarginPct)}." +
+                    (if (recorded) " Registro de concorrência criado." else " Falha ao gravar concorrência.") +
+                    (if (state.tenderId != null) if (tenderUpdated) " Licitação marcada como ${if (won) "VENCIDA" else "PERDIDA"}." else " Falha ao atualizar a licitação." else ""),
+                value, actor = user,
+            )
+            auditRecord(
+                AuditAction.CONTROLE_MANUAL, newValue = result,
+                details = "Encerramento assistido; ${bidsCount} lance(s) nosso(s) registrado(s); concorrência ${if (recorded) "gravada" else "não gravada"}",
+            )
+            notify(NotificationCategory.SESSOES, if (won) "Disputa encerrada — vencemos!" else "Disputa encerrada", "$sessionLabel: $result.", route = Routes.COMPETITION)
             persist()
         }
-    }
 
-    private companion object {
-        const val AUTH_NOTIFY_THROTTLE_MS = 45_000L
+        // ------------------------------------------------------------ alertas
+
+        private suspend fun evaluateAlerts() {
+            val active = AssistedBidding.activeAlerts(state)
+            alerted.retainAll(active)
+            if (muted.value) return
+            val fresh = active - alerted
+            for (kind in fresh) {
+                alerted += kind
+                val ours = state.ourLastBid
+                when (kind) {
+                    AlertKind.MARGEM_ABAIXO_MINIMA -> notify(
+                        NotificationCategory.LANCES, "Margem abaixo da mínima",
+                        "$sessionLabel: margem ${Formatters.percent(state.currentMarginPct)} (mínima ${Formatters.percent(state.rule.minMarginPct)}).",
+                    )
+                    AlertKind.PROXIMO_DO_PISO -> notify(
+                        NotificationCategory.LANCES, "Lance a ${Formatters.percent(state.rule.authorizationThresholdPct, 0)} do piso",
+                        "$sessionLabel: ${Formatters.brl(ours)} está a ${Formatters.brl(ours?.let { AssistedBidding.distanceToFloor(state.rule, it) })} do piso ${Formatters.brl(BidRuleEngine.effectiveFloor(state.rule))}.",
+                        critical = true,
+                    )
+                    AlertKind.TEMPO_CRITICO -> notify(
+                        NotificationCategory.LANCES, "Fechamento iminente",
+                        "$sessionLabel: menos de ${AssistedBidding.TIMER_ALERT_SECONDS} s no cronômetro.", critical = true,
+                    )
+                    AlertKind.PERDEMOS_POSICAO -> notify(
+                        NotificationCategory.LANCES, "Não estamos em 1º",
+                        "$sessionLabel: posição ${state.position}º. Melhor lance ${Formatters.brl(state.bestBid)}.",
+                    )
+                }
+            }
+        }
     }
 }

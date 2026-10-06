@@ -17,7 +17,7 @@ rootProject.name = "LicitaIA"
 
 include(":app")
 include(":core-domain", ":core-ui", ":core-data", ":core-network", ":core-security", ":core-ai")
-include(":connector-api", ":connector-mock", ":connector-pncp", ":ai-provider-api", ":ai-provider-mock")
+include(":connector-api", ":connector-mock", ":connector-pncp", ":connector-comprasgov", ":ai-provider-api", ":ai-provider-mock")
 include(
     ":feature-auth", ":feature-dashboard", ":feature-radar", ":feature-tender",
     ":feature-documents", ":feature-live", ":feature-bidding", ":feature-warroom",
