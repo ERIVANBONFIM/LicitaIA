@@ -116,7 +116,11 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     val context = LocalContext.current
     val navigator = LocalAppNavigator.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val startUrl = remember(portal) { PortalWebPolicy.startUrl(portal) }
+    // Com sessão já aberta, vai direto à área de trabalho (se o portal tiver uma); senão, à página de login.
+    val startUrl = remember(portal) {
+        if (state.status == PortalConnectionStatus.CONECTADO) PortalWebPolicy.rules(portal).homeUrl ?: PortalWebPolicy.startUrl(portal)
+        else PortalWebPolicy.startUrl(portal)
+    }
 
     var webView by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember { mutableStateOf(startUrl) }
@@ -300,8 +304,12 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 override fun onPageFinished(view: WebView, url: String) {
                                     loading = false; progress = 100
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
-                                    latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url))
+                                    val signal = latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url))
                                     PortalWebSessions.flush(companyId)
+                                    // Login recém-detectado: leva uma única vez à área de trabalho do fornecedor.
+                                    if (signal == PortalWebPolicy.Signal.CONNECTED) {
+                                        PortalWebPolicy.postLoginRedirect(portal, url)?.let { view.loadUrl(it) }
+                                    }
                                 }
 
                                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {

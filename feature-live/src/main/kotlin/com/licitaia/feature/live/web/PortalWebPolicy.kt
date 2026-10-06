@@ -27,6 +27,11 @@ object PortalWebPolicy {
         val loginPathMarkers: List<String> = emptyList(),
         /** false = portal público (PNCP): nunca marca sessão. */
         val requiresLogin: Boolean = true,
+        /**
+         * Área de trabalho para onde o app leva o usuário UMA vez, logo após detectar o login
+         * (ex.: Compras.gov.br → "Compras eletrônicas" do fornecedor). null = fica onde o portal deixar.
+         */
+        val homeUrl: String? = null,
     )
 
     private val commonMarkers = listOf("login", "signin", "sign-in", "logon", "/sso", "/auth", "autenticacao", "autenticação")
@@ -40,12 +45,15 @@ object PortalWebPolicy {
         ),
         Rules(
             portal = Portal.COMPRAS_GOV,
-            // URL oficial de login já usada pela tela de portais. A área do fornecedor é alcançada após o login gov.br.
-            startUrl = "https://www.gov.br/compras/pt-br/login",
+            // Entrada oficial do fornecedor no Comprasnet: redireciona ao SSO gov.br (sso.acesso.gov.br, client_id=comprasnet.gov.br),
+            // volta em /seguro/landing_sso.asp → seleção de empresa (/seguro/loginFornecedorSelecEmpresa.asp) → área logada.
+            startUrl = "https://www.comprasnet.gov.br/seguro/loginPortal.asp?perfil=1",
+            homeUrl = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=",
             allowedDomains = listOf("gov.br"), // cobre www.gov.br, acesso.gov.br, sso.acesso.gov.br, comprasnet.gov.br, cnetmobile.estaleiro.serpro.gov.br
             loginHosts = listOf("acesso.gov.br", "sso.acesso.gov.br"),
             // "acesso" só como marcador de host (acesso.gov.br): no gov.br o caminho "acesso-a-informacao" é página pública.
-            loginPathMarkers = commonMarkers + listOf("loginportal", "/seguro/login"),
+            // landing_sso e a seleção de empresa fazem parte do fluxo de login (não são a área logada).
+            loginPathMarkers = commonMarkers + listOf("loginportal", "/seguro/login", "landing_sso", "selecempresa"),
         ),
         Rules(
             portal = Portal.BLL,
@@ -72,6 +80,16 @@ object PortalWebPolicy {
     fun rules(portal: Portal): Rules = rules.getValue(portal)
 
     fun startUrl(portal: Portal): String = rules(portal).startUrl
+
+    /**
+     * URL para onde levar o usuário logo após o login ser detectado em [url], ou null se não há
+     * destino configurado ou se já está no host de destino.
+     */
+    fun postLoginRedirect(portal: Portal, url: String): String? {
+        val home = rules(portal).homeUrl ?: return null
+        val homeHost = host(home) ?: return null
+        return if (host(url) == homeHost) null else home
+    }
 
     /** Host (minúsculo) da URL ou null se inválida. */
     fun host(url: String): String? = runCatching { URI(url).host?.lowercase()?.trimEnd('.') }.getOrNull()?.takeIf { it.isNotBlank() }

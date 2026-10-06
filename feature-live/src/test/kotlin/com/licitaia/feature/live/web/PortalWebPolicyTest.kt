@@ -138,3 +138,42 @@ class PortalWebPolicyTest {
         assertEquals(listOf("bllcompras.com"), PortalWebSessions.parentDomains("bllcompras.com"))
     }
 }
+
+class ComprasGovFlowTest {
+    private val conn = com.licitaia.domain.model.PortalConnectionStatus.CONECTADO
+    private val none = com.licitaia.domain.model.PortalConnectionStatus.DESCONECTADO
+
+    @org.junit.Test
+    fun `fluxo real do comprasnet - landing e selecao de empresa sao etapas de login`() {
+        val p = Portal.COMPRAS_GOV
+        org.junit.Assert.assertTrue(PortalWebPolicy.isLoginPage(p, "https://www.comprasnet.gov.br/seguro/loginPortal.asp?perfil=1"))
+        org.junit.Assert.assertTrue(PortalWebPolicy.isLoginPage(p, "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br&authorization_id=abc"))
+        org.junit.Assert.assertTrue(PortalWebPolicy.isLoginPage(p, "https://www.comprasnet.gov.br/seguro/landing_sso.asp?code=x"))
+        org.junit.Assert.assertTrue(PortalWebPolicy.isLoginPage(p, "https://www.comprasnet.gov.br/seguro/loginFornecedorSelecEmpresa.asp"))
+        org.junit.Assert.assertFalse(PortalWebPolicy.isLoginPage(p, "https://www.comprasnet.gov.br/intro.htm"))
+        org.junit.Assert.assertFalse(PortalWebPolicy.isLoginPage(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra="))
+    }
+
+    @org.junit.Test
+    fun `apos selecionar empresa a primeira pagina normal conecta e redireciona ao workspace`() {
+        val p = Portal.COMPRAS_GOV
+        // landing_sso (com cookies) ainda é login: não conecta nem expira
+        org.junit.Assert.assertEquals(PortalWebPolicy.Signal.NONE, PortalWebPolicy.evaluate(p, "https://www.comprasnet.gov.br/seguro/landing_sso.asp", true, true, none))
+        val signal = PortalWebPolicy.evaluate(p, "https://www.comprasnet.gov.br/intro.htm", true, previousWasLoginPage = true, currentStatus = none)
+        org.junit.Assert.assertEquals(PortalWebPolicy.Signal.CONNECTED, signal)
+        org.junit.Assert.assertEquals(
+            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=",
+            PortalWebPolicy.postLoginRedirect(p, "https://www.comprasnet.gov.br/intro.htm"),
+        )
+        org.junit.Assert.assertNull(PortalWebPolicy.postLoginRedirect(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=123"))
+        org.junit.Assert.assertNull(PortalWebPolicy.postLoginRedirect(Portal.BLL, "https://bllcompras.com/home"))
+    }
+
+    @org.junit.Test
+    fun `selecao de empresa enquanto conectado nao expira a sessao`() {
+        org.junit.Assert.assertEquals(
+            PortalWebPolicy.Signal.NONE,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, "https://www.comprasnet.gov.br/seguro/loginFornecedorSelecEmpresa.asp", true, previousWasLoginPage = true, currentStatus = conn),
+        )
+    }
+}
