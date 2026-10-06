@@ -82,9 +82,9 @@ class SearchViewModel @Inject constructor(
         start()
     }
 
-    override suspend fun fetch(companyId: Long): Result<List<ScoredOpportunity>> {
+    override suspend fun fetch(companyId: Long): Result<com.licitaia.domain.model.SearchOutcome> {
         val f = _filters.value
-        return opportunities.search(
+        return opportunities.searchWithSources(
             companyId,
             OpportunityFilter(
                 query = f.query.trim(),

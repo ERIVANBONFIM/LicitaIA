@@ -20,6 +20,7 @@ import com.licitaia.domain.model.Proposal
 import com.licitaia.domain.model.Tender
 import com.licitaia.domain.scoring.OpportunityFilterMatcher
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -36,6 +37,8 @@ import okhttp3.OkHttpClient
 class PncpConnector internal constructor(
     private val api: PncpApi,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Pausa entre páginas (o PNCP devolve 429 com rajadas de ~20 requisições em poucos segundos). */
+    private val pageDelayMs: Long = DEFAULT_PAGE_DELAY_MS,
 ) : PortalConnector {
 
     constructor(
@@ -43,7 +46,8 @@ class PncpConnector internal constructor(
         json: Json = defaultJson(),
         baseUrl: HttpUrl = PncpApi.DEFAULT_BASE_URL.toHttpUrl(),
         clock: () -> Long = System::currentTimeMillis,
-    ) : this(PncpApi(client, json, baseUrl), clock)
+        pageDelayMs: Long = DEFAULT_PAGE_DELAY_MS,
+    ) : this(PncpApi(client, json, baseUrl), clock, pageDelayMs)
 
     override val portal: Portal = Portal.PNCP
 
@@ -60,7 +64,8 @@ class PncpConnector internal constructor(
         isMock = false,
         limitations = listOf(
             "Somente consulta pública (API de consulta do PNCP, sem chave ou login); sem lances, propostas ou mensagens.",
-            "A busca lista contratações com recebimento de propostas ABERTO na data da consulta, limitada a $MAX_ITEMS_PER_SEARCH resultados por busca.",
+            "A busca lista contratações com recebimento de propostas ABERTO e encerramento nos próximos $PROPOSAL_HORIZON_DAYS dias, " +
+                "limitada a $MAX_ITEMS_PER_SEARCH resultados por busca ($MAX_ITEMS_PLATFORM_SEARCH quando o filtro é por plataforma).",
             "Modalidades representadas: Pregão Eletrônico, Dispensa, Concorrência (eletrônica/presencial) e Credenciamento. " +
                 "Pregão presencial, inexigibilidade, leilão e outras não são listadas.",
             "A API não oferece busca por texto: palavras-chave e valores são filtrados no aparelho sobre os resultados obtidos.",
@@ -78,22 +83,35 @@ class PncpConnector internal constructor(
         // O filtro de portal é aplicado localmente sobre a plataforma classificada (usuarioNome).
         if (filter.portals.isNotEmpty() && filter.portals.none { it in searchablePortals }) return emptyList()
 
-        val today = PncpMapper.queryDate(clock())
+        // `dataFinal` do endpoint /contratacoes/proposta é o LIMITE do encerramento das propostas: com "hoje" a API só
+        // devolve o que encerra hoje (06/10/2026: 21 pregões no país inteiro). Usa-se um horizonte de N dias.
+        val dataFinal = PncpMapper.queryDate(clock() + PROPOSAL_HORIZON_DAYS * DAY_MS)
         val codes = filter.modality?.let { listOf(PncpModalities.codeOf(it)) } ?: PncpModalities.SEARCHED_CODES
         val ufs: List<String?> = filter.ufs.map { it.trim().uppercase() }.filter { it.length == 2 }.distinct()
             .takeIf { it.isNotEmpty() && it.size <= MAX_UF_QUERIES } ?: listOf(null)
 
+        // Filtro por plataforma (ex.: só Compras.gov.br): o portal é classificado localmente, então lê mais páginas.
+        val maxItems = maxItemsFor(filter)
         val combos = codes.size * ufs.size
-        val pagesPerCombo = (MAX_ITEMS_PER_SEARCH / (PncpApi.MAX_PAGE_SIZE * combos)).coerceAtLeast(1)
+        val pagesPerCombo = (maxItems / (PncpApi.MAX_PAGE_SIZE * combos)).coerceAtLeast(1)
 
         val collected = LinkedHashMap<String, Opportunity>()
-        for (uf in ufs) {
+        var requests = 0
+        outer@ for (uf in ufs) {
             for (code in codes) {
                 var page = 1
-                while (page <= pagesPerCombo && collected.size < MAX_ITEMS_PER_SEARCH) {
-                    val result = api.contratacoesComPropostaAberta(
-                        dataFinal = today, codigoModalidade = code, uf = uf, pagina = page, tamanhoPagina = PncpApi.MAX_PAGE_SIZE,
-                    )
+                while (page <= pagesPerCombo && collected.size < maxItems) {
+                    if (requests > 0 && pageDelayMs > 0) delay(pageDelayMs) // respeita o limite de requisições do PNCP
+                    val result = try {
+                        api.contratacoesComPropostaAberta(
+                            dataFinal = dataFinal, codigoModalidade = code, uf = uf, pagina = page, tamanhoPagina = PncpApi.MAX_PAGE_SIZE,
+                        )
+                    } catch (e: PncpException) {
+                        // 429 depois de já ter resultados: devolve o parcial (o backoff do app cuida das próximas buscas).
+                        if (e.httpStatus == 429 && collected.isNotEmpty()) break@outer
+                        throw e
+                    }
+                    requests++
                     result.data.mapNotNull(PncpMapper::toOpportunity).forEach { collected.putIfAbsent(it.id, it) }
                     if (result.data.isEmpty() || result.paginasRestantes <= 0) break
                     page++
@@ -173,10 +191,30 @@ class PncpConnector internal constructor(
     override suspend fun pauseAutomation(sessionId: String) { /* não há automação */ }
 
     companion object {
+        const val DEFAULT_PAGE_DELAY_MS = 350L
+
         const val NOT_SUPPORTED = "Não suportado pelo PNCP (consulta pública): login, propostas, lances e mensagens não existem nesta API."
 
         /** Teto de itens por busca (≈ 4 páginas de 50). */
         const val MAX_ITEMS_PER_SEARCH = 200
+
+        /**
+         * Teto quando o filtro pede só plataformas específicas (Compras.gov.br, Licitanet, BLL, PCP): 2 páginas por
+         * modalidade (8 requisições). Medido em 06/10/2026: o PNCP devolve 429 a partir de ~11 requisições seguidas.
+         */
+        const val MAX_ITEMS_PLATFORM_SEARCH = 400
+
+        /** Horizonte do encerramento das propostas consultado (`dataFinal` = hoje + N dias). */
+        const val PROPOSAL_HORIZON_DAYS = 60L
+
+        private const val DAY_MS = 24L * 60 * 60 * 1000
+
+        /** true quando o filtro pede só plataformas classificadas (sem o "PNCP/outras"). */
+        fun isPlatformFocused(filter: OpportunityFilter): Boolean =
+            filter.portals.isNotEmpty() && Portal.PNCP !in filter.portals
+
+        fun maxItemsFor(filter: OpportunityFilter): Int =
+            if (isPlatformFocused(filter)) MAX_ITEMS_PLATFORM_SEARCH else MAX_ITEMS_PER_SEARCH
 
         /** Acima disso, a UF não é enviada à API e o filtro é aplicado localmente. */
         const val MAX_UF_QUERIES = 3

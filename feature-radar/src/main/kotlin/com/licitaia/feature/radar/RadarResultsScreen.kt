@@ -55,11 +55,11 @@ class RadarResultsViewModel @Inject constructor(
         start()
     }
 
-    override suspend fun fetch(companyId: Long): Result<List<ScoredOpportunity>> {
+    override suspend fun fetch(companyId: Long): Result<com.licitaia.domain.model.SearchOutcome> {
         val radar = radars.getRadar(radarId)?.takeIf { it.companyId == companyId }
             ?: return Result.failure(IllegalStateException("Radar não encontrado para a empresa ativa."))
         _radar.value = radar
-        return opportunities.runRadar(radarId)
+        return opportunities.runRadarWithSources(radarId)
     }
 }
 

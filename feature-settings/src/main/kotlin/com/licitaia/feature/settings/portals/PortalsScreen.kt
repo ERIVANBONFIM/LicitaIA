@@ -1,5 +1,10 @@
 package com.licitaia.feature.settings.portals
 
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material3.Icon
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -97,6 +102,7 @@ fun PortalsScreen(vm: PortalsViewModel = hiltViewModel()) {
                     )
                 }
                 if (state.rows.any { it.requiresLogin }) {
+                    CertificateHelpCard()
                     LicitaCard(Modifier.fillMaxWidth()) {
                         OptionChips(
                             title = "Intervalo do \"Manter sessão ativa\"",
@@ -117,6 +123,45 @@ fun PortalsScreen(vm: PortalsViewModel = hiltViewModel()) {
                 )
             }
         }
+    }
+}
+
+/**
+ * Ajuda "Entrar com certificado digital (A1)": o .pfx é instalado no armazenamento de credenciais do Android e o
+ * navegador interno pede ao sistema (KeyChain) para usá-lo quando o gov.br solicitar. O app não lê, exporta nem copia
+ * a chave; guarda só qual certificado (alias) você escolheu para cada site.
+ */
+@Composable
+private fun CertificateHelpCard() {
+    val context = LocalContext.current
+    LicitaCard(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.VerifiedUser, contentDescription = null, tint = LicitaColors.GreenBright)
+            Spacer(Modifier.width(8.dp))
+            Text("Entrar com certificado digital (A1)", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Com o certificado A1 instalado no Android, o gov.br não pede CAPTCHA nem senha no login:\n" +
+                "1. Copie o arquivo .pfx (ou .p12) do certificado para o celular.\n" +
+                "2. Em Configurações do Android › Segurança › Criptografia e credenciais › Instalar um certificado › " +
+                "\"Certificado de usuário de app e VPN\", escolha o arquivo e digite a senha do certificado " +
+                "(o caminho muda um pouco conforme o fabricante; procure \"Instalar certificado\").\n" +
+                "3. No portal, toque em Entrar com gov.br e escolha \"Seu certificado digital\". O Android pergunta qual " +
+                "certificado usar — escolha o da empresa.\n" +
+                "O app lembra a escolha por empresa e site (só o nome do certificado; a chave fica no Android e nunca é " +
+                "copiada). Para usar outro, abra o portal › menu ⋮ › \"Trocar certificado digital\".",
+            style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+        )
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton(
+            "Abrir configurações de segurança",
+            {
+                runCatching { context.startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    .onFailure { runCatching { context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
+            },
+            Modifier.fillMaxWidth(), tone = Tone.NEUTRAL,
+        )
     }
 }
 

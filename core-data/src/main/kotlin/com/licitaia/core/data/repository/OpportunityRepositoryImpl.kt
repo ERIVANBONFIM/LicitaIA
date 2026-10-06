@@ -15,6 +15,7 @@ import com.licitaia.domain.model.OpportunityFilter
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.Radar
 import com.licitaia.domain.model.ScoredOpportunity
+import com.licitaia.domain.model.SearchOutcome
 import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.network.OfflineException
 import com.licitaia.domain.repository.OpportunityRepository
@@ -79,23 +80,29 @@ class OpportunityRepositoryImpl @Inject constructor(
     private val radarLocks = ConcurrentHashMap<Long, Mutex>()
 
     override suspend fun search(companyId: Long, filter: OpportunityFilter): Result<List<ScoredOpportunity>> =
+        searchWithSources(companyId, filter).map { it.items }
+
+    override suspend fun searchWithSources(companyId: Long, filter: OpportunityFilter): Result<SearchOutcome> =
         withContext(Dispatchers.IO) {
             runCatching { access.requireCompany(companyId, Permission.BUSCAR) }.onFailure { return@withContext Result.failure(it) }
             val company = companyDao.getById(companyId)?.toDomain()
                 ?: return@withContext Result.failure(IllegalArgumentException("Empresa não encontrada."))
             val radars = radarDao.getActive(companyId).map { it.toDomain() }
             val portals = filter.portals.ifEmpty { Portal.entries.toSet() }
-            fetch(portals, filter).map { opportunities ->
+            fetch(portals, filter).map { fetched ->
                 val interested = tenderDao.opportunityIds(companyId).toSet()
-                opportunities
+                val items = fetched.opportunities
                     .filter { OpportunityFilterMatcher.matches(filter, it) }
                     .map { ScoredOpportunity(it, OpportunityScorer.score(it, company, radars), it.id in interested) }
                     .filter { it.score >= filter.minScore }
                     .sortedWith(compareByDescending<ScoredOpportunity> { it.score }.thenBy { it.opportunity.proposalDeadline })
+                SearchOutcome(items, fetched.sourceCounts, fetched.fromCache)
             }
         }
 
-    override suspend fun runRadar(radarId: Long): Result<List<ScoredOpportunity>> = withContext(Dispatchers.IO) {
+    override suspend fun runRadar(radarId: Long): Result<List<ScoredOpportunity>> = runRadarWithSources(radarId).map { it.items }
+
+    override suspend fun runRadarWithSources(radarId: Long): Result<SearchOutcome> = withContext(Dispatchers.IO) {
         // Uma busca por vez para cada radar (tela aberta + atualização automática + Worker não se sobrepõem).
         radarLocks.getOrPut(radarId) { Mutex() }.withLock {
             val radar = radarDao.getById(radarId)?.toDomain()
@@ -103,9 +110,9 @@ class OpportunityRepositoryImpl @Inject constructor(
             runCatching { access.requireCompany(radar.companyId, Permission.BUSCAR) }.onFailure { return@withContext Result.failure(it) }
             val company = companyDao.getById(radar.companyId)?.toDomain()
                 ?: return@withContext Result.failure(IllegalArgumentException("Empresa não encontrada."))
-            fetch(radarPortals(radar), radarFilter(radar)).map { opportunities ->
+            fetch(radarPortals(radar), radarFilter(radar)).map { fetched ->
                 val interested = tenderDao.opportunityIds(company.id).toSet()
-                matchRadar(radar, company, opportunities, interested)
+                SearchOutcome(matchRadar(radar, company, fetched.opportunities, interested), fetched.sourceCounts, fetched.fromCache)
             }
         }
     }
@@ -149,7 +156,7 @@ class OpportunityRepositoryImpl @Inject constructor(
                 val shouldFetch = online && (tick != lastFetchedTick || reconnected || cached.isEmpty())
                 val opportunities = if (shouldFetch) {
                     lastFetchedTick = tick
-                    fetch(portals, OpportunityFilter()).getOrNull() ?: cached
+                    fetch(portals, OpportunityFilter()).getOrNull()?.opportunities ?: cached
                 } else {
                     cached
                 }
@@ -203,8 +210,18 @@ class OpportunityRepositoryImpl @Inject constructor(
      * usa o cache local (modo offline) ou devolve erro amigável. Sem internet, falha na hora (sem esperar
      * timeout) e usa o cache.
      */
-    private suspend fun fetch(portals: Set<Portal>, filter: OpportunityFilter): Result<List<Opportunity>> = coroutineScope {
+    /** O que as fontes devolveram: lista deduplicada + itens por fonte (antes da dedup) ou cache. */
+    private data class Fetched(
+        val opportunities: List<Opportunity>,
+        val sourceCounts: Map<Portal, Int> = emptyMap(),
+        val fromCache: Boolean = false,
+    )
+
+    private suspend fun fetch(portals: Set<Portal>, filter: OpportunityFilter): Result<Fetched> = coroutineScope {
         val sources = searchSources(portals)
+        // Os conectores recebem os portais pedidos (também no radar): com só "Compras.gov" eles leem mais páginas
+        // dessa plataforma (PNCP classificado por usuarioNome + dados abertos do Compras.gov.br).
+        val sourceFilter = filter.copy(portals = if (portals.containsAll(Portal.entries)) emptySet() else portals)
         if (sources.isEmpty()) {
             return@coroutineScope Result.failure(
                 IOException(
@@ -216,7 +233,7 @@ class OpportunityRepositoryImpl @Inject constructor(
         if (!connectivity.hasNetwork) {
             val cached = cachedFor(portals)
             return@coroutineScope if (cached.isNotEmpty()) {
-                Result.success(cached)
+                Result.success(Fetched(cached, fromCache = true))
             } else {
                 Result.failure(OfflineException("Sem internet — a busca fica indisponível até reconectar e não há oportunidades salvas para estes filtros."))
             }
@@ -234,7 +251,7 @@ class OpportunityRepositoryImpl @Inject constructor(
                     )
                 }
                 try {
-                    Result.success(connector.listOpportunities(filter)).also { backoff.onSuccess(connector.portal) }
+                    Result.success(connector.listOpportunities(sourceFilter)).also { backoff.onSuccess(connector.portal) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -243,6 +260,9 @@ class OpportunityRepositoryImpl @Inject constructor(
                 }
             }
         }.awaitAll()
+        val perSource = sources.zip(results).mapNotNull { (connector, r) ->
+            r.getOrNull()?.let { list -> connector.portal to list.count { it.portal in portals } }
+        }.toMap()
         val fetched = OpportunityDeduplicator.dedupe(
             results.mapNotNull { it.getOrNull() }.flatten().filter { it.portal in portals },
         )
@@ -252,12 +272,12 @@ class OpportunityRepositoryImpl @Inject constructor(
                 opportunityDao.upsertAll(fetched.map { it.toEntity(System.currentTimeMillis()) })
                 runCatching { opportunityDao.prune(System.currentTimeMillis() - CACHE_TTL_MS) }
             }
-            return@coroutineScope Result.success(fetched)
+            return@coroutineScope Result.success(Fetched(fetched, perSource))
         }
         val cached = cachedFor(portals)
         val cause = results.firstNotNullOfOrNull { it.exceptionOrNull() }
         when {
-            cached.isNotEmpty() -> Result.success(cached)
+            cached.isNotEmpty() -> Result.success(Fetched(cached, fromCache = true))
             else -> Result.failure(
                 IOException(
                     cause?.message?.takeIf { it.isNotBlank() }

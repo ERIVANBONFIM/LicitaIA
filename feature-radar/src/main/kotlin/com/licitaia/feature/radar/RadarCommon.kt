@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.domain.model.ScoredOpportunity
+import com.licitaia.domain.model.SearchOutcome
 import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.TenderRepository
@@ -86,6 +87,8 @@ data class OpportunityListState(
     val updatedAt: Long? = null,
     /** Sem internet no momento: a lista (se houver) vem do cache local. */
     val offline: Boolean = false,
+    /** Quantos itens cada fonte trouxe na última consulta (ex.: "PNCP 120 · Compras.gov.br 35"). */
+    val sourceSummary: String? = null,
 )
 
 /** Base das telas que listam oportunidades (busca e resultados de radar). */
@@ -104,7 +107,7 @@ abstract class OpportunityListViewModel(
 
     private var loadJob: Job? = null
 
-    protected abstract suspend fun fetch(companyId: Long): Result<List<ScoredOpportunity>>
+    protected abstract suspend fun fetch(companyId: Long): Result<SearchOutcome>
 
     /**
      * Chamado no init das subclasses: recarrega a cada troca de empresa ativa e, quando a internet volta,
@@ -170,8 +173,9 @@ abstract class OpportunityListViewModel(
                 result.fold(
                     onSuccess = {
                         state.copy(
-                            loading = false, refreshing = false, items = it.distinctBy { s -> s.opportunity.id }, error = null,
+                            loading = false, refreshing = false, items = it.items.distinctBy { s -> s.opportunity.id }, error = null,
                             updatedAt = if (online) clock() else state.updatedAt, offline = !online,
+                            sourceSummary = it.sourceSummary,
                         )
                     },
                     onFailure = {

@@ -329,4 +329,48 @@ object PortalWebPolicy {
     fun cookieUrls(portal: Portal): List<String> = rules(portal).allowedDomains.flatMap { d ->
         listOf("https://$d/", "https://www.$d/")
     }.distinct()
+
+    // ------------------------------------------------------------ keep-alive no WebView retido
+
+    /** O que o "Manter sessão ativa" faz com o WebView retido da empresa/portal neste ciclo. */
+    sealed interface KeepAliveAction {
+        /** Usuário está vendo a página (tela em primeiro plano): não mexe — ele mesmo mantém a sessão viva. */
+        data object Skip : KeepAliveAction
+        /** Já está na área logada: `reload()` na MESMA aba (sessionStorage/memória da SPA sobrevivem). */
+        data object Reload : KeepAliveAction
+        /** Aba vazia (processo recriado) ou fora da área logada: abre a última página da área logada. */
+        data class Load(val url: String) : KeepAliveAction
+    }
+
+    /**
+     * Decide o "toque" do keep-alive. Nunca clica nem preenche nada: só recarrega a página ou abre a URL guardada.
+     * @param currentUrl URL atual do WebView retido (null = WebView novo, ex.: processo foi morto).
+     * @param visible a tela do portal está exibindo este WebView em primeiro plano agora.
+     * @param fallbackUrl [keepAliveUrl] (última página da área logada ou homeUrl).
+     */
+    fun keepAliveAction(portal: Portal, currentUrl: String?, visible: Boolean, fallbackUrl: String?): KeepAliveAction {
+        if (visible) return KeepAliveAction.Skip
+        val url = currentUrl?.takeIf { it.isNotBlank() && it != "about:blank" }
+        if (url != null && isAllowed(portal, url) && !isLoginPage(portal, url)) return KeepAliveAction.Reload
+        return fallbackUrl?.takeIf { isAllowed(portal, it) }?.let { KeepAliveAction.Load(it) } ?: KeepAliveAction.Skip
+    }
+
+    // ------------------------------------------------------------ certificado digital (KeyChain)
+
+    /** Certificado do cliente (A1 no KeyChain) só é oferecido a hosts HTTPS da allowlist do portal. */
+    fun clientCertAllowed(portal: Portal, host: String?): Boolean {
+        val h = host?.trim()?.lowercase()?.trimEnd('.')?.takeIf { it.isNotEmpty() && !it.contains('/') } ?: return false
+        return isAllowed(portal, "https://$h/")
+    }
+
+    /** Chave (no SecretStore) do alias escolhido por empresa+host. Guarda só o ALIAS, nunca a chave privada. */
+    fun clientCertAliasKey(companyId: Long, host: String): String = "portal.clientcert.$companyId.${host.trim().lowercase()}"
+
+    /** Chave do índice de hosts com alias lembrado da empresa (para "Trocar certificado"). */
+    fun clientCertIndexKey(companyId: Long): String = "portal.clientcert.hosts.$companyId"
+
+    fun parseHostIndex(raw: String?): Set<String> =
+        raw.orEmpty().split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+
+    fun formatHostIndex(hosts: Set<String>): String = hosts.sorted().joinToString(",")
 }

@@ -13,6 +13,8 @@ android {
 dependencies {
     implementation(project(":core-ui"))
     implementation(project(":connector-api"))
+    // SecretStore: alias do certificado digital (KeyChain) lembrado por empresa+host.
+    implementation(project(":core-security"))
     implementation(libs.androidx.browser)
     implementation("androidx.webkit:webkit:1.11.0")
     // "Manter sessão ativa": FGS só com o app em primeiro plano + inicialização via App Startup.

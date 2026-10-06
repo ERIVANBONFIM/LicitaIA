@@ -63,6 +63,8 @@ class PortalWebViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val keepAlive: PortalKeepAliveController,
     private val connectivity: ConnectivityMonitor,
+    /** WebView retido por empresa/portal (sobrevive ao sair/voltar da tela; usado também pelo keep-alive). */
+    val webViews: PortalWebViewHolder,
 ) : ViewModel() {
 
     val portal: Portal? = savedStateHandle.get<String>("portal")?.let { name -> Portal.entries.firstOrNull { it.name == name } }
@@ -230,11 +232,27 @@ class PortalWebViewModel @Inject constructor(
                 PortalWebSessions.clearPortalCookies(companyId, p, visitedHosts.toList())
                 portals.clearWebSession(companyId, p) // também apaga a última URL; o keep-alive para (status ≠ CONECTADO)
             }
+            // O WebView retido guarda o token da SPA em sessionStorage: descarta-o (a tela cria um novo).
+            runCatching { webViews.discard(companyId, p) }
             lastUrl = null; lastWasLogin = null; lastPrevWasLogin = null; lastSavedResumeUrl = null
             optimisticStatus = null
             busy.value = false
             result.onSuccess { _events.send("Você saiu de ${p.displayName}"); onDone() }
                 .onFailure { _events.send(it.message ?: "Não foi possível encerrar a sessão") }
+        }
+    }
+
+    /**
+     * "Trocar certificado": esquece o certificado digital (alias do KeyChain) lembrado para os hosts deste portal;
+     * a próxima exigência do site abre o seletor do Android. Nenhuma chave é exportada ou copiada.
+     */
+    fun forgetCertificate(onDone: () -> Unit = {}) {
+        val p = portal ?: return
+        val companyId = state.value.companyId ?: return
+        viewModelScope.launch {
+            runCatching { webViews.forgetClientCertificate(companyId, p) }
+                .onSuccess { _events.send("Certificado esquecido: o Android vai perguntar qual usar no próximo acesso com certificado."); onDone() }
+                .onFailure { _events.send(it.message ?: "Não foi possível trocar o certificado") }
         }
     }
 

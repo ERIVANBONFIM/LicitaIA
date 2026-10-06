@@ -34,7 +34,7 @@ class PncpConnectorTest {
     private lateinit var connector: PncpConnector
     private val requests = mutableListOf<RecordedRequest>()
 
-    /** Relógio fixo: 06/10/2026 12:00 em Brasília → dataFinal=20261006. */
+    /** Relógio fixo: 06/10/2026 12:00 em Brasília → dataFinal=20261205 (hoje + 60 dias). */
     private val now = LocalDateTime.of(2026, 10, 6, 12, 0).atZone(ZoneId.of("America/Sao_Paulo")).toInstant().toEpochMilli()
 
     private fun fixture(name: String): String =
@@ -54,7 +54,7 @@ class PncpConnectorTest {
             }
         }
         server.start()
-        connector = PncpConnector(OkHttpClient(), PncpConnector.defaultJson(), server.url("/"), clock = { now })
+        connector = PncpConnector(OkHttpClient(), PncpConnector.defaultJson(), server.url("/"), clock = { now }, pageDelayMs = 0)
     }
 
     @Before
@@ -86,7 +86,8 @@ class PncpConnectorTest {
         assertEquals(2, requests.size)
         requests.forEach { r ->
             assertEquals("/api/consulta/v1/contratacoes/proposta", r.requestUrl?.encodedPath)
-            assertEquals("20261006", r.query("dataFinal"))
+            // Horizonte de 60 dias: com "hoje" a API só devolve o que encerra hoje.
+            assertEquals("20261205", r.query("dataFinal"))
             assertEquals("12", r.query("codigoModalidadeContratacao"))
             assertEquals("MG", r.query("uf"))
             assertEquals("50", r.query("tamanhoPagina"))
@@ -167,6 +168,32 @@ class PncpConnectorTest {
         )
         assertEquals(2, pcp.size)
         assertTrue(pcp.all { it.platformName == "Portal de Compras Públicas" })
+    }
+
+    @Test
+    fun `filtro so por plataforma le mais paginas por modalidade que a busca geral`() = runBlocking {
+        val page1 = fixture("contratacoes_proposta_mg_p1.json") // paginasRestantes = 37 (sempre há mais)
+        start { jsonResponse(page1) }
+
+        connector.listOpportunities(OpportunityFilter(portals = setOf(Portal.COMPRAS_GOV)))
+        val focused = requests.groupBy { it.query("codigoModalidadeContratacao") }.mapValues { it.value.size }
+        // 400 itens / (50 × 4 modalidades) = 2 páginas por modalidade (a fixture repete ids, então o teto não corta antes).
+        assertEquals(mapOf("6" to 2, "8" to 2, "4" to 2, "12" to 2), focused)
+
+        requests.clear()
+        connector.listOpportunities(OpportunityFilter())
+        assertEquals("busca geral: 1 página por modalidade", 4, requests.size)
+    }
+
+    @Test
+    fun `429 depois de ja ter resultados devolve o parcial em vez de falhar`() = runBlocking {
+        val page1 = fixture("contratacoes_proposta_mg_p1.json")
+        start { req -> if (req.query("pagina") == "1") jsonResponse(page1) else MockResponse().setResponseCode(429) }
+
+        val result = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, ufs = setOf("MG")))
+
+        assertEquals(10, result.size)
+        assertEquals(listOf("1", "2"), requests.map { it.query("pagina") })
     }
 
     @Test

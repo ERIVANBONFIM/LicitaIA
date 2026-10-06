@@ -147,17 +147,49 @@ class ComprasGovConnectorTest {
         val result = connector.listOpportunities(OpportunityFilter())
 
         assertTrue(result.isEmpty())
-        assertEquals(listOf("5", "6", "3"), requests.map { it.query("codigoModalidade") })
+        // Cada sonda vazia (30 dias) é repetida uma vez com a janela ampliada (60 dias).
+        assertEquals(listOf("5", "5", "6", "6", "3", "3"), requests.map { it.query("codigoModalidade") })
         assertTrue(requests.all { it.route == CONTRATACOES && it.query("unidadeOrgaoUfSigla") == null && it.query("tamanhoPagina") == "10" })
     }
 
     @Test
-    fun `sonda com total zero ou 204 encerra sem pedir paginas`() = runBlocking {
+    fun `sonda com total zero ou 204 amplia a janela uma vez e encerra sem pedir paginas`() = runBlocking {
         start { MockResponse().setResponseCode(204) }
         assertTrue(connector.listOpportunities(OpportunityFilter(modality = Modality.CONCORRENCIA, ufs = setOf("SP"))).isEmpty())
-        assertEquals(1, requests.count { it.route == CONTRATACOES })
+        val probes = requests.filter { it.route == CONTRATACOES }
+        assertEquals(listOf("2026-09-06", "2026-08-07"), probes.map { it.query("dataPublicacaoPncpInicial") })
+        assertTrue(probes.all { it.query("tamanhoPagina") == "10" })
         assertEquals("3", requests.first().query("codigoModalidade"))
         assertEquals("SP", requests.first().query("unidadeOrgaoUfSigla"))
+    }
+
+    @Test
+    fun `chip so Compras gov br le paginas maiores que a busca geral`() = runBlocking {
+        start { req ->
+            if (req.route == CONTRATACOES) jsonResponse(fixture(PAGE_P1)) else emptyPage() // total 399
+        }
+        connector.listOpportunities(OpportunityFilter(portals = setOf(Portal.COMPRAS_GOV)))
+        val focusedSizes = requests.filter { it.query("tamanhoPagina") != "10" }.map { it.query("tamanhoPagina") }.toSet()
+        assertEquals(setOf("300"), focusedSizes) // 900 itens / 3 modalidades
+
+        requests.clear()
+        connector.listOpportunities(OpportunityFilter())
+        val generalSizes = requests.filter { it.query("tamanhoPagina") != "10" }.map { it.query("tamanhoPagina") }.toSet()
+        assertEquals(setOf("66"), generalSizes) // 200 itens / 3 modalidades
+    }
+
+    @Test
+    fun `429 depois de ja ter resultados devolve o parcial`() = runBlocking {
+        start { req ->
+            when {
+                req.route != CONTRATACOES -> emptyPage()
+                req.query("codigoModalidade") == "5" ->
+                    jsonResponse(fixture(if (req.query("tamanhoPagina") == "10") PAGE_P1 else PAGE_P40))
+                else -> MockResponse().setResponseCode(429)
+            }
+        }
+        val result = connector.listOpportunities(OpportunityFilter(ufs = setOf("MG")))
+        assertEquals(9, result.size)
     }
 
     @Test

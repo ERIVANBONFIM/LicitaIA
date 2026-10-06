@@ -96,6 +96,7 @@ class PortalsViewModel @Inject constructor(
     private val portals: PortalRepository,
     private val settings: SettingsRepository,
     private val keepAlive: PortalKeepAliveController,
+    private val webViews: com.licitaia.feature.live.web.PortalWebViewHolder,
 ) : ViewModel() {
 
     init {
@@ -163,6 +164,8 @@ class PortalsViewModel @Inject constructor(
             runCatching {
                 PortalWebSessions.clearPortalCookies(session.activeCompany.id, portal)
                 portals.clearWebSession(session.activeCompany.id, portal)
+                // O WebView retido guarda o token da SPA em sessionStorage: descarta-o também.
+                webViews.discard(session.activeCompany.id, portal)
             }
                 .onSuccess { _events.send("Você saiu de ${portal.displayName}") }
                 .onFailure { _events.send(it.message ?: "Não foi possível encerrar a sessão") }

@@ -30,6 +30,7 @@ import com.licitaia.domain.model.PortalSession
 import com.licitaia.domain.model.Proposal
 import com.licitaia.domain.model.Radar
 import com.licitaia.domain.model.ScoredOpportunity
+import com.licitaia.domain.model.SearchOutcome
 import com.licitaia.domain.model.Tender
 import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
@@ -118,6 +119,15 @@ interface OpportunityRepository {
     /** Busca nos conectores dos portais (mock no MVP), calcula score e marca interesse. */
     suspend fun search(companyId: Long, filter: OpportunityFilter): Result<List<ScoredOpportunity>>
     suspend fun runRadar(radarId: Long): Result<List<ScoredOpportunity>>
+
+    /** Igual a [search], com a contagem por fonte (diagnóstico "PNCP 120 · Compras.gov.br 35"). */
+    suspend fun searchWithSources(companyId: Long, filter: OpportunityFilter): Result<SearchOutcome> =
+        search(companyId, filter).map { SearchOutcome(it) }
+
+    /** Igual a [runRadar], com a contagem por fonte. */
+    suspend fun runRadarWithSources(radarId: Long): Result<SearchOutcome> =
+        runRadar(radarId).map { SearchOutcome(it) }
+
     suspend fun getOpportunity(id: String): Opportunity?
     /** Total de oportunidades encontradas pelos radares ativos da empresa. */
     fun observeRadarMatchCount(companyId: Long): Flow<Int>

@@ -7,6 +7,14 @@ plugins {
 
 android {
     namespace = "com.licitaia.connector.pncp"
+    // Diagnóstico contra as APIs REAIS (RadarLiveDiagnosticTest): só roda com -Plicitaia.live=true.
+    testOptions {
+        unitTests.all { test ->
+            val live = (project.findProperty("licitaia.live") ?: "false").toString()
+            test.systemProperty("licitaia.live", live)
+            if (live == "true") test.testLogging { showStandardStreams = true }
+        }
+    }
 }
 
 dependencies {
@@ -20,4 +28,6 @@ dependencies {
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // Diagnóstico ao vivo do pipeline da busca (PNCP + Compras.gov.br reais).
+    testImplementation(project(":connector-comprasgov"))
 }

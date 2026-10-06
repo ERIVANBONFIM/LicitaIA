@@ -2,6 +2,20 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.4.3-personal] — 2026-10-06
+
+### Corrigido
+- Radar/Busca Compras.gov.br vazio: PNCP consultava só propostas que encerravam hoje (`dataFinal=hoje`); agora
+  hoje+60 dias, 2 páginas por modalidade no filtro por plataforma, pausa entre páginas e resultado parcial em 429.
+  Conector Compras.gov.br lê até 900 itens e amplia a janela para 60 dias. Teste real (todas as UFs, Telecom,
+  score ≥ 60): de 1 para 21 resultados. Segmento Telecom não casa mais "radio" solto.
+- Sessão dos portais: um único WebView retido por empresa+portal (o sessionStorage da SPA do Compras eletrônicas
+  sobrevive ao sair e voltar da tela); o "manter sessão ativa" recarrega essa mesma aba.
+
+### Adicionado
+- Login com **certificado digital A1** instalado no Android (seletor do sistema, escolha lembrada por empresa/host,
+  "Trocar certificado digital" no menu do portal) + ajuda em Portais.
+- Linha "Obtidos das fontes: PNCP N · Compras.gov.br N" na busca e no radar.
 ## [0.4.2-personal] — 2026-10-06
 
 ### Corrigido

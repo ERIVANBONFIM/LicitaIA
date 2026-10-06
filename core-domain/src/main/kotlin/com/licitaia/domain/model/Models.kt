@@ -97,6 +97,22 @@ data class ScoredOpportunity(
     val interested: Boolean,
 )
 
+/**
+ * Resultado de uma busca com a contagem do que cada FONTE (conector) trouxe para os portais pedidos, antes da
+ * deduplicação e dos filtros de texto/score. [fromCache] = sem consulta às fontes (offline/falha de todas).
+ */
+data class SearchOutcome(
+    val items: List<ScoredOpportunity>,
+    /** Fonte (portal do conector: PNCP, COMPRAS_GOV) → itens obtidos; vazio = não informado. */
+    val sourceCounts: Map<Portal, Int> = emptyMap(),
+    val fromCache: Boolean = false,
+) {
+    /** Ex.: "PNCP 120 · Compras.gov.br 35"; null quando não há contagem. */
+    val sourceSummary: String?
+        get() = if (fromCache) "Cache local (fontes não consultadas)"
+        else sourceCounts.entries.sortedBy { it.key.ordinal }.joinToString(" · ") { "${it.key.displayName} ${it.value}" }.ifEmpty { null }
+}
+
 data class OpportunityFilter(
     val query: String = "",
     val portals: Set<Portal> = emptySet(),

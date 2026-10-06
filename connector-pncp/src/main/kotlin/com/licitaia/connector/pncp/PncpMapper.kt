@@ -180,7 +180,9 @@ internal object PncpMapper {
 
     private val specificVocabulary: Map<Segment, List<String>> = mapOf(
         Segment.TELECOM_ISP to SegmentAffinity.defaultKeywords(Segment.TELECOM_ISP) + listOf(
-            "telefonia", "link de internet", "acesso a internet", "provedor", "fibra optica", "radio", "voip", "pabx",
+            "telefonia", "link de internet", "acesso a internet", "provedor", "fibra optica",
+            // "radio" sozinho casava radiológico/radioisótopo/radiofármaco (diagnóstico real 06/10/2026).
+            "radiocomunicacao", "radio comunicacao", "enlace de radio", "radio digital", "voip", "pabx",
             "comunicacao de dados", "satelite", "lan-to-lan", "mpls", "sip", "telecomunicacoes", "4g", "5g",
         ),
         Segment.SOFTWARE to SegmentAffinity.defaultKeywords(Segment.SOFTWARE) + listOf(

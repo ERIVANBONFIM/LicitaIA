@@ -85,25 +85,33 @@ class ComprasGovConnector internal constructor(
         val now = clock()
         val dataFinal = ComprasGovMapper.queryDate(now)
         val dataInicial = ComprasGovMapper.queryDate(now - SEARCH_WINDOW_DAYS * DAY_MS)
+        val dataInicialExtended = ComprasGovMapper.queryDate(now - EXTENDED_WINDOW_DAYS * DAY_MS)
         val codes: List<Int> = filter.modality?.let { m -> listOfNotNull(ComprasGovModalities.codeOf(m)) } ?: ComprasGovModalities.SEARCHED_CODES
         val ufs: List<String?> = filter.ufs.map { it.trim().uppercase() }.filter { it.length == 2 }.distinct()
             .takeIf { it.isNotEmpty() && it.size <= MAX_UF_QUERIES } ?: listOf(null)
+        // Chip/radar só de Compras.gov.br: este conector é a fonte principal → lê bem mais itens.
+        val maxItems = maxItemsFor(filter)
 
         val collected = LinkedHashMap<String, Opportunity>()
         if (codes.isNotEmpty()) {
             val combos = codes.size * ufs.size
-            val perCombo = (MAX_ITEMS_PER_SEARCH / combos).coerceIn(ComprasGovApi.MIN_PAGE_SIZE, ComprasGovApi.MAX_PAGE_SIZE)
-            for (uf in ufs) {
-                for (code in codes) {
-                    if (collected.size >= MAX_ITEMS_PER_SEARCH) break
-                    collectNewest14133(dataInicial, dataFinal, code, uf, perCombo, now, collected)
+            val perCombo = (maxItems / combos).coerceIn(ComprasGovApi.MIN_PAGE_SIZE, ComprasGovApi.MAX_PAGE_SIZE)
+            try {
+                for (uf in ufs) {
+                    for (code in codes) {
+                        if (collected.size >= maxItems) break
+                        collectNewest14133(dataInicial, dataInicialExtended, dataFinal, code, uf, perCombo, maxItems, now, collected)
+                    }
                 }
+            } catch (e: ComprasGovException) {
+                // 429 com resultados já obtidos: devolve o parcial (o backoff do app cuida das próximas buscas).
+                if (e.httpStatus != 429 || collected.isEmpty()) throw e
             }
         }
 
         // Legado (Lei 8.666): complemento opcional, só para modalidades compatíveis; falha nele não derruba a busca.
         val legacyCode = filter.modality?.let(ComprasGovModalities::legacyCodeOf)
-        if (legacyCode != null && collected.size < MAX_ITEMS_PER_SEARCH) {
+        if (legacyCode != null && collected.size < maxItems) {
             try {
                 api.licitacoesLegado(dataInicial, dataFinal, legacyCode, pagina = 1, tamanhoPagina = LEGACY_PAGE_SIZE).resultado
                     .filterNot { isClosed(it.data_abertura_proposta, now) }
@@ -127,21 +135,29 @@ class ComprasGovConnector internal constructor(
      * com uma página mínima e leem-se as últimas páginas (de trás para a frente) até [perCombo] itens.
      */
     private suspend fun collectNewest14133(
-        dataInicial: String,
+        dataInicialDefault: String,
+        dataInicialExtended: String,
         dataFinal: String,
         code: Int,
         uf: String?,
         perCombo: Int,
+        maxItems: Int,
         now: Long,
         into: MutableMap<String, Opportunity>,
     ) {
-        val probe = api.contratacoes14133(dataInicial, dataFinal, code, uf, pagina = 1, tamanhoPagina = ComprasGovApi.MIN_PAGE_SIZE)
+        var dataInicial = dataInicialDefault
+        var probe = api.contratacoes14133(dataInicial, dataFinal, code, uf, pagina = 1, tamanhoPagina = ComprasGovApi.MIN_PAGE_SIZE)
+        if (probe.totalRegistros <= 0 || probe.resultado.isEmpty()) {
+            // Defasagem dos dados abertos (ou UF com pouco movimento): amplia a janela de publicação uma vez.
+            dataInicial = dataInicialExtended
+            probe = api.contratacoes14133(dataInicial, dataFinal, code, uf, pagina = 1, tamanhoPagina = ComprasGovApi.MIN_PAGE_SIZE)
+        }
         val total = probe.totalRegistros
         if (total <= 0 || probe.resultado.isEmpty()) return
         var page = ((total + perCombo - 1) / perCombo).toInt().coerceAtLeast(1)
         var comboCollected = 0
         var pagesRead = 0
-        while (page >= 1 && comboCollected < perCombo && pagesRead < MAX_PAGES_PER_COMBO && into.size < MAX_ITEMS_PER_SEARCH) {
+        while (page >= 1 && comboCollected < perCombo && pagesRead < MAX_PAGES_PER_COMBO && into.size < maxItems) {
             val result = api.contratacoes14133(dataInicial, dataFinal, code, uf, pagina = page, tamanhoPagina = perCombo)
             if (result.resultado.isEmpty()) break
             comboCollected += result.resultado.size
@@ -235,8 +251,20 @@ class ComprasGovConnector internal constructor(
         /** Teto de itens por busca. */
         const val MAX_ITEMS_PER_SEARCH = 200
 
+        /** Teto quando o filtro pede só Compras.gov.br (chip/radar da plataforma). */
+        const val MAX_ITEMS_FOCUSED_SEARCH = 900
+
         /** Janela padrão de publicação consultada. */
         const val SEARCH_WINDOW_DAYS = 30L
+
+        /** Janela ampliada quando a padrão não traz nada (defasagem dos dados abertos). */
+        const val EXTENDED_WINDOW_DAYS = 60L
+
+        /** true quando o filtro pede Compras.gov.br sem "PNCP/outras plataformas". */
+        fun isFocused(filter: OpportunityFilter): Boolean =
+            filter.portals.isNotEmpty() && Portal.COMPRAS_GOV in filter.portals && Portal.PNCP !in filter.portals
+
+        fun maxItemsFor(filter: OpportunityFilter): Int = if (isFocused(filter)) MAX_ITEMS_FOCUSED_SEARCH else MAX_ITEMS_PER_SEARCH
 
         /** Acima disso, a UF não é enviada à API e o filtro é aplicado localmente. */
         const val MAX_UF_QUERIES = 3

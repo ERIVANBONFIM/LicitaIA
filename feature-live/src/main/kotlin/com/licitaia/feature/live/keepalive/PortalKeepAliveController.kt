@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withTimeoutOrNull
 import com.licitaia.feature.live.web.PortalWebPolicy
 import com.licitaia.feature.live.web.PortalWebSessions
+import com.licitaia.feature.live.web.PortalWebViewHolder
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,9 +49,11 @@ import javax.inject.Singleton
  * "Manter sessão ativa" (opt-in por empresa+portal) dos portais oficiais.
  *
  * Enquanto a preferência estiver ligada E a sessão do portal estiver CONECTADA para a empresa ativa:
- * - a cada N minutos ([AppSettings.portalKeepAliveMinutes]) recarrega, num WebView headless com os cookies da
- *   empresa ([HeadlessPortalProbe]), a última página da área logada (ou a `homeUrl`) e avalia o resultado com a
- *   mesma política da tela (URL + marcadores de conteúdo). Nenhuma outra ação no portal.
+ * - a cada N minutos ([AppSettings.portalKeepAliveMinutes]) dá um "toque" no WebView RETIDO da empresa/portal
+ *   ([PortalWebViewHolder] — a mesma aba que o usuário usa, com o sessionStorage/memória da SPA): `reload()` se está na
+ *   área logada; se a aba está vazia (processo recriado), abre a última página da área logada (ou a `homeUrl`).
+ *   Avalia o resultado com a mesma política da tela (URL + marcadores de conteúdo). Com o usuário na tela, nada é
+ *   feito. Nenhuma outra ação no portal (sem cliques, sem formulários).
  * - mantém o [PortalKeepAliveService] (FGS `dataSync`) com a notificação baixa "Mantendo sessão … ativa".
  * - se a sessão caiu: marca SESSAO_EXPIRADA (o portal sai do plano e o ciclo para), audita e dispara UMA
  *   notificação crítica SESSOES com rota para o portal. A preferência continua ligada: após novo login manual,
@@ -76,6 +79,7 @@ class PortalKeepAliveController @Inject constructor(
     private val notifier: AppNotifier,
     private val connectivity: ConnectivityMonitor,
     private val liveSessions: dagger.Lazy<LiveSessionManager>,
+    private val webViews: PortalWebViewHolder,
 ) {
     private data class Plan(val companyId: Long?, val portals: Set<Portal>, val intervalMinutes: Int)
 
@@ -184,7 +188,10 @@ class PortalKeepAliveController @Inject constructor(
 
     private fun apply(next: Plan) {
         val restartAll = next.companyId != plan.companyId || next.intervalMinutes != plan.intervalMinutes
+        // Troca de empresa / logout: os WebViews retidos das outras empresas são destruídos.
+        if (next.companyId != plan.companyId) runCatching { webViews.retainOnly(next.companyId) }
         plan = next
+        runCatching { webViews.setKeepAlivePortals(next.companyId, next.portals) }
         jobs.keys.toList().forEach { p ->
             if (restartAll || p !in next.portals) jobs.remove(p)?.cancel()
         }
@@ -234,14 +241,18 @@ class PortalKeepAliveController @Inject constructor(
         if (auth.session.value?.activeCompany?.id != companyId) return PortalWebPolicy.Signal.NONE
         if (!connectivity.isOnline) return PortalWebPolicy.Signal.NONE
         val last = runCatching { portals.lastWebUrl(companyId, portal) }.getOrNull()
-        val url = PortalWebPolicy.keepAliveUrl(portal, last) ?: return PortalWebPolicy.Signal.NONE
-        val result = HeadlessPortalProbe.run(context, companyId, portal, url)
+        val fallback = PortalWebPolicy.keepAliveUrl(portal, last)
+        // Toque no WebView RETIDO da empresa/portal (mesma aba do usuário: sessionStorage/memória da SPA preservados).
+        // Processo recriado (sem WebView retido): abre a última URL; se cair no login, a política marca expirado.
+        val result = webViews.keepAliveTouch(companyId, portal, fallback)
+        if (result.skipped) return PortalWebPolicy.Signal.NONE // usuário está na tela: ele mesmo mantém a sessão
         PortalWebSessions.flush(companyId)
         val finalUrl = result.finalUrl
+        val evaluatedUrl = finalUrl ?: fallback ?: return PortalWebPolicy.Signal.NONE
         return PortalWebPolicy.evaluate(
-            portal, finalUrl ?: url,
-            hasCookies = PortalWebSessions.hasCookies(companyId, finalUrl ?: url),
-            // Carregamos uma página da área logada: se terminou no login, o portal nos devolveu para lá.
+            portal, evaluatedUrl,
+            hasCookies = PortalWebSessions.hasCookies(companyId, evaluatedUrl),
+            // Recarregamos uma página da área logada: se terminou no login, o portal nos devolveu para lá.
             previousWasLoginPage = false,
             currentStatus = PortalConnectionStatus.CONECTADO,
             contentExpired = result.contentExpired,

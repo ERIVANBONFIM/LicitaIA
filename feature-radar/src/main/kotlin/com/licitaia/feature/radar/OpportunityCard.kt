@@ -122,7 +122,19 @@ internal fun LazyListScope.opportunityItems(
                 onRetry = viewModel::reload,
             )
         }
-        state.items.isEmpty() -> item(key = "empty") { EmptyState(emptyTitle, emptyMessage, icon = emptyIcon) }
+        state.items.isEmpty() -> {
+            // Diagnóstico: mesmo sem resultados, mostra quanto cada fonte trouxe antes dos filtros.
+            state.sourceSummary?.let { summary ->
+                item(key = "sources-empty") {
+                    Text(
+                        "Obtidos das fontes: $summary (nenhum passou nos filtros)",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
+            }
+            item(key = "empty") { EmptyState(emptyTitle, emptyMessage, icon = emptyIcon) }
+        }
         else -> {
             item(key = "count") {
                 Column(Modifier.padding(horizontal = 16.dp)) {
@@ -131,7 +143,7 @@ internal fun LazyListScope.opportunityItems(
                         style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary,
                     )
                     Text(
-                        sourceLabel(state.items),
+                        state.sourceSummary?.let { "Obtidos das fontes: $it" } ?: sourceLabel(state.items),
                         style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                     )
                     UpdatedAgoText(state.updatedAt, state.offline)

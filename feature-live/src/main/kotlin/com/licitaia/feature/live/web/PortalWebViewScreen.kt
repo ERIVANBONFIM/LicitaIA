@@ -8,8 +8,10 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Environment
-import android.view.View
+import android.app.Activity
+import android.content.ContextWrapper
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.webkit.CookieManager
 import android.webkit.SslErrorHandler
 import android.webkit.URLUtil
@@ -44,7 +46,11 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -57,6 +63,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -127,7 +134,14 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     val probeScript = remember(portal) { PortalWebPolicy.contentProbeScript(portal) }
     val checkContent = remember(portal) { PortalWebPolicy.hasContentMarkers(portal) }
 
+    val holder = vm.webViews
+    val activity = remember(context) { context.findActivity() }
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var entry by remember { mutableStateOf<PortalWebViewHolder.Entry?>(null) }
+    // Nova geração = novo WebView (após "Sair do portal", que descarta o retido com o sessionStorage da SPA).
+    var generation by remember { mutableIntStateOf(0) }
+    var forcedUrl by remember { mutableStateOf<String?>(null) }
+    var menuOpen by remember { mutableStateOf(false) }
     var currentUrl by remember { mutableStateOf(startUrl) }
     var progress by remember { mutableIntStateOf(0) }
     var loading by remember { mutableStateOf(true) }
@@ -189,12 +203,14 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             .onFailure { navigator.showMessage("Não foi possível abrir o navegador externo.") }
     }
 
-    // Pausa/retoma o WebView com a tela e grava cookies ao sair de primeiro plano.
-    DisposableEffect(lifecycleOwner, webView) {
+    // Tela em primeiro plano ou não: o holder só pausa o WebView quando o keep-alive deste portal está desligado
+    // (nunca pauseTimers, que é global). Grava cookies ao sair de primeiro plano.
+    DisposableEffect(lifecycleOwner, entry) {
         val observer = LifecycleEventObserver { _, event ->
+            val e = entry
             when (event) {
-                Lifecycle.Event.ON_PAUSE -> { webView?.onPause(); latestVm.flush() }
-                Lifecycle.Event.ON_RESUME -> webView?.onResume()
+                Lifecycle.Event.ON_PAUSE -> { if (e != null) holder.setVisible(e, false); latestVm.flush() }
+                Lifecycle.Event.ON_RESUME -> if (e != null) holder.setVisible(e, true)
                 else -> Unit
             }
         }
@@ -210,7 +226,8 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             message = "Os cookies deste portal serão removidos do navegador interno deste aparelho e o status voltará a \"Sem sessão\". Você precisará fazer login novamente no portal.",
             onConfirm = {
                 confirmSignOut = false
-                vm.signOut { webView?.loadUrl(loginUrl) }
+                // O ViewModel descarta o WebView retido; a nova geração cria outro e abre o login.
+                vm.signOut { forcedUrl = loginUrl; generation++ }
             },
             onDismiss = { confirmSignOut = false },
             confirmLabel = "Sair do portal", tone = Tone.DANGER, icon = Icons.AutoMirrored.Outlined.Logout,
@@ -224,6 +241,22 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             if (state.requiresLogin && state.canSignOut) {
                 IconButton(onClick = { confirmSignOut = true }, enabled = !state.busy) {
                     Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = "Sair do portal")
+                }
+            }
+            if (state.requiresLogin) {
+                Box {
+                    IconButton(onClick = { menuOpen = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "Mais opções") }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Trocar certificado digital") },
+                            leadingIcon = { Icon(Icons.Outlined.VerifiedUser, contentDescription = null) },
+                            onClick = {
+                                menuOpen = false
+                                // Esquece o alias lembrado; o seletor do Android abre na próxima exigência do site.
+                                vm.forgetCertificate { webView?.reload() }
+                            },
+                        )
+                    }
                 }
             }
         },
@@ -325,44 +358,22 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             }
 
             Box(Modifier.fillMaxSize()) {
+                key(generation) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
-                        WebView(ctx).apply {
-                            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                            // Perfil por empresa (antes de qualquer carregamento). Fallback: perfil compartilhado.
-                            isolatedProfile = PortalWebSessions.attachProfile(this, companyId)
-                            PortalWebSessions.configure(this, companyId)
-                            // Autofill do Android/Google preenche o login; o app não armazena senha.
-                            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_YES
-                            settings.apply {
-                                javaScriptEnabled = true
-                                domStorageEnabled = true
-                                databaseEnabled = true
-                                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                                allowFileAccess = false
-                                allowContentAccess = false
-                                setGeolocationEnabled(false)
-                                setSupportMultipleWindows(false)
-                                javaScriptCanOpenWindowsAutomatically = false
-                                useWideViewPort = true
-                                loadWithOverviewMode = true
-                                builtInZoomControls = true
-                                displayZoomControls = false
-                                cacheMode = WebSettings.LOAD_DEFAULT
-                            }
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                                    val url = request.url.toString()
-                                    if (PortalWebPolicy.isAllowed(portal, url)) return false
-                                    if (request.isForMainFrame) blockedUrl = url
-                                    return true
-                                }
+                        // WebView RETIDO da empresa/portal: sessionStorage/memória da SPA sobrevivem ao sair e voltar.
+                        val retained = holder.obtain(companyId, portal)
+                        holder.attach(retained, activity)
+                        holder.setVisible(retained, lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                        isolatedProfile = retained.isolatedProfile
+                        retained.webView.apply {
+                            webViewClient = object : RetainedPortalClient(holder, retained) {
+                                override fun onBlocked(url: String) { blockedUrl = url }
 
                                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-                                    if (!PortalWebPolicy.isAllowed(portal, url)) {
-                                        view.stopLoading(); blockedUrl = url; return
-                                    }
+                                    super.onPageStarted(view, url, favicon)
+                                    if (!PortalWebPolicy.isAllowed(portal, url)) return
                                     currentUrl = url; loading = true; pageError = null; blockedUrl = null
                                 }
 
@@ -376,6 +387,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 }
 
                                 override fun onPageFinished(view: WebView, url: String) {
+                                    super.onPageFinished(view, url)
                                     loading = false; progress = 100
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
                                     val signal = latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), loadFailed = pageError != null)
@@ -391,6 +403,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
 
                                 // Falha de carga NUNCA é sessão encerrada: cancela qualquer EXPIRED pendente desta navegação.
                                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                                    super.onReceivedError(view, request, error)
                                     if (request.isForMainFrame) {
                                         loading = false
                                         latestVm.onLoadFailed()
@@ -403,6 +416,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 }
 
                                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                                    super.onReceivedHttpError(view, request, errorResponse)
                                     if (request.isForMainFrame && PortalWebPolicy.isServerFailure(errorResponse.statusCode)) {
                                         latestVm.onLoadFailed()
                                         pageError = "O portal respondeu com erro (HTTP ${errorResponse.statusCode}). Sua sessão continua salva; tente recarregar em instantes."
@@ -410,7 +424,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 }
 
                                 override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                                    handler.cancel()
+                                    super.onReceivedSslError(view, handler, error) // cancela
                                     loading = false
                                     pageError = "Certificado HTTPS inválido em ${PortalWebPolicy.host(error.url) ?: "um domínio"}. A navegação foi interrompida por segurança."
                                 }
@@ -427,18 +441,36 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                             setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
                                 startDownload(ctx, companyId, url, userAgent, contentDisposition, mimeType, ::openExternally)
                             }
-                            if (online) loadUrl(startUrl) else initialLoadPending = true
+                            val existing = url?.takeIf { it.isNotBlank() && it != "about:blank" }
+                            val first = forcedUrl ?: startUrl
+                            forcedUrl = null
+                            if (existing == null) {
+                                // WebView novo: primeira carga (adiada se estiver sem internet).
+                                if (online) loadUrl(first) else initialLoadPending = true
+                            } else {
+                                // Voltou para a tela: mantém a página (e o estado da SPA) como estava, sem recarregar.
+                                currentUrl = existing; loading = false; progress = 100
+                                canGoBack = canGoBack(); canGoForward = canGoForward()
+                            }
                             webView = this
+                            entry = retained
+                        }
+                        FrameLayout(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                            addView(retained.webView)
+                            tag = retained
                         }
                     },
-                    onRelease = { view ->
+                    onRelease = { frame ->
+                        val retained = frame.tag as? PortalWebViewHolder.Entry
                         PortalWebSessions.flush(companyId)
-                        view.stopLoading()
-                        view.webChromeClient = null
-                        view.destroy()
-                        webView = null
+                        fileCallback?.onReceiveValue(null); fileCallback = null
+                        // Desanexa SEM destruir: a sessão da SPA continua viva para a volta e para o keep-alive.
+                        if (retained != null) holder.detach(retained)
+                        if (webView === retained?.webView) { webView = null; entry = null }
                     },
                 )
+                }
                 if (pageError != null || initialLoadPending) {
                     Box(Modifier.fillMaxSize().background(LicitaColors.Background)) {
                         ErrorState(
@@ -456,6 +488,13 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             }
         }
     }
+}
+
+/** Activity que hospeda a tela (o WebView retido usa-a como contexto só enquanto exibido). */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /** Espera para a 2ª checagem de conteúdo (SPA termina de renderizar depois do onPageFinished). */
