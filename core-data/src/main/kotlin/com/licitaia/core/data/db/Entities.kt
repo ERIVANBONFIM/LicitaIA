@@ -106,6 +106,8 @@ data class OpportunityEntity(
     val keywords: List<String>,
     val editalUrl: String?,
     val cachedAt: Long,
+    /** Plataforma de origem informada pelo PNCP (usuarioNome). Versão 7. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val platformName: String? = null,
 )
 
 @Entity(

@@ -23,6 +23,13 @@ interface PortalConnector {
     val portal: Portal
     val capabilities: ConnectorCapabilities
 
+    /**
+     * Portais cujas oportunidades esta fonte consegue listar. Por padrão, só o próprio [portal]; o PNCP
+     * agrega publicações de várias plataformas (Compras.gov.br, Licitanet, BLL, PCP...) e as classifica
+     * pelo campo `usuarioNome`, então cobre todos eles.
+     */
+    val searchablePortals: Set<Portal> get() = setOf(portal)
+
     suspend fun authenticate(credentials: PortalCredentials): PortalAuthResult
     suspend fun restoreSession(sessionKey: String): PortalAuthResult
     suspend fun listOpportunities(filter: OpportunityFilter): List<Opportunity>
@@ -37,6 +44,14 @@ interface PortalConnector {
     suspend fun submitBid(sessionId: String, itemLabel: String, value: Double, confirmation: HumanConfirmation?): BidSubmission
     suspend fun pauseAutomation(sessionId: String)
     suspend fun logout(sessionKey: String)
+}
+
+/**
+ * Falha de conector que carrega o status HTTP da fonte. Usada pelos repositórios para aplicar backoff
+ * em 429 (limite de requisições) e 5xx sem depender das classes concretas de cada conector.
+ */
+interface HttpStatusFailure {
+    val httpStatus: Int?
 }
 
 /** Registro dos conectores disponíveis (um por portal). */

@@ -170,6 +170,10 @@ object PortalWebPolicy {
      * @param currentStatus status persistido no app.
      * @param contentExpired resultado de [contentProbeScript] na página atual (o texto visível contém o aviso
      *        de sessão encerrada do portal). false quando não avaliado.
+     * @param online há rede validada agora (NET_CAPABILITY_VALIDATED). Sem rede nada é concluído sobre a sessão.
+     * @param loadFailed o carregamento desta página falhou (onReceivedError do main frame, HTTP ≥ 500, timeout).
+     *        Página de erro, redirecionamento interrompido ou SPA sem conseguir falar com o servidor NÃO são
+     *        sessão encerrada: a sessão continua salva e é reavaliada quando a página carregar de verdade.
      */
     fun evaluate(
         portal: Portal,
@@ -178,9 +182,12 @@ object PortalWebPolicy {
         previousWasLoginPage: Boolean?,
         currentStatus: PortalConnectionStatus,
         contentExpired: Boolean = false,
+        online: Boolean = true,
+        loadFailed: Boolean = false,
     ): Signal {
         if (!isAllowed(portal, url)) return Signal.BLOCKED
         if (!rules(portal).requiresLogin) return Signal.NONE
+        if (!canConclude(online, loadFailed)) return Signal.NONE
         val login = isLoginPage(portal, url)
         return when {
             // O portal devolveu a página de login depois de estarmos numa página normal → sessão caiu.
@@ -198,6 +205,20 @@ object PortalWebPolicy {
             else -> Signal.NONE
         }
     }
+
+    /** Só se conclui algo sobre a sessão (conectada/expirada) com rede validada e página carregada sem erro. */
+    fun canConclude(online: Boolean, loadFailed: Boolean): Boolean = online && !loadFailed
+
+    /** HTTP do documento principal que indica falha do servidor/rede (não é resposta de sessão). */
+    fun isServerFailure(httpStatus: Int): Boolean = httpStatus >= 500 || httpStatus == 408 || httpStatus == 429
+
+    /**
+     * Keep-alive: a sessão só é dada como encerrada após [EXPIRED_CONFIRMATIONS] probes seguidos indicando
+     * EXPIRED, todos com rede validada antes e depois do carregamento. Qualquer probe inconclusivo/ok zera a contagem.
+     */
+    const val EXPIRED_CONFIRMATIONS = 2
+
+    fun keepAliveConfirmsExpired(consecutiveExpired: Int): Boolean = consecutiveExpired >= EXPIRED_CONFIRMATIONS
 
     // ------------------------------------------------------------ conteúdo (marcadores)
 

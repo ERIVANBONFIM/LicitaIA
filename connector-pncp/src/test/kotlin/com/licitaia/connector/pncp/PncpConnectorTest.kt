@@ -95,7 +95,8 @@ class PncpConnectorTest {
         assertEquals(listOf("1", "2"), requests.map { it.query("pagina") })
 
         assertEquals(10, result.size)
-        assertTrue(result.all { it.portal == Portal.PNCP && it.id.startsWith("PNCP:") && it.uf == "MG" })
+        assertTrue(result.all { it.id.startsWith("PNCP:") && it.uf == "MG" })
+        assertEquals(setOf(Portal.PNCP, Portal.PORTAL_COMPRAS_PUBLICAS), result.map { it.portal }.toSet())
         assertEquals(result.sortedBy { it.proposalDeadline }, result)
     }
 
@@ -142,10 +143,30 @@ class PncpConnectorTest {
     }
 
     @Test
-    fun `filtro de portais que exclui o PNCP nao gera requisicao`() = runBlocking {
-        start { fail("não deveria chamar a rede"); noContent() }
-        assertTrue(connector.listOpportunities(OpportunityFilter(portals = setOf(Portal.BLL))).isEmpty())
-        assertTrue(requests.isEmpty())
+    fun `filtro por portal de plataforma busca no PNCP e devolve so a plataforma classificada`() = runBlocking {
+        val page = fixture("contratacoes_proposta_mg_p1.json")
+            .replace("\"usuarioNome\":\"IPM Sistemas\"", "\"usuarioNome\":\"BLL Compras\"")
+        check(page != fixture("contratacoes_proposta_mg_p1.json")) { "fixture mudou: ajustar substituição" }
+        start { req -> if (req.query("pagina") == "1") jsonResponse(page) else noContent() }
+
+        val bll = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, portals = setOf(Portal.BLL)))
+        assertEquals(1, bll.size)
+        assertEquals(Portal.BLL, bll.single().portal)
+        assertTrue("id continua com prefixo PNCP", bll.single().id.startsWith("PNCP:"))
+        assertEquals("BLL Compras", bll.single().platformName)
+        assertTrue(requests.isNotEmpty())
+
+        requests.clear()
+        val pncp = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, portals = setOf(Portal.PNCP)))
+        assertEquals(7, pncp.size)
+        assertTrue(pncp.all { it.portal == Portal.PNCP })
+
+        requests.clear()
+        val pcp = connector.listOpportunities(
+            OpportunityFilter(modality = Modality.CREDENCIAMENTO, portals = setOf(Portal.PORTAL_COMPRAS_PUBLICAS)),
+        )
+        assertEquals(2, pcp.size)
+        assertTrue(pcp.all { it.platformName == "Portal de Compras Públicas" })
     }
 
     @Test

@@ -90,6 +90,19 @@ object DatabaseMigrations {
         }
     }
 
+    /**
+     * Versão 7: `opportunities.platformName` (plataforma de origem informada pelo PNCP em `usuarioNome`).
+     * Só adiciona coluna anulável; o cache existente continua válido (fica sem nome de plataforma até a próxima busca).
+     */
+    val FROM_6_TO_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val columns = db.query("PRAGMA table_info(opportunities)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            if ("platformName" !in columns) db.execSQL("ALTER TABLE opportunities ADD COLUMN platformName TEXT DEFAULT NULL")
+        }
+    }
+
     /** Todas as migrações incrementais, na ordem. */
-    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6)
+    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6, FROM_6_TO_7)
 }

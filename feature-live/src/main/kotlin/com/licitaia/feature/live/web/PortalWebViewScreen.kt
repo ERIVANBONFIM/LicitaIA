@@ -1,4 +1,4 @@
-package com.licitaia.feature.live.web
+﻿package com.licitaia.feature.live.web
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
@@ -17,6 +17,7 @@ import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -137,7 +138,26 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     var isolatedProfile by remember { mutableStateOf(true) }
     var confirmSignOut by remember { mutableStateOf(false) }
     var fileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    // Aberta sem internet: não carrega (evita página de erro/redirect ao login) e carrega ao reconectar.
+    var initialLoadPending by remember { mutableStateOf(false) }
+    var wasOffline by remember { mutableStateOf(!state.online) }
     val latestVm by rememberUpdatedState(vm)
+    val online by rememberUpdatedState(state.online)
+
+    // Rede voltou: recarrega sozinho (ou faz a primeira carga adiada). O status da sessão nunca muda por falta de rede.
+    LaunchedEffect(state.online) {
+        if (!state.online) { wasOffline = true; return@LaunchedEffect }
+        if (!wasOffline) return@LaunchedEffect
+        wasOffline = false
+        val view = webView ?: return@LaunchedEffect
+        pageError = null
+        if (initialLoadPending || view.url.isNullOrBlank()) {
+            initialLoadPending = false
+            view.loadUrl(startUrl)
+        } else {
+            view.reload()
+        }
+    }
 
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
@@ -155,7 +175,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             runCatching {
                 view.evaluateJavascript(probeScript) { raw ->
                     if (webView === view && PortalWebPolicy.parseProbeResult(raw)) {
-                        latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), contentExpired = true)
+                        latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), contentExpired = true, loadFailed = pageError != null)
                     }
                 }
             }
@@ -280,6 +300,13 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                     )
                 }
             }
+            AnimatedVisibility(!state.online) {
+                AlertBanner(
+                    "Sem internet",
+                    "Sem internet — sua sessão continua salva; reconecte para continuar. A página recarrega sozinha quando a conexão voltar.",
+                    Tone.WARNING, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
             if (!isolatedProfile && state.requiresLogin) {
                 Text(
                     "Este aparelho não separa cookies por empresa no navegador interno: ao trocar de empresa, saia do portal antes.",
@@ -342,7 +369,8 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
                                     currentUrl = url
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
-                                    latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url))
+                                    latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), loadFailed = pageError != null)
+                                    PortalWebSessions.flush(companyId)
                                     // Troca de rota da SPA (pushState) não dispara onPageFinished: checa o conteúdo depois.
                                     if (checkContent) view.postDelayed({ probeContent(view, url) }, PROBE_DELAY_MS)
                                 }
@@ -350,7 +378,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 override fun onPageFinished(view: WebView, url: String) {
                                     loading = false; progress = 100
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
-                                    val signal = latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url))
+                                    val signal = latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), loadFailed = pageError != null)
                                     PortalWebSessions.flush(companyId)
                                     // Login recém-detectado: leva uma única vez à área de trabalho do fornecedor.
                                     if (signal == PortalWebPolicy.Signal.CONNECTED) {
@@ -361,10 +389,23 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                     }
                                 }
 
+                                // Falha de carga NUNCA é sessão encerrada: cancela qualquer EXPIRED pendente desta navegação.
                                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                                     if (request.isForMainFrame) {
                                         loading = false
-                                        pageError = "Não foi possível carregar ${PortalWebPolicy.host(request.url.toString()) ?: "a página"} (${error.description}). Verifique a conexão."
+                                        latestVm.onLoadFailed()
+                                        pageError = if (!online) {
+                                            "Sem internet — sua sessão continua salva; reconecte para continuar."
+                                        } else {
+                                            "Não foi possível carregar ${PortalWebPolicy.host(request.url.toString()) ?: "a página"} (${error.description}). Verifique a conexão."
+                                        }
+                                    }
+                                }
+
+                                override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                                    if (request.isForMainFrame && PortalWebPolicy.isServerFailure(errorResponse.statusCode)) {
+                                        latestVm.onLoadFailed()
+                                        pageError = "O portal respondeu com erro (HTTP ${errorResponse.statusCode}). Sua sessão continua salva; tente recarregar em instantes."
                                     }
                                 }
 
@@ -386,7 +427,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                             setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
                                 startDownload(ctx, companyId, url, userAgent, contentDisposition, mimeType, ::openExternally)
                             }
-                            loadUrl(startUrl)
+                            if (online) loadUrl(startUrl) else initialLoadPending = true
                             webView = this
                         }
                     },
@@ -398,11 +439,17 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                         webView = null
                     },
                 )
-                if (pageError != null) {
+                if (pageError != null || initialLoadPending) {
                     Box(Modifier.fillMaxSize().background(LicitaColors.Background)) {
                         ErrorState(
-                            pageError ?: "", Modifier.align(Alignment.Center), title = "Página indisponível",
-                            onRetry = { pageError = null; webView?.reload() },
+                            if (!state.online) "Sem internet — sua sessão continua salva; reconecte para continuar." else pageError ?: "",
+                            Modifier.align(Alignment.Center),
+                            title = if (!state.online) "Sem internet" else "Página indisponível",
+                            onRetry = {
+                                pageError = null
+                                val view = webView
+                                if (initialLoadPending || view?.url.isNullOrBlank()) { initialLoadPending = false; view?.loadUrl(startUrl) } else view?.reload()
+                            },
                         )
                     }
                 }

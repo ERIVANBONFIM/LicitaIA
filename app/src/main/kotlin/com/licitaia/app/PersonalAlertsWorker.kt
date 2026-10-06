@@ -1,4 +1,4 @@
-package com.licitaia.app
+﻿package com.licitaia.app
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -17,7 +17,9 @@ import java.util.concurrent.TimeUnit
  *
  * Dois agendamentos periódicos independentes (o mesmo Worker, selecionado pelo input [KEY_KIND]):
  * - [KIND_DOCUMENTS]: vencimento de documentos — dados locais (Room), SEM exigência de rede;
- * - [KIND_RADARS]: radares públicos (PNCP) — exige [NetworkType.CONNECTED].
+ * - [KIND_RADARS]: radares públicos (PNCP e Compras.gov.br, mesma lógica de busca/dedup/portais do app) a cada
+ *   15 min (mínimo do WorkManager) — exige [NetworkType.CONNECTED]. O repositório limita a uma busca simultânea
+ *   por radar e aplica backoff após HTTP 429/5xx; a notificação só cita oportunidades nunca vistas.
  * Deduplicação (um aviso de documentos por dia/empresa; ids de oportunidades já vistas) e a
  * "sessão lembrada" (restoreSession) são mantidas em SharedPreferences "personal_alerts".
  */
@@ -57,17 +59,18 @@ class PersonalAlertsWorker @AssistedInject constructor(
         prefs.edit().putLong(key, today).apply()
     }
 
-    /** Radares ativos: consulta pública ao PNCP; só avisa resultados nunca vistos. */
+    /** Radares ativos: consulta pública (PNCP e Compras.gov.br); só avisa resultados nunca vistos (dedup por id de oportunidade). */
     private suspend fun checkRadars(session: AuthSession, company: Long, prefs: SharedPreferences) {
         for (radar in radars.observeRadars(company).first().filter { it.active }) {
             if (isStopped || auth.session.value != session) break
-            val found = opportunities.runRadar(radar.id).getOrThrow()
+            // Falha de um radar (fonte em backoff, 429...) não derruba os demais nem força retry imediato: tenta no próximo ciclo.
+            val found = opportunities.runRadar(radar.id).getOrNull() ?: continue
             val seenKey = "radar:${company}:${radar.id}"
             val previous = prefs.getStringSet(seenKey, emptySet()).orEmpty()
             val ids = found.map { it.opportunity.id }.toSet()
             val fresh = ids - previous
             if (fresh.isNotEmpty() && auth.session.value == session) notifier.notify(
-                NotificationCategory.RADAR, "Novas oportunidades no PNCP", "${fresh.size} resultado(s) novo(s) para ${radar.name}. Abra o radar para revisar.", companyId = company,
+                NotificationCategory.RADAR, "Novas oportunidades no radar", "${fresh.size} resultado(s) novo(s) para ${radar.name}. Abra o radar para revisar.", companyId = company,
             )
             prefs.edit().putStringSet(seenKey, (ids + previous).take(2000).toSet()).apply()
         }
@@ -79,13 +82,15 @@ class PersonalAlertsWorker @AssistedInject constructor(
         private const val KIND_RADARS = "radars"
         private const val WORK_RADARS = "personal-public-alerts"
         private const val WORK_DOCUMENTS = "personal-document-alerts"
+        private const val RADAR_INTERVAL_MINUTES = 15L
 
         fun schedule(context: Context) {
             val manager = WorkManager.getInstance(context)
-            // Radares: precisam de rede. UPDATE substitui o agendamento antigo (sem input) mantendo o período.
-            val radars = PeriodicWorkRequestBuilder<PersonalAlertsWorker>(6, TimeUnit.HOURS)
+            // Radares: precisam de rede; 15 min é o mínimo do WorkManager. UPDATE substitui o agendamento anterior (6 h).
+            val radars = PeriodicWorkRequestBuilder<PersonalAlertsWorker>(RADAR_INTERVAL_MINUTES, TimeUnit.MINUTES)
                 .setInputData(workDataOf(KEY_KIND to KIND_RADARS))
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
                 .build()
             manager.enqueueUniquePeriodicWork(WORK_RADARS, ExistingPeriodicWorkPolicy.UPDATE, radars)
             // Documentos: só dados locais — sem constraint de rede, para avisar mesmo offline.

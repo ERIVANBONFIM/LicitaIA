@@ -129,9 +129,13 @@ internal object PncpMapper {
             add(ref.raw)
         }.distinct()
 
+        val platform = PncpPlatforms.classify(dto.usuarioNome, dto.linkSistemaOrigem)
         return Opportunity(
+            // O id continua "PNCP:<número de controle>" (estável para cache, detalhe e licitações salvas);
+            // só o campo portal reflete a plataforma de origem classificada por usuarioNome.
             id = ref.opportunityId,
-            portal = Portal.PNCP,
+            portal = platform,
+            platformName = PncpPlatforms.displayName(dto.usuarioNome, platform),
             number = dto.numeroCompra?.trim()?.takeIf { it.isNotEmpty() }?.let { n -> dto.anoCompra?.let { "$n/$it" } ?: n } ?: ref.raw,
             agency = agency,
             objectDescription = objeto.ifEmpty { "Objeto não informado pelo órgão" },

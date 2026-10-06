@@ -47,6 +47,9 @@ class PncpConnector internal constructor(
 
     override val portal: Portal = Portal.PNCP
 
+    /** O PNCP agrega publicações de Compras.gov.br, Licitanet, BLL, PCP e outras plataformas (ver [PncpPlatforms]). */
+    override val searchablePortals: Set<Portal> = PncpPlatforms.COVERED_PORTALS
+
     override val capabilities: ConnectorCapabilities = ConnectorCapabilities(
         supportsWebView = true,
         supportsOfficialApi = true,
@@ -61,6 +64,8 @@ class PncpConnector internal constructor(
             "Modalidades representadas: Pregão Eletrônico, Dispensa, Concorrência (eletrônica/presencial) e Credenciamento. " +
                 "Pregão presencial, inexigibilidade, leilão e outras não são listadas.",
             "A API não oferece busca por texto: palavras-chave e valores são filtrados no aparelho sobre os resultados obtidos.",
+            "A plataforma de origem (Compras.gov.br, Licitanet, BLL, Portal de Compras Públicas ou outra) é identificada pelo " +
+                "campo usuarioNome; o filtro por portal é aplicado no aparelho sobre os resultados obtidos.",
             "Segmento é inferido por palavras do objeto (heurística); valor estimado 0 indica orçamento sigiloso ou não informado.",
             "A data da sessão de disputa não é publicada pelo PNCP; o app usa o fim do recebimento de propostas.",
             "Os documentos (edital) são links públicos do PNCP; o conteúdo do PDF não é lido aqui.",
@@ -70,7 +75,8 @@ class PncpConnector internal constructor(
     // ------------------------------------------------------------ consulta pública
 
     override suspend fun listOpportunities(filter: OpportunityFilter): List<Opportunity> {
-        if (filter.portals.isNotEmpty() && Portal.PNCP !in filter.portals) return emptyList()
+        // O filtro de portal é aplicado localmente sobre a plataforma classificada (usuarioNome).
+        if (filter.portals.isNotEmpty() && filter.portals.none { it in searchablePortals }) return emptyList()
 
         val today = PncpMapper.queryDate(clock())
         val codes = filter.modality?.let { listOf(PncpModalities.codeOf(it)) } ?: PncpModalities.SEARCHED_CODES

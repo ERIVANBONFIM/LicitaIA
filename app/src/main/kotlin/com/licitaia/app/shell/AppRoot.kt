@@ -28,7 +28,12 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -174,6 +179,7 @@ private fun MainShell(
     val locked by viewModel.locked.collectAsStateWithLifecycle()
     val hasPin by viewModel.hasPin.collectAsStateWithLifecycle()
     val route by pendingRoute.collectAsStateWithLifecycle()
+    val online by viewModel.online.collectAsStateWithLifecycle()
 
     val backEntry by nav.currentBackStackEntryAsState()
     val currentRoute = backEntry?.destination?.route
@@ -251,6 +257,13 @@ private fun MainShell(
         }
     }
 
+    // Conectividade: avisa quando a conexão volta (a faixa "Sem internet" some sozinha).
+    var wasOffline by remember { mutableStateOf(false) }
+    LaunchedEffect(online) {
+        if (!online) wasOffline = true
+        else if (wasOffline) { wasOffline = false; navigator.showMessage("Conexão restabelecida") }
+    }
+
     // Permissão de notificações (Android 13+), pedida uma vez após o login.
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(loggedIn) {
@@ -299,9 +312,24 @@ private fun MainShell(
         ) {
             Box(Modifier.fillMaxSize().background(LicitaColors.Background)) {
                 Column(Modifier.fillMaxSize()) {
+                    // Faixa fixa "Sem internet" (global): ocupa a área da barra de status; as telas abaixo não repetem o recuo.
+                    AnimatedVisibility(visible = !online) {
+                        Text(
+                            "Sem internet — busca, portais e IA ficam indisponíveis até reconectar",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xFF1A1A1A),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFFFACC15))
+                                .windowInsetsPadding(WindowInsets.statusBars)
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .semantics { liveRegion = LiveRegionMode.Polite },
+                        )
+                    }
                     Box(
                         Modifier
                             .weight(1f)
+                            .then(if (!online) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier)
                             .then(if (showBottomBar) Modifier.consumeWindowInsets(WindowInsets.navigationBars) else Modifier),
                     ) {
                         NavHost(

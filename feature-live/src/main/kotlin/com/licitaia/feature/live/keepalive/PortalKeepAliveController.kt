@@ -1,4 +1,4 @@
-package com.licitaia.feature.live.keepalive
+﻿package com.licitaia.feature.live.keepalive
 
 import android.content.Context
 import android.os.Handler
@@ -18,6 +18,11 @@ import com.licitaia.domain.repository.AppNotifier
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.PortalRepository
 import com.licitaia.domain.repository.SettingsRepository
+import com.licitaia.domain.live.LiveSessionManager
+import com.licitaia.domain.model.LiveStatus
+import com.licitaia.domain.network.ConnectivityMonitor
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.withTimeoutOrNull
 import com.licitaia.feature.live.web.PortalWebPolicy
 import com.licitaia.feature.live.web.PortalWebSessions
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -51,6 +56,10 @@ import javax.inject.Singleton
  *   notificação crítica SESSOES com rota para o portal. A preferência continua ligada: após novo login manual,
  *   o ciclo volta sozinho.
  *
+ * Sem internet (NetworkCallback / NET_CAPABILITY_VALIDATED via [ConnectivityMonitor]) o ciclo pausa e nada é
+ * concluído; ao voltar a rede faz um probe logo em seguida. Página de erro, HTTP ≥ 500 ou timeout = inconclusivo.
+ * EXPIRED exige confirmação por um segundo probe com rede.
+ *
  * Para quando nenhum portal está ativo: logout, troca de empresa, "Sair do portal", sessão expirada, preferência
  * desligada ou ação "Parar" da notificação.
  *
@@ -65,6 +74,8 @@ class PortalKeepAliveController @Inject constructor(
     private val portals: PortalRepository,
     private val settings: SettingsRepository,
     private val notifier: AppNotifier,
+    private val connectivity: ConnectivityMonitor,
+    private val liveSessions: dagger.Lazy<LiveSessionManager>,
 ) {
     private data class Plan(val companyId: Long?, val portals: Set<Portal>, val intervalMinutes: Int)
 
@@ -106,6 +117,28 @@ class PortalKeepAliveController @Inject constructor(
                 .distinctUntilChanged()
                 .catch { emit(Plan(null, emptySet(), AppSettings().portalKeepAliveMinutes)) }
                 .collect { apply(it) }
+        }
+        // Sem internet por mais de 30 s com keep-alive ou pregão assistido ativo: UM aviso por queda.
+        scope.launch {
+            connectivity.online.collectLatest { online ->
+                if (online) return@collectLatest
+                delay(OFFLINE_NOTICE_MS)
+                if (connectivity.isOnline) return@collectLatest
+                val companyId = plan.companyId ?: auth.session.value?.activeCompany?.id
+                val liveActive = runCatching {
+                    liveSessions.get().sessions.value.any { it.companyId == companyId && it.status != LiveStatus.ENCERRADA }
+                }.getOrDefault(false)
+                if (plan.portals.isEmpty() && !liveActive) return@collectLatest
+                runCatching {
+                    notifier.notify(
+                        category = NotificationCategory.SESSOES,
+                        title = "Sem internet: acompanhamento do pregão pausado",
+                        body = "A recarga automática dos portais e o acompanhamento ficam pausados até a conexão voltar. " +
+                            "Sua sessão continua salva; ao reconectar, o app verifica o portal automaticamente.",
+                        companyId = companyId,
+                    )
+                }
+            }
         }
     }
 
@@ -162,32 +195,59 @@ class PortalKeepAliveController @Inject constructor(
         reconcileService()
     }
 
+    /**
+     * Laço do portal. Sem internet o ciclo PAUSA (nenhuma recarga, nenhuma conclusão sobre a sessão) e retoma
+     * quando o NetworkCallback informa rede validada de novo, com um probe logo em seguida. Um resultado EXPIRED
+     * só vale após confirmação ([PortalWebPolicy.EXPIRED_CONFIRMATIONS] probes seguidos, com rede).
+     */
     private fun launchLoop(companyId: Long, portal: Portal, minutes: Int): Job = scope.launch {
+        var consecutiveExpired = 0
+        var nextDelay = minutes * 60_000L
         while (isActive) {
-            delay(minutes * 60_000L)
+            // Espera o intervalo; se a rede cair nesse meio-tempo, para de contar e aguarda ela voltar.
+            val wentOffline = withTimeoutOrNull(nextDelay) { connectivity.online.first { !it } } != null
+            nextDelay = minutes * 60_000L
+            if (wentOffline || !connectivity.isOnline) {
+                connectivity.online.first { it }
+                delay(RECONNECT_SETTLE_MS) // ao voltar: probe logo em seguida
+            }
             val outcome = runCatching { ping(companyId, portal) }.getOrDefault(PortalWebPolicy.Signal.NONE)
             if (outcome == PortalWebPolicy.Signal.EXPIRED) {
-                // Fora deste job: marcar EXPIRADA tira o portal do plano e cancela este laço.
-                scope.launch { onExpired(companyId, portal) }
-                break
+                consecutiveExpired++
+                if (PortalWebPolicy.keepAliveConfirmsExpired(consecutiveExpired)) {
+                    // Fora deste job: marcar EXPIRADA tira o portal do plano e cancela este laço.
+                    scope.launch { onExpired(companyId, portal) }
+                    break
+                }
+                nextDelay = CONFIRM_DELAY_MS // confirma em instantes antes de alertar
+            } else {
+                consecutiveExpired = 0
             }
         }
     }
 
-    /** Uma recarga da página do usuário. EXPIRED = a sessão caiu; NONE = ok ou inconclusivo (rede/timeout). */
+    /**
+     * Uma recarga da página do usuário. EXPIRED = a sessão caiu; NONE = ok ou inconclusivo
+     * (sem rede antes/depois, erro de carga, HTTP ≥ 500, timeout).
+     */
     private suspend fun ping(companyId: Long, portal: Portal): PortalWebPolicy.Signal {
         if (auth.session.value?.activeCompany?.id != companyId) return PortalWebPolicy.Signal.NONE
+        if (!connectivity.isOnline) return PortalWebPolicy.Signal.NONE
         val last = runCatching { portals.lastWebUrl(companyId, portal) }.getOrNull()
         val url = PortalWebPolicy.keepAliveUrl(portal, last) ?: return PortalWebPolicy.Signal.NONE
         val result = HeadlessPortalProbe.run(context, companyId, portal, url)
-        val finalUrl = result.finalUrl ?: return PortalWebPolicy.Signal.NONE
+        PortalWebSessions.flush(companyId)
+        val finalUrl = result.finalUrl
         return PortalWebPolicy.evaluate(
-            portal, finalUrl,
-            hasCookies = PortalWebSessions.hasCookies(companyId, finalUrl),
+            portal, finalUrl ?: url,
+            hasCookies = PortalWebSessions.hasCookies(companyId, finalUrl ?: url),
             // Carregamos uma página da área logada: se terminou no login, o portal nos devolveu para lá.
             previousWasLoginPage = false,
             currentStatus = PortalConnectionStatus.CONECTADO,
             contentExpired = result.contentExpired,
+            // A rede pode ter caído durante o carregamento: só conclui se continua online agora.
+            online = connectivity.isOnline,
+            loadFailed = finalUrl == null,
         )
     }
 
@@ -265,5 +325,14 @@ class PortalKeepAliveController @Inject constructor(
         if (!observing) return
         observing = false
         runCatching { lifecycle.removeObserver(onForeground) }
+    }
+
+    private companion object {
+        /** Espera após a rede voltar antes do probe (DNS/SSO estabilizarem). */
+        const val RECONNECT_SETTLE_MS = 5_000L
+        /** Intervalo do probe de confirmação após um primeiro EXPIRED. */
+        const val CONFIRM_DELAY_MS = 30_000L
+        /** Queda de rede mais longa que isto gera o aviso "Sem internet". */
+        const val OFFLINE_NOTICE_MS = 30_000L
     }
 }

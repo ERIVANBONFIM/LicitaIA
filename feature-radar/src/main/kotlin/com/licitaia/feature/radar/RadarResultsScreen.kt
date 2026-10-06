@@ -1,4 +1,4 @@
-package com.licitaia.feature.radar
+﻿package com.licitaia.feature.radar
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
@@ -25,6 +25,7 @@ import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.domain.model.Radar
 import com.licitaia.domain.model.ScoredOpportunity
+import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.OpportunityRepository
 import com.licitaia.domain.repository.RadarRepository
@@ -42,7 +43,8 @@ class RadarResultsViewModel @Inject constructor(
     tenders: TenderRepository,
     private val radars: RadarRepository,
     private val opportunities: OpportunityRepository,
-) : OpportunityListViewModel(auth, tenders) {
+    connectivity: ConnectivityMonitor,
+) : OpportunityListViewModel(auth, tenders, connectivity) {
 
     val radarId: Long = savedStateHandle.longArg("radarId") ?: -1L
 
@@ -73,7 +75,7 @@ fun RadarResultsScreen(viewModel: RadarResultsViewModel = hiltViewModel()) {
         title = radar?.name ?: "Resultados do Radar",
         showBack = true,
         actions = {
-            IconButton(onClick = viewModel::reload, enabled = !list.loading) {
+            IconButton(onClick = viewModel::refresh, enabled = !list.loading && !list.refreshing) {
                 Icon(Icons.Outlined.Refresh, contentDescription = "Atualizar resultados")
             }
             if (radar != null) {
@@ -83,8 +85,9 @@ fun RadarResultsScreen(viewModel: RadarResultsViewModel = hiltViewModel()) {
             }
         },
     ) { padding ->
+        OpportunityRefreshBox(list, viewModel, Modifier.fillMaxSize().padding(padding)) {
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
+            Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -105,6 +108,7 @@ fun RadarResultsScreen(viewModel: RadarResultsViewModel = hiltViewModel()) {
                 emptyMessage = "Nenhuma oportunidade atende aos critérios deste radar. Tente reduzir o score mínimo ou ampliar as palavras-chave.",
                 emptyIcon = Icons.Outlined.Radar,
             )
+        }
         }
     }
 }

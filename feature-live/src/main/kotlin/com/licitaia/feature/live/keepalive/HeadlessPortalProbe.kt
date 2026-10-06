@@ -10,6 +10,7 @@ import android.view.View
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -127,11 +128,19 @@ internal object HeadlessPortalProbe {
 
                         override fun onPageFinished(view: WebView, url: String) {
                             if (done || !PortalWebPolicy.isAllowed(portal, url)) return
+                            // Grava cookies renovados pelo portal a cada navegação concluída.
+                            PortalWebSessions.flush(companyId)
                             scheduleSettle(view, url)
                         }
 
+                        // Falha de carga do documento (sem rede, DNS, timeout) = inconclusivo, nunca "sessão encerrada".
                         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                             if (request.isForMainFrame) finish(Result(null, false))
+                        }
+
+                        // HTTP ≥ 500 / 408 / 429 no documento: servidor/rede com problema, não resposta de sessão.
+                        override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                            if (request.isForMainFrame && PortalWebPolicy.isServerFailure(errorResponse.statusCode)) finish(Result(null, false))
                         }
 
                         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {

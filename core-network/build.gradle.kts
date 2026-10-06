@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.ksp)
@@ -10,6 +10,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core-domain"))
     api(libs.okhttp)
     api(libs.retrofit)
     api(libs.kotlinx.serialization.json)

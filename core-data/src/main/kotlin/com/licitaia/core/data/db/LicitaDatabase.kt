@@ -1,4 +1,4 @@
-package com.licitaia.core.data.db
+﻿package com.licitaia.core.data.db
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
@@ -11,7 +11,7 @@ import androidx.room.TypeConverters
         PortalSessionEntity::class, LiveSessionEntity::class, BidEventEntity::class, NotificationEntity::class,
         AuditEventEntity::class, AiConfigEntity::class, MessageEntity::class, CompetitionEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(RoomConverters::class)

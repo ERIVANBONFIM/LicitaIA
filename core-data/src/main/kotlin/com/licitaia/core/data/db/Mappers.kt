@@ -59,12 +59,12 @@ fun Radar.toEntity() = RadarEntity(
 
 fun OpportunityEntity.toDomain() = Opportunity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
-    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl,
+    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, platformName,
 )
 
 fun Opportunity.toEntity(now: Long) = OpportunityEntity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
-    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now,
+    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now, platformName,
 )
 
 // ---------------------------------------------------------------- licitação / análise

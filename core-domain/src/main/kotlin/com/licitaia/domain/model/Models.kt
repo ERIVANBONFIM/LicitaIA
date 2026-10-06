@@ -83,6 +83,11 @@ data class Opportunity(
     val requiresLocalSupport: Boolean = false,
     val keywords: List<String> = emptyList(),
     val editalUrl: String? = null,
+    /**
+     * Nome exibível da plataforma que publicou a contratação (campo `usuarioNome` do PNCP, ex.: "Licitar Digital").
+     * Null quando a fonte não informa (ex.: conector Compras.gov.br, cache antigo).
+     */
+    val platformName: String? = null,
 )
 
 data class ScoredOpportunity(

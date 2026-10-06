@@ -1,4 +1,4 @@
-package com.licitaia.core.data.backup
+﻿package com.licitaia.core.data.backup
 
 import android.content.ContentValues
 import android.content.Context
@@ -39,7 +39,7 @@ class CompanyBackupRepository @Inject constructor(
 
     private companion object {
         /** Versão de schema gravada no backup = versão atual do Room; restauração aceita versões anteriores. */
-        const val BACKUP_SCHEMA = 6
+        const val BACKUP_SCHEMA = 7
     }
 
     private fun session() = requireNotNull(holder.current) { "Entre em sua conta." }.also {

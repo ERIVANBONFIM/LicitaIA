@@ -16,6 +16,7 @@ import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompanyRepository
 import com.licitaia.domain.repository.NotificationRepository
 import com.licitaia.domain.repository.SettingsRepository
+import com.licitaia.domain.network.ConnectivityMonitor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,7 +45,11 @@ class ShellViewModel @Inject constructor(
     settingsRepository: SettingsRepository,
     appNotifier: AppNotifier,
     private val identitySignOut: IdentitySignOut,
+    connectivity: ConnectivityMonitor,
 ) : ViewModel() {
+
+    /** Conexão com a internet (rede validada) — faixa global "Sem internet" e aviso de reconexão. */
+    val online: StateFlow<Boolean> = connectivity.online
 
     /** null = restaurando sessão; true/false = iniciar logado ou no login. */
     private val _startLoggedIn = MutableStateFlow<Boolean?>(null)

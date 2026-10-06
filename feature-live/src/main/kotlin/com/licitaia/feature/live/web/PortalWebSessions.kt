@@ -18,6 +18,19 @@ import kotlinx.coroutines.withContext
  * do app (ainda isolado dos navegadores do aparelho) — a tela mostra um aviso discreto.
  *
  * Nunca lê valores de cookies para outro fim que não expirá-los em "Sair do portal".
+ *
+ * Persistência da sessão:
+ * - [flush] é chamado após cada navegação concluída (tela e probe do keep-alive) e ao sair da tela, para que
+ *   cookies renovados pelo portal cheguem ao disco mesmo se a rede ou o app caírem em seguida.
+ * - Nenhum código do app chama `removeSessionCookies`/`removeAllCookies`; cookies só são expirados em
+ *   "Sair do portal" ([clearPortalCookies]), e apenas os do portal escolhido.
+ * - Cookies de SESSÃO (sem Expires/Max-Age) e tokens de SPA em `sessionStorage` vivem no processo do WebView.
+ *   Se o portal depende deles (ex.: SSO gov.br/cnetmobile), a sessão sobrevive enquanto o processo estiver vivo —
+ *   é para isso que o "Manter sessão ativa" usa um serviço em primeiro plano. Se o Android encerrar o app, o
+ *   portal pode exigir novo login; o app NÃO tenta persistir/recriar cookies manualmente (seria guardar
+ *   credencial de sessão fora do WebView).
+ * - Falta de internet NUNCA encerra a sessão: sem rede o app não conclui nada sobre o status
+ *   ([PortalWebPolicy.canConclude]).
  */
 object PortalWebSessions {
 

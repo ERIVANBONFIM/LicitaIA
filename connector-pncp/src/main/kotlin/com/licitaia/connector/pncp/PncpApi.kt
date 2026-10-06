@@ -22,8 +22,8 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Falha ao consultar o PNCP, já com mensagem amigável em pt-BR. */
-class PncpException(message: String, val kind: Kind, val httpStatus: Int? = null, cause: Throwable? = null) :
-    IOException(message, cause) {
+class PncpException(message: String, val kind: Kind, override val httpStatus: Int? = null, cause: Throwable? = null) :
+    IOException(message, cause), com.licitaia.connector.api.HttpStatusFailure {
     enum class Kind { OFFLINE, TIMEOUT, HTTP, INVALID_RESPONSE }
 }
 

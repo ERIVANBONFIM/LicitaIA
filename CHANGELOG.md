@@ -2,6 +2,19 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.4.2-personal] — 2026-10-06
+
+### Corrigido
+- Radar/Busca: licitações publicadas pelo Compras.gov.br apareciam rotuladas "PNCP". Agora cada licitação do PNCP é
+  classificada pela plataforma de origem (`usuarioNome`/`linkSistemaOrigem`): Compras.gov.br, BLL, Licitanet,
+  Portal de Compras Públicas; demais mostram "via PNCP · <plataforma>". Licitanet/BLL/PCP passam a ter busca real.
+- Portais: sem internet a sessão não é mais marcada como encerrada; a recarga automática pausa e retoma sozinha.
+
+### Adicionado
+- Busca em tempo real: atualização automática a cada 2 min com a tela aberta, puxar para atualizar, radar em
+  segundo plano a cada 15 min (antes 6 h).
+- Aviso global "Sem internet" e telas que dependem de rede falham na hora com aviso claro.
+- Room v7 (coluna `platformName`).
 ## [0.4.1-personal] — 2026-10-06
 
 ### Corrigido

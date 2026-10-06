@@ -18,6 +18,7 @@ import com.licitaia.domain.repository.AiConfigRepository
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
+import com.licitaia.domain.network.ConnectivityMonitor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
@@ -83,6 +84,8 @@ data class AiSettingsUiState(
     val activeWithoutKey: Boolean get() = active != AiProviderType.MOCK && !config(active).isConfigured
 }
 
+private const val OFFLINE_MESSAGE = "Sem internet — reconecte para entrar na conta ou testar o provedor de IA."
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class AiSettingsViewModel @Inject constructor(
@@ -90,6 +93,7 @@ class AiSettingsViewModel @Inject constructor(
     private val aiConfig: AiConfigRepository,
     private val googleAuth: GoogleAiAuthorizer,
     private val chatGpt: ChatGptAuthorizer,
+    private val connectivity: ConnectivityMonitor,
 ) : ViewModel() {
 
     private val local = MutableStateFlow(AiSettingsUiState())
@@ -167,6 +171,8 @@ class AiSettingsViewModel @Inject constructor(
         val busy = s.chatGptLogin is ChatGptLoginState.Starting || s.chatGptLogin is ChatGptLoginState.OpenBrowser ||
             s.chatGptLogin is ChatGptLoginState.Waiting
         if (busy) return
+        // Sem internet: falha na hora em vez de abrir o navegador e ficar esperando.
+        if (!connectivity.hasNetwork) { setOAuth(AiProviderType.OPENAI, OAuthFlowState.Error(OFFLINE_MESSAGE)); return }
         setOAuth(AiProviderType.OPENAI, OAuthFlowState.Idle)
         chatGpt.begin(oauthScope())
     }
@@ -307,6 +313,7 @@ class AiSettingsViewModel @Inject constructor(
     fun connectGoogle(provider: AiProviderType, cloudProject: String) {
         val s = state.value
         if (!s.canConfigure || !provider.supportsOAuth || s.oauth[provider] == OAuthFlowState.Loading) return
+        if (!connectivity.hasNetwork) { setOAuth(provider, OAuthFlowState.Error(OFFLINE_MESSAGE)); return }
         val project = cloudProject.trim().takeIf { it.isNotEmpty() }
         if (project != null && !CLOUD_PROJECT_ID.matches(project)) {
             setOAuth(provider, OAuthFlowState.Error("ID de projeto Google Cloud inválido (6–30 caracteres: letras minúsculas, dígitos e hifens)."))
@@ -374,6 +381,7 @@ class AiSettingsViewModel @Inject constructor(
 
     fun test(provider: AiProviderType) {
         if (state.value.tests[provider] == TestState.Running) return
+        if (!connectivity.hasNetwork) { viewModelScope.launch { _events.send(OFFLINE_MESSAGE) }; return }
         local.update { it.copy(tests = it.tests + (provider to TestState.Running)) }
         viewModelScope.launch {
             val result = runCatching { aiConfig.testConnection(provider).getOrThrow() }

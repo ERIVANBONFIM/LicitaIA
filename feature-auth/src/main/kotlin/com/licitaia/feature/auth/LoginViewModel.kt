@@ -7,6 +7,7 @@ import com.licitaia.domain.auth.GoogleIdentity
 import com.licitaia.domain.auth.NoCompanyAccessException
 import com.licitaia.domain.auth.NoLocalLinkException
 import com.licitaia.domain.model.AuthProvider
+import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.feature.auth.google.GoogleCredentialClient
 import com.licitaia.feature.auth.google.GoogleSignInResult
 import kotlinx.coroutines.Job
@@ -70,6 +71,7 @@ class LoginViewModel @Inject constructor(
     private val auth: AuthRepository,
     companyRepository: CompanyRepository,
     private val google: GoogleCredentialClient,
+    private val connectivity: ConnectivityMonitor,
 ) : ViewModel() {
 
     val companies: StateFlow<List<Company>> = companyRepository.observeCompanies()
@@ -90,6 +92,10 @@ class LoginViewModel @Inject constructor(
         if (s.busy) return
         if (!google.isConfigured) {
             _state.update { it.copy(generalError = "Login Google não está configurado neste build (LICITAIA_GOOGLE_SERVER_CLIENT_ID). Veja o README.") }
+            return
+        }
+        if (!connectivity.hasNetwork) {
+            _state.update { it.copy(generalError = "Sem internet — a entrada com Google precisa de conexão. A conta local (e-mail e senha) funciona offline.") }
             return
         }
         _state.update { it.copy(googleLoading = true, generalError = null, info = null, googlePending = null, linkPending = null, linkError = null) }

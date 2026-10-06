@@ -1,4 +1,4 @@
-package com.licitaia.feature.live.web
+﻿package com.licitaia.feature.live.web
 
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.PortalConnectionStatus
@@ -359,5 +359,75 @@ class ComprasGovFlowTest {
             PortalWebPolicy.Signal.NONE,
             PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, "https://www.comprasnet.gov.br/seguro/loginFornecedorSelecEmpresa.asp", true, previousWasLoginPage = true, currentStatus = conn),
         )
+    }
+
+    // ------------------------------------------------------------ sem internet / erro de carga
+
+    private val loginUrl = "https://www.comprasnet.gov.br/seguro/loginPortal.asp?perfil=1"
+    private val areaUrl = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras"
+
+    @Test
+    fun `redirect ao login sem internet nao expira a sessao`() {
+        assertEquals(
+            Signal.NONE,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, loginUrl, true, previousWasLoginPage = false, currentStatus = PortalConnectionStatus.CONECTADO, online = false),
+        )
+        // Mesma navegação com rede: aí sim é sessão encerrada.
+        assertEquals(
+            Signal.EXPIRED,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, loginUrl, true, previousWasLoginPage = false, currentStatus = PortalConnectionStatus.CONECTADO, online = true),
+        )
+    }
+
+    @Test
+    fun `pagina de erro de carga ou HTTP 5xx nao expira`() {
+        assertEquals(
+            Signal.NONE,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, loginUrl, true, previousWasLoginPage = false, currentStatus = PortalConnectionStatus.CONECTADO, loadFailed = true),
+        )
+        assertTrue(PortalWebPolicy.isServerFailure(500))
+        assertTrue(PortalWebPolicy.isServerFailure(503))
+        assertTrue(PortalWebPolicy.isServerFailure(408))
+        assertTrue(PortalWebPolicy.isServerFailure(429))
+        assertFalse(PortalWebPolicy.isServerFailure(401))
+        assertFalse(PortalWebPolicy.isServerFailure(200))
+    }
+
+    @Test
+    fun `aviso de sessao na SPA sem rede (API inacessivel) nao expira`() {
+        assertEquals(
+            Signal.NONE,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, areaUrl, true, previousWasLoginPage = false, currentStatus = PortalConnectionStatus.CONECTADO, contentExpired = true, online = false),
+        )
+        assertEquals(
+            Signal.NONE,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, areaUrl, true, previousWasLoginPage = false, currentStatus = PortalConnectionStatus.CONECTADO, contentExpired = true, loadFailed = true),
+        )
+    }
+
+    @Test
+    fun `sem rede tambem nao marca login nem libera dominio fora da allowlist`() {
+        assertEquals(
+            Signal.NONE,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, areaUrl, true, previousWasLoginPage = true, currentStatus = PortalConnectionStatus.DESCONECTADO, online = false),
+        )
+        assertEquals(
+            Signal.BLOCKED,
+            PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, "https://evil.example.com/", true, previousWasLoginPage = false, currentStatus = PortalConnectionStatus.CONECTADO, online = false),
+        )
+    }
+
+    @Test
+    fun `canConclude exige rede e carga sem erro`() {
+        assertTrue(PortalWebPolicy.canConclude(online = true, loadFailed = false))
+        assertFalse(PortalWebPolicy.canConclude(online = false, loadFailed = false))
+        assertFalse(PortalWebPolicy.canConclude(online = true, loadFailed = true))
+    }
+
+    @Test
+    fun `keep-alive so confirma expiracao apos probes seguidos`() {
+        assertFalse(PortalWebPolicy.keepAliveConfirmsExpired(0))
+        assertFalse(PortalWebPolicy.keepAliveConfirmsExpired(1))
+        assertTrue(PortalWebPolicy.keepAliveConfirmsExpired(PortalWebPolicy.EXPIRED_CONFIRMATIONS))
     }
 }

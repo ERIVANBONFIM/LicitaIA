@@ -27,6 +27,8 @@ abstract class BiddingModule {
         /**
          * PNCP e Compras.gov.br: conectores REAIS (consulta pública documentada, sem login). Demais portais:
          * sem API oficial validada, continuam atrás de conectores MOCK (isMock = true), que os repositórios de busca ignoram.
+         * A BUSCA de Licitanet, BLL e Portal de Compras Públicas é feita pelo PNCP (searchablePortals), que classifica a
+         * plataforma de origem de cada contratação; o registro continua devolvendo o mock para ações de portal.
          */
         @Provides
         @Singleton

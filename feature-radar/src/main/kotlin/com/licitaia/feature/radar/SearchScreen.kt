@@ -1,4 +1,4 @@
-package com.licitaia.feature.radar
+﻿package com.licitaia.feature.radar
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -39,6 +39,7 @@ import com.licitaia.domain.model.Modality
 import com.licitaia.domain.model.OpportunityFilter
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.ScoredOpportunity
+import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.model.Segment
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.OpportunityRepository
@@ -71,7 +72,8 @@ class SearchViewModel @Inject constructor(
     auth: AuthRepository,
     tenders: TenderRepository,
     private val opportunities: OpportunityRepository,
-) : OpportunityListViewModel(auth, tenders) {
+    connectivity: ConnectivityMonitor,
+) : OpportunityListViewModel(auth, tenders, connectivity) {
 
     private val _filters = MutableStateFlow(SearchFilters())
     val filters: StateFlow<SearchFilters> = _filters.asStateFlow()
@@ -144,8 +146,9 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
     OpportunityEvents(viewModel)
 
     LicitaScaffold(title = "Buscar Licitações", showBack = false) { padding ->
+        OpportunityRefreshBox(list, viewModel, Modifier.fillMaxSize().padding(padding)) {
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
+            Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -190,7 +193,7 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
             }
             item(key = "source-note") {
                 Text(
-                    "Fonte real: PNCP · consulta pública (propostas em aberto). Os demais portais ainda não têm API pública integrada.",
+                    "Fontes: PNCP e Compras.gov.br (consulta pública, propostas em aberto). Licitanet, BLL e PCP aparecem pelas publicações dessas plataformas no PNCP. Atualiza sozinha a cada 2 min com a tela aberta.",
                     style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
@@ -211,6 +214,7 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
                 emptyTitle = "Nenhuma licitação encontrada",
                 emptyMessage = "Ajuste a busca ou os filtros. Você também pode criar um Radar para ser avisado de novas oportunidades.",
             )
+        }
         }
     }
 }

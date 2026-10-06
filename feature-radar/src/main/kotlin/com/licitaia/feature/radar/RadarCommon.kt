@@ -1,10 +1,11 @@
-package com.licitaia.feature.radar
+﻿package com.licitaia.feature.radar
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.domain.model.ScoredOpportunity
+import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.TenderRepository
 import com.licitaia.domain.security.Permission
@@ -13,6 +14,8 @@ import java.util.Calendar
 import java.util.TimeZone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -77,12 +80,20 @@ data class OpportunityListState(
     /** Ids de oportunidade com ação em andamento. */
     val busy: Set<String> = emptySet(),
     val canAnalyze: Boolean = true,
+    /** Atualização em segundo plano (automática ou puxar para atualizar) com a lista atual ainda visível. */
+    val refreshing: Boolean = false,
+    /** Quando a lista foi obtida das fontes pela última vez (null = ainda não / só cache). */
+    val updatedAt: Long? = null,
+    /** Sem internet no momento: a lista (se houver) vem do cache local. */
+    val offline: Boolean = false,
 )
 
 /** Base das telas que listam oportunidades (busca e resultados de radar). */
 abstract class OpportunityListViewModel(
     protected val auth: AuthRepository,
     private val tenders: TenderRepository,
+    private val connectivity: ConnectivityMonitor,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
 
     private val _list = MutableStateFlow(OpportunityListState())
@@ -95,24 +106,59 @@ abstract class OpportunityListViewModel(
 
     protected abstract suspend fun fetch(companyId: Long): Result<List<ScoredOpportunity>>
 
-    /** Chamado no init das subclasses: recarrega a cada troca de empresa ativa. */
+    /**
+     * Chamado no init das subclasses: recarrega a cada troca de empresa ativa e, quando a internet volta,
+     * recarrega se a última tentativa falhou ou mostrou só o cache.
+     */
     protected fun start() {
         viewModelScope.launch {
             auth.session.map { it?.activeCompany?.id }.distinctUntilChanged().collect { reload() }
         }
+        viewModelScope.launch {
+            connectivity.online.drop(1).collect { online ->
+                _list.update { it.copy(offline = !online) }
+                val s = _list.value
+                if (online && !s.loading && (s.error != null || s.updatedAt == null || s.offline)) load(silent = s.items.isNotEmpty())
+            }
+        }
     }
 
-    fun reload() {
+    /** Recarrega mostrando o esqueleto de carregamento (troca de filtros, tentar novamente). */
+    fun reload() = load(silent = false)
+
+    /** Puxar para atualizar: mantém a lista visível enquanto consulta. */
+    fun refresh() = load(silent = _list.value.items.isNotEmpty())
+
+    /**
+     * Atualização automática enquanto a tela está visível (o chamador cancela ao sair): a cada
+     * [AUTO_REFRESH_MS] desde a última atualização, só com internet e sem outra consulta em andamento.
+     */
+    suspend fun autoRefreshLoop() {
+        while (true) {
+            val last = _list.value.updatedAt ?: clock()
+            delay((last + AUTO_REFRESH_MS - clock()).coerceAtLeast(MIN_AUTO_DELAY_MS))
+            val s = _list.value
+            if (connectivity.isOnline && !s.loading && !s.refreshing && loadJob?.isActive != true) load(silent = s.items.isNotEmpty())
+        }
+    }
+
+    private fun load(silent: Boolean) {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             val session = auth.session.value
             if (session == null) {
-                _list.update { it.copy(loading = false, error = "Sessão encerrada. Entre novamente.", items = emptyList()) }
+                _list.update { it.copy(loading = false, refreshing = false, error = "Sessão encerrada. Entre novamente.", items = emptyList()) }
                 return@launch
             }
+            val online = connectivity.isOnline
             _list.update {
-                it.copy(loading = true, error = null, canAnalyze = Rbac.can(session.user.role, Permission.ANALISAR))
+                if (silent) {
+                    it.copy(refreshing = true, offline = !online, canAnalyze = Rbac.can(session.user.role, Permission.ANALISAR))
+                } else {
+                    it.copy(loading = true, error = null, offline = !online, canAnalyze = Rbac.can(session.user.role, Permission.ANALISAR))
+                }
             }
+            // Sem internet o repositório responde na hora (cache local ou erro "Sem internet"), sem esperar timeout.
             val result = try {
                 fetch(session.activeCompany.id)
             } catch (e: CancellationException) {
@@ -122,12 +168,21 @@ abstract class OpportunityListViewModel(
             }
             _list.update { state ->
                 result.fold(
-                    onSuccess = { state.copy(loading = false, items = it.distinctBy { s -> s.opportunity.id }, error = null) },
-                    onFailure = {
+                    onSuccess = {
                         state.copy(
-                            loading = false, items = emptyList(),
-                            error = it.message?.takeIf(String::isNotBlank) ?: "Falha ao consultar os portais. Tente novamente.",
+                            loading = false, refreshing = false, items = it.distinctBy { s -> s.opportunity.id }, error = null,
+                            updatedAt = if (online) clock() else state.updatedAt, offline = !online,
                         )
+                    },
+                    onFailure = {
+                        val message = it.message?.takeIf(String::isNotBlank) ?: "Falha ao consultar os portais. Tente novamente."
+                        if (silent && state.items.isNotEmpty()) {
+                            // Atualização em segundo plano falhou: mantém a lista atual e avisa discretamente.
+                            if (online) _events.tryEmit(OpportunityEvent.Message("Não foi possível atualizar agora: $message"))
+                            state.copy(loading = false, refreshing = false, offline = !online)
+                        } else {
+                            state.copy(loading = false, refreshing = false, items = emptyList(), error = message, offline = !online)
+                        }
                     },
                 )
             }
@@ -178,5 +233,11 @@ abstract class OpportunityListViewModel(
                 _list.update { it.copy(busy = it.busy - key) }
             }
         }
+    }
+
+    internal companion object {
+        /** Atualização automática da busca/resultados com a tela aberta. */
+        const val AUTO_REFRESH_MS = 2L * 60 * 1000
+        const val MIN_AUTO_DELAY_MS = 5_000L
     }
 }

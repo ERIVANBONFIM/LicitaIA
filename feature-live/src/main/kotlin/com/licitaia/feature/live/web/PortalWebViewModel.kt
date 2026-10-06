@@ -1,4 +1,4 @@
-package com.licitaia.feature.live.web
+﻿package com.licitaia.feature.live.web
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -13,7 +13,10 @@ import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
 import com.licitaia.feature.live.keepalive.PortalKeepAliveController
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.licitaia.domain.network.ConnectivityMonitor
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -43,6 +46,8 @@ data class PortalWebUiState(
     /** "Manter sessão ativa" ligado para este portal/empresa. */
     val keepAliveOn: Boolean = false,
     val keepAliveMinutes: Int = AppSettings().portalKeepAliveMinutes,
+    /** Há rede validada. Sem rede a tela mostra "Sem internet — sua sessão continua salva" e o status NÃO muda. */
+    val online: Boolean = true,
 )
 
 /**
@@ -57,6 +62,7 @@ class PortalWebViewModel @Inject constructor(
     private val portals: PortalRepository,
     private val settings: SettingsRepository,
     private val keepAlive: PortalKeepAliveController,
+    private val connectivity: ConnectivityMonitor,
 ) : ViewModel() {
 
     val portal: Portal? = savedStateHandle.get<String>("portal")?.let { name -> Portal.entries.firstOrNull { it.name == name } }
@@ -91,7 +97,7 @@ class PortalWebViewModel @Inject constructor(
             val companyId = session.activeCompany.id
             val canSignOut = Rbac.can(session.user.role, Permission.OPERAR_SESSOES) || Rbac.can(session.user.role, Permission.GERENCIAR_EMPRESAS)
             val resume = flow { emit(runCatching { portals.lastWebUrl(companyId, p) }.getOrNull()) }
-            combine(portals.observeSessions(companyId), busy, settings.settings, resume) { sessions, b, st, last ->
+            combine(portals.observeSessions(companyId), busy, settings.settings, resume, connectivity.online) { sessions, b, st, last, online ->
                 val ps = sessions.firstOrNull { it.portal == p }
                 PortalWebUiState(
                     portal = p, companyId = companyId,
@@ -102,8 +108,9 @@ class PortalWebViewModel @Inject constructor(
                     lastUrl = last,
                     keepAliveOn = st.isPortalKeepAliveOn(companyId, p),
                     keepAliveMinutes = st.portalKeepAliveMinutes,
+                    online = online,
                 )
-            }.catch { emit(PortalWebUiState(portal = p, companyId = companyId, ready = true)) }
+            }.catch { emit(PortalWebUiState(portal = p, companyId = companyId, ready = true, online = connectivity.isOnline)) }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PortalWebUiState(portal = portal))
 
@@ -121,15 +128,22 @@ class PortalWebViewModel @Inject constructor(
      * @param contentExpired resultado da checagem de conteúdo desta página (false = não avaliado / sem aviso).
      * @return BLOCKED quando a URL está fora da allowlist (a tela decide bloquear).
      */
-    fun onNavigated(url: String, hasCookies: Boolean, contentExpired: Boolean = false): PortalWebPolicy.Signal {
+    fun onNavigated(url: String, hasCookies: Boolean, contentExpired: Boolean = false, loadFailed: Boolean = false): PortalWebPolicy.Signal {
         val p = portal ?: return PortalWebPolicy.Signal.NONE
         val s = state.value
         val companyId = s.companyId ?: return PortalWebPolicy.Signal.NONE
+        val online = connectivity.isOnline
+        // Sem rede ou com a página em erro, nada é concluído e o rastro da aba não avança (a página de erro
+        // não conta como "página anterior" para a próxima avaliação).
+        if (!PortalWebPolicy.canConclude(online, loadFailed)) {
+            if (!online || loadFailed) cancelPendingExpire()
+            return if (PortalWebPolicy.isAllowed(p, url)) PortalWebPolicy.Signal.NONE else PortalWebPolicy.Signal.BLOCKED
+        }
         val isLogin = PortalWebPolicy.isLoginPage(p, url)
         // Mesma URL avaliada mais de uma vez (history + finished + conteúdo): reaproveita o "anterior" da primeira avaliação.
         val prevWasLogin = if (url == lastUrl) lastPrevWasLogin else lastWasLogin
         val status = effectiveStatus(s.status)
-        val signal = PortalWebPolicy.evaluate(p, url, hasCookies, prevWasLogin, status, contentExpired)
+        val signal = PortalWebPolicy.evaluate(p, url, hasCookies, prevWasLogin, status, contentExpired, online = online, loadFailed = loadFailed)
         if (signal != PortalWebPolicy.Signal.BLOCKED) {
             lastPrevWasLogin = prevWasLogin
             lastUrl = url
@@ -137,8 +151,8 @@ class PortalWebViewModel @Inject constructor(
             PortalWebPolicy.host(url)?.let { visitedHosts += "https://$it/" }
         }
         when (signal) {
-            PortalWebPolicy.Signal.CONNECTED -> mark(companyId, p, loggedIn = true)
-            PortalWebPolicy.Signal.EXPIRED -> mark(companyId, p, loggedIn = false)
+            PortalWebPolicy.Signal.CONNECTED -> { cancelPendingExpire(); mark(companyId, p, loggedIn = true) }
+            PortalWebPolicy.Signal.EXPIRED -> scheduleExpire(companyId, p)
             else -> Unit
         }
         // "Voltar para onde estava": guarda a página da área logada (sanitizada), nunca com aviso de sessão encerrada.
@@ -153,6 +167,31 @@ class PortalWebViewModel @Inject constructor(
         if (clean == lastSavedResumeUrl) return
         lastSavedResumeUrl = clean
         viewModelScope.launch { runCatching { portals.saveLastWebUrl(companyId, p, clean) } }
+    }
+
+    /**
+     * Página de erro (onReceivedError do main frame, HTTP ≥ 500, timeout) — o redirecionamento ao login que a
+     * originou não conta como sessão encerrada.
+     */
+    fun onLoadFailed() = cancelPendingExpire()
+
+    private var pendingExpire: Job? = null
+
+    /**
+     * EXPIRED só é gravado depois de [EXPIRE_CONFIRM_MS] sem erro de carga e com rede: o redirecionamento ao login
+     * causado por queda de conexão (SPA sem falar com o servidor, SSO sem rede) é descartado em [onLoadFailed].
+     */
+    private fun scheduleExpire(companyId: Long, p: Portal) {
+        if (pendingExpire?.isActive == true) return
+        pendingExpire = viewModelScope.launch {
+            delay(EXPIRE_CONFIRM_MS)
+            if (connectivity.isOnline) mark(companyId, p, loggedIn = false)
+        }
+    }
+
+    private fun cancelPendingExpire() {
+        pendingExpire?.cancel()
+        pendingExpire = null
     }
 
     private fun mark(companyId: Long, p: Portal, loggedIn: Boolean) {
@@ -205,5 +244,6 @@ class PortalWebViewModel @Inject constructor(
 
     private companion object {
         const val OPTIMISTIC_WINDOW_MS = 15_000L
+        const val EXPIRE_CONFIRM_MS = 3_000L
     }
 }

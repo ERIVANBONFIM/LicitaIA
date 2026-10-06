@@ -7,6 +7,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import com.licitaia.domain.network.ConnectivityMonitor
 import kotlinx.serialization.json.Json
 import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
@@ -33,8 +34,10 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
+    fun provideOkHttpClient(@ApplicationContext context: Context, connectivity: ConnectivityMonitor): OkHttpClient {
         val builder = OkHttpClient.Builder()
+            // Sem rede: falha imediatamente com OfflineException ("Sem internet…") em vez de esperar o timeout.
+            .addInterceptor(OfflineFailFastInterceptor(connectivity))
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(90, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)

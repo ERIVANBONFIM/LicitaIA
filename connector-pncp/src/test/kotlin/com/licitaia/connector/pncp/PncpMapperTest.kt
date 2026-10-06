@@ -59,11 +59,15 @@ class PncpMapperTest {
 
         val mapped = page.data.mapNotNull(PncpMapper::toOpportunity)
         assertEquals(10, mapped.size)
-        assertTrue(mapped.all { it.portal == Portal.PNCP && it.uf == "MG" && it.modality == Modality.CREDENCIAMENTO })
+        assertTrue(mapped.all { it.uf == "MG" && it.modality == Modality.CREDENCIAMENTO && it.id.startsWith("PNCP:") })
+        // usuarioNome "ECustomize Consultoria em Software S.A" (2 registros, links portaldecompraspublicas.com.br) → PCP; demais → PNCP.
+        assertEquals(2, mapped.count { it.portal == Portal.PORTAL_COMPRAS_PUBLICAS })
+        assertEquals(8, mapped.count { it.portal == Portal.PNCP })
         assertEquals(mapped.size, mapped.map { it.id }.distinct().size)
 
         val first = mapped.first()
         assertEquals("PNCP:20918579000183-1-000016/2025", first.id)
+        assertEquals("Licitar Digital", first.platformName)
         assertEquals("004/2025", first.number)
         assertEquals("FUNDACAO MUNICIPAL DE SAUDE DE ESTRELA DO INDAIA", first.agency)
         assertTrue(first.objectDescription.startsWith("CONTRATAÇÃO DE LABORATÓRIO DE ANÁLISES CLÍNICAS"))

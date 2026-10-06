@@ -60,7 +60,21 @@ class LoginViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun vm() = LoginViewModel(auth, companies, google)
+    private val connectivity = object : com.licitaia.domain.network.ConnectivityMonitor {
+        override val online = MutableStateFlow(true)
+    }
+
+    private fun vm() = LoginViewModel(auth, companies, google, connectivity)
+
+    @Test
+    fun `google sem internet falha na hora sem abrir o seletor`() = runTest {
+        connectivity.online.value = false
+        val vm = vm()
+        vm.signInWithGoogle(activity)
+        assertFalse(vm.state.value.googleLoading)
+        assertTrue(vm.state.value.generalError!!.startsWith("Sem internet"))
+        coVerify(exactly = 0) { google.signIn(any()) }
+    }
 
     // ------------------------------------------------------------------ Google
 

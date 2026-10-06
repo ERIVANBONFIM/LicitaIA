@@ -23,8 +23,8 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Falha ao consultar o Compras.gov.br, já com mensagem amigável em pt-BR. */
-class ComprasGovException(message: String, val kind: Kind, val httpStatus: Int? = null, cause: Throwable? = null) :
-    IOException(message, cause) {
+class ComprasGovException(message: String, val kind: Kind, override val httpStatus: Int? = null, cause: Throwable? = null) :
+    IOException(message, cause), com.licitaia.connector.api.HttpStatusFailure {
     enum class Kind { OFFLINE, TIMEOUT, HTTP, INVALID_RESPONSE }
 }
 

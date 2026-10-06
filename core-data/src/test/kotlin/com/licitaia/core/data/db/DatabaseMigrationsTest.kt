@@ -161,10 +161,34 @@ class DatabaseMigrationsTest {
         verify(exactly = 0) { db.execSQL(any()) }
     }
 
+    @Test fun version7AddsPlatformNameToOpportunityCacheOnly() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val cursor = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(opportunities)") } returns cursor
+        every { cursor.moveToNext() } returnsMany listOf(true, true, false)
+        every { cursor.getColumnIndexOrThrow("name") } returns 0
+        every { cursor.getString(0) } returnsMany listOf("id", "portal")
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_6_TO_7.migrate(db)
+        assertEquals(listOf("ALTER TABLE opportunities ADD COLUMN platformName TEXT DEFAULT NULL"), sql)
+    }
+
+    @Test fun version7IsIdempotent() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val cursor = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(opportunities)") } returns cursor
+        every { cursor.moveToNext() } returnsMany listOf(true, false)
+        every { cursor.getColumnIndexOrThrow("name") } returns 0
+        every { cursor.getString(0) } returns "platformName"
+        DatabaseMigrations.FROM_6_TO_7.migrate(db)
+        verify(exactly = 0) { db.execSQL(any()) }
+    }
+
     @Test fun allMigrationsAreOrderedAndContiguous() {
         val all = DatabaseMigrations.ALL.toList()
         assertEquals(1, all.first().startVersion)
-        assertEquals(6, all.last().endVersion)
+        assertEquals(7, all.last().endVersion)
         all.zipWithNext().forEach { (a, b) -> assertEquals(a.endVersion, b.startVersion) }
     }
 }
