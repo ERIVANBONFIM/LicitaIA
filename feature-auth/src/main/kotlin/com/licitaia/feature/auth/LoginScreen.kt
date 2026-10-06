@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.Badge
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Gavel
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayCircle
@@ -223,6 +224,12 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
+                        Spacer(Modifier.height(8.dp))
+                        DemoEntryButton(
+                            loading = state.demoLoading,
+                            enabled = !state.busy,
+                            onClick = { focus.clearFocus(); viewModel.exploreDemo() },
+                        )
                     }
 
                     AnimatedVisibility(state.info != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
@@ -232,6 +239,19 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
                         }
                     }
                 }
+            }
+
+            state.linkPending?.let { pending ->
+                Spacer(Modifier.height(14.dp))
+                LinkLocalAccountCard(
+                    pending = pending,
+                    password = state.linkPassword,
+                    error = state.linkError,
+                    loading = state.googleLoading,
+                    onPassword = viewModel::onLinkPassword,
+                    onLink = { focus.clearFocus(); viewModel.linkGoogle() },
+                    onCancel = viewModel::cancelLink,
+                )
             }
 
             state.googlePending?.let { pending ->
@@ -303,6 +323,79 @@ private fun GoogleSignInButton(loading: Boolean, enabled: Boolean, onClick: () -
         }
         AnimatedVisibility(loading, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Cancelar", color = LicitaColors.TextSecondary) }
+        }
+    }
+}
+
+/** Entrada discreta no espaço de demonstração isolado (dados fictícios; nada toca empresas reais). */
+@Composable
+private fun DemoEntryButton(loading: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled && !loading, modifier = Modifier.fillMaxWidth()) {
+        if (loading) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = LicitaColors.Yellow)
+        } else {
+            Icon(Icons.Outlined.PlayCircle, contentDescription = null, tint = LicitaColors.TextSecondary, modifier = Modifier.size(18.dp))
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (loading) "Preparando a demonstração…" else "Explorar demonstração",
+            style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextSecondary,
+        )
+    }
+}
+
+/** E-mail da conta Google já pertence a uma conta local: pede a senha dela antes de vincular. */
+@Composable
+private fun LinkLocalAccountCard(
+    pending: LinkPending,
+    password: String,
+    error: String?,
+    loading: Boolean,
+    onPassword: (String) -> Unit,
+    onLink: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    var show by rememberSaveable { mutableStateOf(false) }
+    LicitaCard(Modifier.fillMaxWidth().widthIn(max = 520.dp), accent = LicitaColors.Blue) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Link, contentDescription = null, tint = LicitaColors.BlueBright)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Vincular ao Google", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                Text(pending.email, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Já existe uma conta local com este e-mail. Digite a senha dela para vincular ao Google. " +
+                "Perfil, empresas e senha são mantidos; depois você entra por qualquer um dos dois.",
+            style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = onPassword,
+            label = { Text("Senha da conta local") },
+            leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+            trailingIcon = {
+                IconButton(onClick = { show = !show }) {
+                    Icon(if (show) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, contentDescription = if (show) "Ocultar senha" else "Mostrar senha")
+                }
+            },
+            visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+            isError = error != null,
+            supportingText = error?.let { { Text(it) } },
+            singleLine = true,
+            enabled = !loading,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { onLink() }),
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SecondaryButton("Cancelar", onCancel, Modifier.weight(1f), enabled = !loading, tone = Tone.NEUTRAL)
+            PrimaryButton("Vincular e entrar", onLink, Modifier.weight(1f), loading = loading)
         }
     }
 }

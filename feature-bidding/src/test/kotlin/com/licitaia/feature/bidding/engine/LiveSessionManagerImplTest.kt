@@ -79,7 +79,14 @@ class LiveSessionManagerImplTest {
         val tenders: TenderRepository = mockk(relaxed = true)
         val auth: AuthRepository = mockk<AuthRepository>(relaxed = true).also { every { it.session } returns MutableStateFlow<AuthSession?>(session) }
         var now = 1_000_000L
-        val manager = LiveSessionManagerImpl(store, notifier, audit, auth, competition, tenders, dispatcher, { now })
+        /** Histórico de chamadas ao keep-alive (Foreground Service): contagem de sessões ativas. */
+        val keepAlive = mutableListOf<Int>()
+        val manager = LiveSessionManagerImpl(
+            store, notifier, audit, auth, competition, tenders, dispatcher, { now },
+            keepAlive = object : com.licitaia.feature.bidding.service.AssistedSessionKeepAlive {
+                override fun update(activeSessions: Int) { keepAlive += activeSessions }
+            },
+        )
 
         /** Executa as tarefas pendentes do escalonador (ator, persistência, stateIn) e devolve as sessões visíveis. */
         fun sessions(): List<LiveSession> {
@@ -287,6 +294,39 @@ class LiveSessionManagerImplTest {
         // Chamada repetida não duplica nem cria sessões extras.
         second.manager.restoreOrSeed(7)
         assertEquals(1, second.sessions().size)
+    }
+
+    @Test
+    fun `keep-alive liga com cronometro em andamento e desliga ao parar, silenciar ou encerrar`() = runTest {
+        val h = Harness(this, AuthSession(user, company))
+        val id = h.manager.openSession(spec())
+        h.sessions()
+        // Sessão aberta sem cronômetro nem alerta: nada a manter vivo.
+        assertEquals(0, h.keepAlive.lastOrNull() ?: 0)
+
+        h.manager.startTimer(id, 120)
+        h.sessions()
+        assertEquals(1, h.keepAlive.last())
+
+        h.manager.stopTimer(id)
+        h.sessions()
+        assertEquals(0, h.keepAlive.last())
+
+        // Alerta ativo (não estamos em 1º) também mantém; silenciar todas desliga; reativar religa.
+        h.manager.recordCompetitorBid(id, 95_000.0)
+        h.manager.recordOurBid(id, 96_000.0)
+        h.sessions()
+        assertEquals(1, h.keepAlive.last())
+        h.manager.setAlertsMuted(true)
+        h.sessions()
+        assertEquals(0, h.keepAlive.last())
+        h.manager.setAlertsMuted(false)
+        h.sessions()
+        assertEquals(1, h.keepAlive.last())
+
+        h.manager.finishSession(id, won = false, finalValue = 95_000.0)
+        h.sessions()
+        assertEquals(0, h.keepAlive.last())
     }
 
     @Test

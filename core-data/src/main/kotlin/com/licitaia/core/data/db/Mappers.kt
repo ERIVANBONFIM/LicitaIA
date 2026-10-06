@@ -33,8 +33,8 @@ private inline fun <reified E : Enum<E>> enumOr(name: String, fallback: E): E =
 
 // ---------------------------------------------------------------- empresa / usuário
 
-fun CompanyEntity.toDomain() = Company(id, name, tradeName, cnpj, segment, uf, city, preferredAi)
-fun Company.toEntity() = CompanyEntity(id, name, tradeName, cnpj, segment, uf, city, preferredAi)
+fun CompanyEntity.toDomain() = Company(id, name, tradeName, cnpj, segment, uf, city, preferredAi, demo)
+fun Company.toEntity() = CompanyEntity(id, name, tradeName, cnpj, segment, uf, city, preferredAi, demo)
 
 fun UserEntity.toDomain() = UserProfile(
     id, name, email, role, companyIds,

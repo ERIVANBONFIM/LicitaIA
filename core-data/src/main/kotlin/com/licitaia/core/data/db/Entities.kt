@@ -39,6 +39,8 @@ data class CompanyEntity(
     val uf: String,
     val city: String,
     val preferredAi: AiProviderType?,
+    /** Versão 6: empresa do espaço de demonstração. Default casa com DatabaseMigrations.FROM_5_TO_6. */
+    @ColumnInfo(defaultValue = "0") val demo: Boolean = false,
 )
 
 @Entity(tableName = "users", indices = [Index(value = ["email"], unique = true)])
@@ -283,10 +285,15 @@ data class AuditEventEntity(
     @ColumnInfo(defaultValue = "") val hash: String = "",
 )
 
-/** Modelo/URL por provedor. A chave e o token OAuth ficam no cofre (Keystore), nunca aqui. */
-@Entity(tableName = "ai_configs")
+/**
+ * Modelo/URL por (provedor, empresa). `companyId = 0` é o "padrão do aparelho", usado por toda empresa
+ * sem configuração própria. A chave e o token OAuth ficam no cofre (Keystore), nunca aqui.
+ */
+@Entity(tableName = "ai_configs", primaryKeys = ["provider", "companyId"])
 data class AiConfigEntity(
-    @PrimaryKey val provider: AiProviderType,
+    val provider: AiProviderType,
+    /** Versão 6: 0 = padrão do aparelho; >0 = configuração própria da empresa. */
+    @ColumnInfo(defaultValue = "0") val companyId: Long = 0,
     val model: String,
     val baseUrl: String,
     @ColumnInfo(defaultValue = "API_KEY") val authMode: AiAuthMode = AiAuthMode.API_KEY,

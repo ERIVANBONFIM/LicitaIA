@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Radar
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -57,6 +58,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.licitaia.core.ui.components.DemoBadge
 import com.licitaia.core.ui.components.PulsingDot
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
@@ -117,7 +119,10 @@ fun DrawerContent(
     onNavigate: (String) -> Unit,
     onSwitchCompany: (Long) -> Unit,
     onLogout: () -> Unit,
+    onExitDemo: () -> Unit = onLogout,
+    onResetDemo: () -> Unit = {},
 ) {
+    val demo = session?.user?.demo == true
     ModalDrawerSheet(
         drawerContainerColor = LicitaColors.Surface,
         drawerContentColor = LicitaColors.TextPrimary,
@@ -145,14 +150,39 @@ fun DrawerContent(
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 10.dp, horizontal = 20.dp), color = LicitaColors.Outline)
-            DrawerRow(
-                label = "Sair",
-                icon = Icons.AutoMirrored.Outlined.Logout,
-                selected = false,
-                alert = false,
-                tint = LicitaColors.RedBright,
-                onClick = onLogout,
-            )
+            if (demo) {
+                Text(
+                    "Demonstração".uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LicitaColors.TextMuted,
+                    modifier = Modifier.padding(start = 24.dp, top = 4.dp, bottom = 4.dp),
+                )
+                DrawerRow(
+                    label = "Reiniciar demonstração",
+                    icon = Icons.Outlined.RestartAlt,
+                    selected = false,
+                    alert = false,
+                    tint = LicitaColors.Yellow,
+                    onClick = onResetDemo,
+                )
+                DrawerRow(
+                    label = "Sair da demonstração",
+                    icon = Icons.AutoMirrored.Outlined.Logout,
+                    selected = false,
+                    alert = false,
+                    tint = LicitaColors.RedBright,
+                    onClick = onExitDemo,
+                )
+            } else {
+                DrawerRow(
+                    label = "Sair",
+                    icon = Icons.AutoMirrored.Outlined.Logout,
+                    selected = false,
+                    alert = false,
+                    tint = LicitaColors.RedBright,
+                    onClick = onLogout,
+                )
+            }
             Spacer(Modifier.height(20.dp))
         }
     }
@@ -182,6 +212,14 @@ private fun DrawerHeader(session: AuthSession?, companies: List<Company>, onSwit
         }
         if (session != null) {
             Spacer(Modifier.height(18.dp))
+            if (session.user.demo) {
+                DemoBadge(compact = false)
+                Text(
+                    "Dados fictícios em espaço isolado. Nada aqui afeta empresas reais.",
+                    style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                )
+            }
             Text(session.user.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
                 "${session.user.role.label} · ${session.user.email}",

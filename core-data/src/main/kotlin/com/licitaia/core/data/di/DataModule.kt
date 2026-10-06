@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.room.Room
 import com.licitaia.core.ai.AiSettingsSource
+import com.licitaia.core.data.crypto.DatabaseKeyProvider
+import com.licitaia.core.data.crypto.EncryptedOpenHelperFactory
 import com.licitaia.core.data.db.AiConfigDao
 import com.licitaia.core.data.db.AuditDao
 import com.licitaia.core.data.db.BidEventDao
@@ -70,10 +72,15 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DataProvidersModule {
 
+    /**
+     * Banco cifrado com SQLCipher (chave no Keystore via [DatabaseKeyProvider]). A migração do banco em texto puro
+     * existente acontece dentro da factory, na primeira abertura, antes de qualquer acesso do Room.
+     */
     @Provides
     @Singleton
-    fun provideDatabase(@ApplicationContext context: Context): LicitaDatabase =
+    fun provideDatabase(@ApplicationContext context: Context, keyProvider: DatabaseKeyProvider): LicitaDatabase =
         Room.databaseBuilder(context, LicitaDatabase::class.java, LicitaDatabase.NAME)
+            .openHelperFactory(EncryptedOpenHelperFactory(context, keyProvider))
             .addMigrations(*com.licitaia.core.data.db.DatabaseMigrations.ALL)
             .build()
 

@@ -14,12 +14,16 @@ import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -47,6 +51,12 @@ data class AiSettingsUiState(
     val noSession: Boolean = false,
     val canConfigure: Boolean = false,
     val roleLabel: String = "",
+    /** Sessão de demonstração: só heurística local; nada de IA real pode ser configurado. */
+    val demo: Boolean = false,
+    val companyId: Long = 0,
+    val companyName: String = "",
+    /** true = a tela mostra/edita o padrão do aparelho; false = a configuração resolvida para esta empresa. */
+    val editDeviceDefault: Boolean = false,
     val configs: List<AiConfig> = emptyList(),
     val active: AiProviderType = AiProviderType.MOCK,
     val tests: Map<AiProviderType, TestState> = emptyMap(),
@@ -61,6 +71,7 @@ data class AiSettingsUiState(
     val activeWithoutKey: Boolean get() = active != AiProviderType.MOCK && !config(active).isConfigured
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class AiSettingsViewModel @Inject constructor(
     auth: AuthRepository,
@@ -79,22 +90,45 @@ class AiSettingsViewModel @Inject constructor(
     /** Provedor e projeto Google Cloud do fluxo OAuth em andamento (até o retorno da Activity). */
     private var pendingOAuth: Pair<AiProviderType, String?>? = null
 
+    private val configs = local.map { it.editDeviceDefault }.distinctUntilChanged().flatMapLatest { aiConfig.observeConfigs(deviceDefault = it) }
+
     val state: StateFlow<AiSettingsUiState> = combine(
-        auth.session, aiConfig.observeConfigs(), aiConfig.observeActive(), local,
+        auth.session, configs, aiConfig.observeActive(), local,
     ) { session, configs, active, l ->
         if (session == null) {
             AiSettingsUiState(loading = false, noSession = true)
         } else {
+            val demo = session.user.demo || session.activeCompany.demo
             l.copy(
                 loading = false, error = null,
-                canConfigure = Rbac.can(session.user.role, Permission.CONFIGURAR_IA),
+                canConfigure = !demo && Rbac.can(session.user.role, Permission.CONFIGURAR_IA),
                 roleLabel = session.user.role.label,
+                demo = demo,
+                companyId = session.activeCompany.id,
+                companyName = session.activeCompany.tradeName.ifBlank { session.activeCompany.name },
                 configs = configs, active = active,
             )
         }
     }
         .catch { emit(AiSettingsUiState(loading = false, error = it.message ?: "Falha ao carregar os provedores de IA.")) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AiSettingsUiState())
+
+    /** Alterna entre editar a configuração desta empresa e o padrão do aparelho. */
+    fun setEditDeviceDefault(deviceDefault: Boolean) = local.update { it.copy(editDeviceDefault = deviceDefault, tests = emptyMap()) }
+
+    /** Escopo das credenciais OAuth no cofre: 0 = padrão do aparelho; senão a empresa ativa. */
+    private fun oauthScope(): Long = if (state.value.editDeviceDefault) 0L else state.value.companyId
+
+    /** "Usar padrão do aparelho": apaga a configuração própria desta empresa para o provedor. */
+    fun useDeviceDefault(provider: AiProviderType) {
+        val s = state.value
+        if (!s.canConfigure || s.editDeviceDefault) return
+        viewModelScope.launch {
+            runCatching { aiConfig.useDeviceDefault(provider) }
+                .onSuccess { _events.send("${provider.label}: esta empresa passa a usar o padrão do aparelho") }
+                .onFailure { _events.send(it.message ?: "Não foi possível remover a configuração da empresa") }
+        }
+    }
 
     fun setActive(provider: AiProviderType) {
         val s = state.value
@@ -140,9 +174,10 @@ class AiSettingsViewModel @Inject constructor(
         local.update { it.copy(saving = it.saving + provider) }
         viewModelScope.launch {
             // A auditoria (CONFIGURACAO) é registrada pelo AiConfigRepository.
-            runCatching { aiConfig.saveConfig(provider, trimmedModel, trimmedUrl, key, project) }
+            val scopeLabel = if (s.editDeviceDefault) "padrão do aparelho" else s.companyName
+            runCatching { aiConfig.saveConfig(provider, trimmedModel, trimmedUrl, key, project, deviceDefault = s.editDeviceDefault) }
                 .onSuccess {
-                    _events.send("${provider.label}: configuração salva" + if (key != null) " e chave cifrada no Keystore" else "")
+                    _events.send("${provider.label}: configuração salva ($scopeLabel)" + if (key != null) " e chave cifrada no Keystore" else "")
                 }
                 .onFailure { _events.send(it.message ?: "Não foi possível salvar a configuração") }
             local.update { it.copy(saving = it.saving - provider) }
@@ -152,7 +187,7 @@ class AiSettingsViewModel @Inject constructor(
     fun clearKey(provider: AiProviderType) {
         if (!state.value.canConfigure) return
         viewModelScope.launch {
-            runCatching { aiConfig.clearApiKey(provider) }
+            runCatching { aiConfig.clearApiKey(provider, deviceDefault = state.value.editDeviceDefault) }
                 .onSuccess {
                     _events.send("Chave de ${provider.label} removida")
                 }
@@ -167,7 +202,7 @@ class AiSettingsViewModel @Inject constructor(
             _events.trySend("${provider.label} não oferece login para apps de terceiros. Use uma chave de API."); return
         }
         viewModelScope.launch {
-            runCatching { aiConfig.setAuthMode(provider, mode) }
+            runCatching { aiConfig.setAuthMode(provider, mode, deviceDefault = s.editDeviceDefault) }
                 .onFailure { _events.send(it.message ?: "Não foi possível trocar o modo de autenticação") }
         }
     }
@@ -186,7 +221,7 @@ class AiSettingsViewModel @Inject constructor(
         }
         setOAuth(provider, OAuthFlowState.Loading)
         viewModelScope.launch {
-            when (val result = googleAuth.begin()) {
+            when (val result = googleAuth.begin(oauthScope())) {
                 is GoogleAiAuthResult.NeedsResolution -> {
                     pendingOAuth = provider to project
                     _authIntents.send(result.pendingIntent)
@@ -201,7 +236,7 @@ class AiSettingsViewModel @Inject constructor(
         val (provider, project) = pendingOAuth ?: return
         pendingOAuth = null
         viewModelScope.launch {
-            finishOAuth(provider, project, googleAuth.complete(resultCode, data))
+            finishOAuth(provider, project, googleAuth.complete(resultCode, data, oauthScope()))
         }
     }
 
@@ -209,7 +244,7 @@ class AiSettingsViewModel @Inject constructor(
         if (!state.value.canConfigure) return
         setOAuth(provider, OAuthFlowState.Loading)
         viewModelScope.launch {
-            runCatching { aiConfig.clearOAuth(provider) }
+            runCatching { aiConfig.clearOAuth(provider, deviceDefault = state.value.editDeviceDefault) }
                 .onSuccess { _events.send("Conta Google desconectada de ${provider.label}") }
                 .onFailure { _events.send(it.message ?: "Não foi possível desconectar a conta") }
             setOAuth(provider, OAuthFlowState.Idle)
@@ -220,14 +255,14 @@ class AiSettingsViewModel @Inject constructor(
         when (result) {
             is GoogleAiAuthResult.Granted -> {
                 val account = result.account ?: "conta Google"
-                runCatching { aiConfig.saveOAuth(provider, account, project) }
+                runCatching { aiConfig.saveOAuth(provider, account, project, deviceDefault = state.value.editDeviceDefault) }
                     .onSuccess {
                         setOAuth(provider, OAuthFlowState.Idle)
                         _events.send("${provider.label}: conta $account autorizada")
                     }
                     .onFailure {
                         // Token já está no cofre, mas a configuração não pôde ser gravada: limpa para não ficar meio autorizado.
-                        runCatching { googleAuth.revoke() }
+                        runCatching { googleAuth.revoke(oauthScope()) }
                         setOAuth(provider, OAuthFlowState.Error(it.message ?: "Não foi possível registrar a autorização."))
                     }
             }

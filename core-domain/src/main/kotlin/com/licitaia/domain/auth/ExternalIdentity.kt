@@ -22,6 +22,13 @@ class NoCompanyAccessException(val email: String) :
 class DemoAccountConflictException(val email: String) :
     Exception("Este e-mail pertence à conta de demonstração e não pode ser usado com login Google.")
 
+/**
+ * Já existe uma conta local (com senha) com o mesmo e-mail e ainda sem vínculo com o Google.
+ * O vínculo só é feito após o usuário comprovar a senha local ([com.licitaia.domain.repository.AuthRepository.linkGoogleToLocal]).
+ */
+class NoLocalLinkException(val email: String) :
+    Exception("Já existe uma conta local com este e-mail. Digite a senha dela para vincular ao Google.")
+
 /** Encerra a sessão no provedor externo (ex.: limpa o estado de credencial do Google). */
 interface IdentitySignOut {
     suspend fun signOut(provider: AuthProvider)

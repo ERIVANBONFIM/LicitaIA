@@ -6,6 +6,7 @@ import com.licitaia.core.data.db.AuditDao
 import com.licitaia.core.data.db.LicitaDatabase
 import com.licitaia.core.data.db.toDomain
 import com.licitaia.core.data.db.toEntity
+import com.licitaia.core.data.repository.RepositoryAccess.Companion.sameRealm
 import com.licitaia.core.data.session.SessionHolder
 import com.licitaia.core.security.AuditHashChain
 import com.licitaia.domain.model.AuditAction
@@ -39,9 +40,13 @@ class AuditRepositoryImpl @Inject constructor(
 
     private val chainLock = Mutex()
 
+    /**
+     * Só eventos das empresas do usuário. Como o usuário demo pertence apenas à empresa demo (e usuários
+     * reais nunca a ela), os eventos da demonstração ficam confinados ao espaço demo.
+     */
     override fun observeEvents(companyId: Long?): Flow<List<AuditEvent>> =
         combine(auditDao.observeAll(), sessionHolder.state) { list, session ->
-            list.filter { session != null && !session.user.demo && it.companyId in session.user.companyIds && (companyId == null || it.companyId == companyId) }.map { it.toDomain() }
+            list.filter { session != null && session.sameRealm() && it.companyId in session.user.companyIds && (companyId == null || it.companyId == companyId) }.map { it.toDomain() }
         }
     override suspend fun record(
         action: AuditAction,

@@ -3,6 +3,7 @@ package com.licitaia.feature.auth
 import android.content.Context
 import com.licitaia.domain.auth.GoogleIdentity
 import com.licitaia.domain.auth.NoCompanyAccessException
+import com.licitaia.domain.auth.NoLocalLinkException
 import com.licitaia.domain.demo.DemoAccount
 import com.licitaia.domain.model.AuthProvider
 import com.licitaia.feature.auth.google.GoogleCredentialClient
@@ -116,6 +117,92 @@ class LoginViewModelTest {
         vm.signOutGoogle()
         assertNull(vm.state.value.googlePending)
         coVerify { google.signOut(AuthProvider.GOOGLE) }
+    }
+
+    // ------------------------------------------------------------------ vínculo Google ↔ conta local
+
+    @Test
+    fun `google com conta local existente pede a senha local em vez de logar`() = runTest {
+        coEvery { google.signIn(any()) } returns GoogleSignInResult.Success(identity)
+        coEvery { auth.loginWithGoogle(identity, true) } returns Result.failure(NoLocalLinkException(identity.email))
+        val vm = vm()
+        vm.signInWithGoogle(activity)
+        val s = vm.state.value
+        assertFalse(s.loggedIn)
+        assertEquals("ana@example.com", s.linkPending?.email)
+        assertNull(s.googlePending)
+        assertNull(s.generalError)
+        coVerify(exactly = 0) { auth.linkGoogleToLocal(any(), any(), any()) }
+    }
+
+    @Test
+    fun `vinculo exige senha e mostra erro quando a senha esta errada`() = runTest {
+        coEvery { google.signIn(any()) } returns GoogleSignInResult.Success(identity)
+        coEvery { auth.loginWithGoogle(identity, true) } returns Result.failure(NoLocalLinkException(identity.email))
+        coEvery { auth.linkGoogleToLocal(identity, "errada", true) } returns Result.failure(IllegalArgumentException("Senha inválida. O vínculo com o Google não foi feito."))
+        val vm = vm()
+        vm.signInWithGoogle(activity)
+        vm.linkGoogle()
+        assertEquals("Informe a senha da conta local", vm.state.value.linkError)
+        coVerify(exactly = 0) { auth.linkGoogleToLocal(any(), any(), any()) }
+
+        vm.onLinkPassword("errada")
+        vm.linkGoogle()
+        val s = vm.state.value
+        assertFalse(s.loggedIn)
+        assertEquals("Senha inválida. O vínculo com o Google não foi feito.", s.linkError)
+        assertEquals("", s.linkPassword)
+        assertNotNull(s.linkPending)
+    }
+
+    @Test
+    fun `vinculo com senha certa loga e limpa a pendencia`() = runTest {
+        coEvery { google.signIn(any()) } returns GoogleSignInResult.Success(identity)
+        coEvery { auth.loginWithGoogle(identity, true) } returns Result.failure(NoLocalLinkException(identity.email))
+        coEvery { auth.linkGoogleToLocal(identity, "certa123", true) } returns Result.success(session)
+        val vm = vm()
+        vm.signInWithGoogle(activity)
+        vm.onLinkPassword("certa123")
+        vm.linkGoogle()
+        val s = vm.state.value
+        assertTrue(s.loggedIn)
+        assertNull(s.linkPending)
+        assertEquals("", s.linkPassword)
+    }
+
+    @Test
+    fun `cancelar o vinculo limpa a pendencia e sai da conta google`() = runTest {
+        coEvery { google.signIn(any()) } returns GoogleSignInResult.Success(identity)
+        coEvery { auth.loginWithGoogle(identity, true) } returns Result.failure(NoLocalLinkException(identity.email))
+        val vm = vm()
+        vm.signInWithGoogle(activity)
+        vm.cancelLink()
+        assertNull(vm.state.value.linkPending)
+        assertNotNull(vm.state.value.info)
+        coVerify { google.signOut(AuthProvider.GOOGLE) }
+        vm.linkGoogle() // sem identidade: não chama o repositório
+        coVerify(exactly = 0) { auth.linkGoogleToLocal(any(), any(), any()) }
+    }
+
+    // ------------------------------------------------------------------ demonstração
+
+    @Test
+    fun `explorar demonstracao entra sem senha`() = runTest {
+        coEvery { auth.loginDemo() } returns Result.success(session)
+        val vm = vm()
+        vm.exploreDemo()
+        assertTrue(vm.state.value.loggedIn)
+        assertFalse(vm.state.value.demoLoading)
+        coVerify(exactly = 0) { auth.login(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `falha ao abrir a demonstracao mostra a mensagem`() = runTest {
+        coEvery { auth.loginDemo() } returns Result.failure(IllegalStateException("Espaço de demonstração inconsistente."))
+        val vm = vm()
+        vm.exploreDemo()
+        assertFalse(vm.state.value.loggedIn)
+        assertEquals("Espaço de demonstração inconsistente.", vm.state.value.generalError)
     }
 
     @Test

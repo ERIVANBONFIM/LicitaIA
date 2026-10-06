@@ -27,7 +27,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -114,9 +116,8 @@ private fun AiProviderType.description(): String = when (this) {
     AiProviderType.CUSTOM -> "Endpoint compatível com o formato OpenAI (servidor próprio, proxy corporativo ou modelo local)."
 }
 
-/** Por que "Entrar com conta" está indisponível para este provedor. */
-private const val OAUTH_UNAVAILABLE =
-    "Indisponível: este provedor não oferece login para apps de terceiros (OpenAI: 'Sign in with ChatGPT' em beta restrito a parceiros). Use uma chave de API."
+/** Linha informativa exibida nos provedores sem OAuth público (OpenAI, Anthropic, Custom). */
+private const val OAUTH_UNAVAILABLE = "Login com conta: não oferecido por este provedor para apps de terceiros"
 
 /** Abre a página oficial no navegador; sem navegador, informa em vez de travar. */
 private fun openUrl(context: Context, url: String, onError: (String) -> Unit) {
@@ -161,7 +162,13 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
                     Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    if (!state.canConfigure) {
+                    if (state.demo) {
+                        AlertBanner(
+                            "Demonstração: análise heurística local",
+                            "No espaço de demonstração a IA real não pode ser configurada nem usada. As análises usam o motor heurístico local. Saia da demonstração e crie sua conta para usar sua chave.",
+                            Tone.WARNING,
+                        )
+                    } else if (!state.canConfigure) {
                         AlertBanner(
                             "Somente leitura",
                             "O perfil ${state.roleLabel} não tem a permissão \"Configurar provedores de IA\". Apenas administradores alteram estas opções.",
@@ -182,6 +189,14 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
                             Tone.WARNING,
                         )
                     }
+                    if (!state.demo) {
+                        ScopeSelector(
+                            companyName = state.companyName,
+                            deviceDefault = state.editDeviceDefault,
+                            enabled = true,
+                            onSelect = viewModel::setEditDeviceDefault,
+                        )
+                    }
                     SectionHeader("Provedores")
                     AiProviderType.entries.filter { it != AiProviderType.MOCK }.forEach { provider ->
                         ProviderCard(
@@ -189,6 +204,9 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
                             config = state.config(provider),
                             isActive = state.active == provider,
                             canConfigure = state.canConfigure,
+                            editingDeviceDefault = state.editDeviceDefault,
+                            companyName = state.companyName,
+                            onUseDeviceDefault = { viewModel.useDeviceDefault(provider) },
                             saving = provider in state.saving,
                             test = state.tests[provider] ?: TestState.Idle,
                             oauth = state.oauth[provider] ?: OAuthFlowState.Idle,
@@ -215,6 +233,9 @@ private fun ProviderCard(
     config: AiConfig,
     isActive: Boolean,
     canConfigure: Boolean,
+    editingDeviceDefault: Boolean,
+    companyName: String,
+    onUseDeviceDefault: () -> Unit,
     saving: Boolean,
     test: TestState,
     oauth: OAuthFlowState,
@@ -236,6 +257,7 @@ private fun ProviderCard(
     var showKey by remember(provider) { mutableStateOf(false) }
     var confirmClear by remember(provider) { mutableStateOf(false) }
     var confirmDisconnect by remember(provider) { mutableStateOf(false) }
+    var confirmUseDefault by remember(provider) { mutableStateOf(false) }
     val color = provider.color()
     val isMock = provider == AiProviderType.MOCK
     val oauthMode = config.authMode == AiAuthMode.OAUTH && provider.supportsOAuth
@@ -259,6 +281,15 @@ private fun ProviderCard(
                         config.hasApiKey -> StatusBadge("chave configurada ✓", Tone.SUCCESS)
                         else -> StatusBadge("sem chave", Tone.NEUTRAL)
                     }
+                }
+                if (!isMock) {
+                    Text(
+                        if (editingDeviceDefault) "Padrão do aparelho"
+                        else if (config.companyScoped) "Configuração desta empresa"
+                        else "Padrão do aparelho (esta empresa não tem configuração própria)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (config.companyScoped && !editingDeviceDefault) LicitaColors.BlueBright else LicitaColors.TextMuted,
+                    )
                 }
             }
             IconButton(onClick = { expanded = !expanded }) {
@@ -340,11 +371,10 @@ private fun ProviderCard(
                             }
                         }
                         provider.apiKeyUrl?.let { url ->
-                            TextButton(onClick = { onOpenUrl(url) }) {
-                                Icon(Icons.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Obter chave de API")
-                            }
+                            SecondaryButton(
+                                "Obter chave de API", { onOpenUrl(url) }, Modifier.fillMaxWidth(),
+                                icon = Icons.Outlined.OpenInNew,
+                            )
                         }
                     }
                     ButtonRow {
@@ -365,6 +395,18 @@ private fun ProviderCard(
                     }
                     if (dirty && canConfigure) {
                         Text("Salve as alterações antes de testar a conexão.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+                    }
+                    if (!editingDeviceDefault && config.companyScoped && canConfigure) {
+                        TextButton(onClick = { confirmUseDefault = true }) {
+                            Icon(Icons.Outlined.PhoneAndroid, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Usar padrão do aparelho")
+                        }
+                    } else if (!editingDeviceDefault && !config.companyScoped && canConfigure) {
+                        Text(
+                            "Ao salvar, a configuração passa a valer só para $companyName. Para alterar o padrão do aparelho, mude o escopo acima.",
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                        )
                     }
                 }
                 if (isMock) {
@@ -399,6 +441,15 @@ private fun ProviderCard(
             onDismiss = { confirmClear = false },
         )
     }
+    if (confirmUseDefault) {
+        ConfirmDialog(
+            title = "Usar o padrão do aparelho em ${provider.label}?",
+            message = "A configuração própria desta empresa (modelo, URL, chave e conta) será apagada do aparelho. A empresa passa a usar o padrão do aparelho, se houver.",
+            confirmLabel = "Usar padrão", tone = Tone.WARNING,
+            onConfirm = { confirmUseDefault = false; onUseDeviceDefault() },
+            onDismiss = { confirmUseDefault = false },
+        )
+    }
     if (confirmDisconnect) {
         ConfirmDialog(
             title = "Desconectar conta Google de ${provider.label}?",
@@ -410,7 +461,42 @@ private fun ProviderCard(
     }
 }
 
-/** Seletor "Autenticação": [Chave de API] [Entrar com conta]. A 2ª opção fica desabilitada onde não há OAuth público. */
+/** Seletor de escopo: configuração desta empresa (resolvida com fallback) ou padrão do aparelho. */
+@Composable
+private fun ScopeSelector(companyName: String, deviceDefault: Boolean, enabled: Boolean, onSelect: (Boolean) -> Unit) {
+    LicitaCard(Modifier.fillMaxWidth()) {
+        Text("Escopo da configuração", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+        Spacer(Modifier.height(6.dp))
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            SegmentedButton(
+                selected = !deviceDefault,
+                onClick = { onSelect(false) },
+                enabled = enabled,
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                icon = { SegmentedButtonDefaults.Icon(active = !deviceDefault) { Icon(Icons.Outlined.Business, contentDescription = null, modifier = Modifier.size(SegmentedButtonDefaults.IconSize)) } },
+            ) { Text("Esta empresa", maxLines = 1) }
+            SegmentedButton(
+                selected = deviceDefault,
+                onClick = { onSelect(true) },
+                enabled = enabled,
+                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                icon = { SegmentedButtonDefaults.Icon(active = deviceDefault) { Icon(Icons.Outlined.PhoneAndroid, contentDescription = null, modifier = Modifier.size(SegmentedButtonDefaults.IconSize)) } },
+            ) { Text("Padrão do aparelho", maxLines = 1) }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (deviceDefault) "Vale para toda empresa deste aparelho que não tenha configuração própria. As chaves ficam no Keystore, separadas das chaves por empresa."
+            else "Configuração efetiva de $companyName: a própria, se existir; senão o padrão do aparelho. Chaves e contas são guardadas por empresa.",
+            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+        )
+    }
+}
+
+/**
+ * Seletor "Autenticação". Com OAuth público (Gemini): [Chave de API] [Entrar com conta].
+ * Sem OAuth público (OpenAI, Anthropic, Custom): só "Chave de API" (selecionado) + linha informativa —
+ * nenhum botão desabilitado, para não parecer quebrado.
+ */
 @Composable
 private fun AuthModeSelector(
     provider: AiProviderType,
@@ -420,23 +506,29 @@ private fun AuthModeSelector(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Autenticação", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            SegmentedButton(
-                selected = mode == AiAuthMode.API_KEY,
-                onClick = { onSelect(AiAuthMode.API_KEY) },
-                enabled = enabled,
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                icon = { SegmentedButtonDefaults.Icon(active = mode == AiAuthMode.API_KEY) { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(SegmentedButtonDefaults.IconSize)) } },
-            ) { Text("Chave de API") }
-            SegmentedButton(
-                selected = mode == AiAuthMode.OAUTH,
-                onClick = { onSelect(AiAuthMode.OAUTH) },
-                enabled = enabled && provider.supportsOAuth,
-                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                icon = { SegmentedButtonDefaults.Icon(active = mode == AiAuthMode.OAUTH) { Icon(Icons.Outlined.AccountCircle, contentDescription = null, modifier = Modifier.size(SegmentedButtonDefaults.IconSize)) } },
-            ) { Text("Entrar com conta") }
-        }
-        if (!provider.supportsOAuth) {
+        if (provider.supportsOAuth) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                SegmentedButton(
+                    selected = mode == AiAuthMode.API_KEY,
+                    onClick = { onSelect(AiAuthMode.API_KEY) },
+                    enabled = enabled,
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                    icon = { SegmentedButtonDefaults.Icon(active = mode == AiAuthMode.API_KEY) { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(SegmentedButtonDefaults.IconSize)) } },
+                ) { Text("Chave de API") }
+                SegmentedButton(
+                    selected = mode == AiAuthMode.OAUTH,
+                    onClick = { onSelect(AiAuthMode.OAUTH) },
+                    enabled = enabled,
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                    icon = { SegmentedButtonDefaults.Icon(active = mode == AiAuthMode.OAUTH) { Icon(Icons.Outlined.AccountCircle, contentDescription = null, modifier = Modifier.size(SegmentedButtonDefaults.IconSize)) } },
+                ) { Text("Entrar com conta") }
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Outlined.Key, contentDescription = null, tint = LicitaColors.TextSecondary, modifier = Modifier.size(18.dp))
+                Text("Chave de API", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
+                StatusBadge("Selecionado", Tone.SUCCESS)
+            }
             Row(verticalAlignment = Alignment.Top) {
                 Icon(Icons.Outlined.Info, contentDescription = null, tint = LicitaColors.TextMuted, modifier = Modifier.size(14.dp).padding(top = 1.dp))
                 Spacer(Modifier.width(6.dp))

@@ -5,7 +5,9 @@ import com.licitaia.core.data.db.LicitaDatabase
 import com.licitaia.core.data.db.UserEntity
 import com.licitaia.core.data.db.toDomain
 import com.licitaia.core.data.db.toEntity
+import com.licitaia.core.data.repository.RepositoryAccess.Companion.sameRealm
 import com.licitaia.core.data.session.SessionHolder
+import com.licitaia.domain.demo.DemoAccount
 import com.licitaia.domain.model.AuditAction
 import com.licitaia.domain.model.AuditResult
 import com.licitaia.domain.model.Company
@@ -33,20 +35,32 @@ class CompanyRepositoryImpl @Inject constructor(
     private val companyDao get() = db.companyDao()
     private val userDao get() = db.userDao()
 
+    /**
+     * Só as empresas vinculadas ao usuário e do mesmo "mundo": usuário demo vê apenas empresas demo;
+     * usuário real nunca vê empresas demo.
+     */
     override fun observeCompanies(): Flow<List<Company>> =
-        combine(companyDao.observeAll(), holder.state) { list, session -> list.filter { session != null && !session.user.demo && it.id in session.user.companyIds }.map { it.toDomain() } }
+        combine(companyDao.observeAll(), holder.state) { list, session ->
+            list.filter { session != null && it.id in session.user.companyIds && it.demo == session.user.demo }.map { it.toDomain() }
+        }
 
     override suspend fun getCompany(id: Long): Company? {
         val session = holder.current ?: return null
-        if (session.user.demo || id !in session.user.companyIds) return null
-        return companyDao.getById(id)?.toDomain()
+        if (id !in session.user.companyIds) return null
+        return companyDao.getById(id)?.takeIf { it.demo == session.user.demo }?.toDomain()
     }
 
     override suspend fun upsertCompany(company: Company): Long = withContext(Dispatchers.IO) {
         requireAdmin(company.id.takeIf { it > 0 })
         require(validCnpj(company.cnpj.filter(Char::isDigit))) { "CNPJ inválido." }
         val existing = company.id.takeIf { it > 0 }?.let { companyDao.getById(it) }
-        val id = companyDao.upsert(company.copy(cnpj = company.cnpj.filter { it.isDigit() }.ifEmpty { company.cnpj }).toEntity())
+        val session = holder.current!!
+        // Demonstração: só edita a própria empresa demo; nunca cria outra. A flag demo nunca muda por aqui.
+        require(!session.user.demo || existing != null) { "A demonstração não permite criar empresas." }
+        require(existing == null || existing.demo == session.user.demo) { "Empresa fora do seu acesso." }
+        val id = companyDao.upsert(
+            company.copy(cnpj = company.cnpj.filter { it.isDigit() }.ifEmpty { company.cnpj }, demo = existing?.demo ?: session.user.demo).toEntity(),
+        )
         val saved = companyDao.getById(id)?.toDomain()
         // Mantém a sessão coerente se a empresa ativa foi editada (nome, IA preferida...).
         if (saved != null && holder.current?.activeCompany?.id == id) holder.update { it.copy(activeCompany = saved) }
@@ -74,6 +88,7 @@ class CompanyRepositoryImpl @Inject constructor(
         withContext(Dispatchers.IO) {
             requireAdmin(id)
             val company = companyDao.getById(id) ?: return@withContext
+            require(company.demo == holder.current!!.user.demo) { "Empresa fora do seu acesso." }
             if (holder.current?.activeCompany?.id == id) {
                 audit.record(
                     AuditAction.CADASTRO, result = AuditResult.BLOQUEADO,
@@ -90,7 +105,10 @@ class CompanyRepositoryImpl @Inject constructor(
                 db.portalSessionDao().deleteByCompany(id)
                 db.messageDao().deleteByCompany(id)
                 db.competitionDao().deleteByCompany(id)
+                db.bidEventDao().deleteByCompany(id)
                 db.liveSessionDao().deleteByCompany(id)
+                db.notificationDao().deleteByCompany(id)
+                db.aiConfigDao().deleteByCompany(id)
                 userDao.getAll().filter { id in it.companyIds }.forEach {
                     userDao.upsert(it.copy(companyIds = it.companyIds - id))
                 }
@@ -101,18 +119,29 @@ class CompanyRepositoryImpl @Inject constructor(
         }
     }
 
+    /** Usuários da empresa no mesmo "mundo" da sessão (demo vê só o usuário demo; real nunca vê o demo). */
     override fun observeUsers(companyId: Long): Flow<List<UserProfile>> =
-        combine(userDao.observeAll(), holder.state) { list, session -> if (session?.user?.role != UserRole.ADMIN || companyId !in session.user.companyIds || session.user.demo) emptyList() else list.filter { companyId in it.companyIds && !it.demo }.map { it.toDomain() } }
+        combine(userDao.observeAll(), holder.state) { list, session ->
+            if (session?.user?.role != UserRole.ADMIN || companyId !in session.user.companyIds) emptyList()
+            else list.filter { companyId in it.companyIds && it.demo == session.user.demo }.map { it.toDomain() }
+        }
 
+    /** Contas reais identificadas (ex.: Google) sem empresa. Nunca inclui o usuário demo; vazio na demonstração. */
     override fun observeUnassignedUsers(): Flow<List<UserProfile>> =
-        userDao.observeAll().map { emptyList<UserProfile>() }
+        combine(userDao.observeAll(), holder.state) { list, session ->
+            if (session == null || session.user.demo || session.user.role != UserRole.ADMIN) emptyList()
+            else list.filter { !it.demo && it.companyIds.isEmpty() }.map { it.toDomain() }
+        }
 
     override suspend fun upsertUser(user: UserProfile, password: String?): Long = withContext(Dispatchers.IO) {
         requireAdmin()
+        require(!holder.current!!.user.demo) { "A demonstração não permite criar ou vincular usuários." }
         require(user.companyIds.isNotEmpty() && user.companyIds.all { it in holder.current!!.user.companyIds }) { "Acesso a empresa não autorizado." }
         val email = user.email.trim().lowercase()
+        require(email != DemoAccount.EMAIL) { "Este e-mail é reservado à demonstração." }
         val existing = user.id.takeIf { it > 0 }?.let { userDao.getById(it) }
-        require(existing == null || (!existing.demo && existing.companyIds.isNotEmpty() && existing.companyIds.all { it in holder.current!!.user.companyIds })) { "Usuário fora das suas empresas." }
+        // Usuário existente: só os das minhas empresas ou os "aguardando vínculo" (sem empresa). Nunca o usuário demo.
+        require(existing == null || (!existing.demo && existing.companyIds.all { it in holder.current!!.user.companyIds })) { "Usuário fora das suas empresas." }
         val clash = userDao.getByEmail(email)
         if (clash != null && clash.id != existing?.id) {
             throw IllegalArgumentException("Já existe um usuário com o e-mail $email.")
@@ -149,6 +178,7 @@ class CompanyRepositoryImpl @Inject constructor(
     override suspend fun deleteUser(id: Long) {
         withContext(Dispatchers.IO) {
             requireAdmin()
+            require(!holder.current!!.user.demo) { "A demonstração não permite remover usuários." }
             val user = userDao.getById(id) ?: return@withContext
             require(!user.demo && user.companyIds.isNotEmpty() && user.companyIds.all { it in holder.current!!.user.companyIds }) { "Usuário fora das suas empresas." }
             if (holder.current?.user?.id == id) {
@@ -161,7 +191,8 @@ class CompanyRepositoryImpl @Inject constructor(
     }
     private fun requireAdmin(companyId: Long? = null) {
         val session = holder.current ?: throw IllegalStateException("Entre na sua conta.")
-        require(!session.user.demo && session.user.role == UserRole.ADMIN) { "Somente o administrador da empresa pode alterar estes dados." }
+        require(session.user.role == UserRole.ADMIN) { "Somente o administrador da empresa pode alterar estes dados." }
+        require(session.sameRealm()) { "Sessão inconsistente. Entre novamente." }
         require(companyId == null || companyId in session.user.companyIds) { "Empresa fora do seu acesso." }
     }
 }

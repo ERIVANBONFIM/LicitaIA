@@ -70,6 +70,7 @@ import com.licitaia.core.ui.components.tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.model.EditalImportProgress
 import com.licitaia.domain.model.EditalImportResult
 import com.licitaia.domain.model.EditalSource
@@ -96,7 +97,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -121,8 +125,12 @@ data class TenderDetailState(
     val resultRegistered: Boolean = false,
     /** Gravação do resultado (status + concorrência) em andamento. */
     val savingResult: Boolean = false,
+    /** Sessão assistida ABERTA vinculada a esta licitação (Pregões ao Vivo), se houver. */
+    val liveSessionId: String? = null,
 ) {
     val canAnalyze: Boolean get() = role?.let { Rbac.can(it, Permission.ANALISAR) } ?: false
+    /** Pode criar/operar sessões assistidas (mesma regra do FAB "Acompanhar pregão" em Pregões ao Vivo). */
+    val canOperateLive: Boolean get() = role?.let { Rbac.can(it, Permission.OPERAR_SESSOES) } ?: false
 }
 
 private data class DetailFlags(
@@ -140,9 +148,19 @@ class TenderDetailViewModel @Inject constructor(
     private val tenders: TenderRepository,
     proposals: ProposalRepository,
     private val competition: CompetitionRepository,
+    private val liveSessions: LiveSessionManager,
 ) : ViewModel() {
 
     private val tenderId: Long = savedStateHandle.longArg("tenderId") ?: -1L
+
+    init {
+        // Garante que as sessões assistidas da empresa estejam carregadas (idempotente) para o atalho "Abrir acompanhamento".
+        viewModelScope.launch {
+            auth.session.filterNotNull().map { it.activeCompany.id }.distinctUntilChanged().collect { companyId ->
+                runCatching { liveSessions.restoreOrSeed(companyId) }
+            }
+        }
+    }
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages = _messages.asSharedFlow()
@@ -172,11 +190,17 @@ class TenderDetailViewModel @Inject constructor(
 
     private val progress = tenders.observeEditalImportProgress(tenderId).catch { emit(null) }
 
-    val state: StateFlow<TenderDetailState> = combine(remote, flags, progress) { s, f, p ->
+    /** Id da sessão assistida aberta para esta licitação (a mais recente, se houver mais de uma). */
+    private val liveSessionId = liveSessions.sessions
+        .map { list -> list.filter { it.tenderId == tenderId && it.isOpen }.maxByOrNull { it.startedAt }?.id }
+        .distinctUntilChanged()
+        .catch { emit(null) }
+
+    val state: StateFlow<TenderDetailState> = combine(remote, flags, progress, liveSessionId) { s, f, p, live ->
         s.copy(
             // Uma importação/OCR que continua em segundo plano (após sair e voltar à tela) também conta como "importando".
             importing = f.importing || p != null, analyzing = f.analyzing, editalError = f.editalError,
-            importProgress = p, savingResult = f.savingResult,
+            importProgress = p, savingResult = f.savingResult, liveSessionId = live,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderDetailState())
 
@@ -531,8 +555,17 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                     Icons.Outlined.RequestQuote, LicitaColors.Green, "Proposta comercial",
                     if (state.proposals.isEmpty()) "Gerar com IA, revisar, aprovar e preparar envio" else "${state.proposals.size} versão(ões) · ${state.proposals.first().status.label}",
                 ) { navigator.navigate(Routes.tenderProposal(tender.id)) }
-                ActionTile(Icons.Outlined.LiveTv, LicitaColors.Red, "Abrir pregão ao vivo", "Acompanhar a sessão e o robô de lances") {
-                    navigator.navigateTop(Routes.LIVE)
+                val liveId = state.liveSessionId
+                when {
+                    liveId != null -> ActionTile(Icons.Outlined.LiveTv, LicitaColors.Red, "Abrir acompanhamento", "Sessão assistida em andamento para esta licitação") {
+                        navigator.navigate(Routes.liveSession(liveId))
+                    }
+                    state.canOperateLive -> ActionTile(Icons.Outlined.LiveTv, LicitaColors.Red, "Acompanhar pregão", "Abrir sessão assistida já vinculada a esta licitação") {
+                        navigator.navigate(Routes.liveNew(tender.id))
+                    }
+                    else -> ActionTile(Icons.Outlined.LiveTv, LicitaColors.Red, "Pregões ao vivo", "Acompanhar as sessões assistidas da empresa") {
+                        navigator.navigateTop(Routes.LIVE)
+                    }
                 }
                 ActionTile(Icons.Outlined.Checklist, LicitaColors.Purple, "Licitações de interesse", "Voltar à lista") {
                     navigator.navigateTop(Routes.INTERESTS)

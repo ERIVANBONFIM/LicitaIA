@@ -95,6 +95,8 @@ data class ShellState(
     val unreadNotifications: Int = 0,
     /** true = há CAPTCHA/alerta crítico pendente → sino vermelho pulsante. */
     val criticalPending: Boolean = false,
+    /** true = sessão no espaço de demonstração isolado → selo "DEMONSTRAÇÃO" persistente no topo. */
+    val demo: Boolean = false,
 )
 
 val LocalAppNavigator = staticCompositionLocalOf<AppNavigator> {

@@ -132,12 +132,12 @@ class GeminiProvider @Inject constructor(
         val url = "${cfg.baseUrl}/v1beta/models/$model:generateContent"
         val response = if (cfg.authMode == AiAuthMode.OAUTH) {
             try {
-                http.postJson(displayName, url, oauthHeaders(googleAuth.accessToken(), cfg.cloudProject), body, json)
+                http.postJson(displayName, url, oauthHeaders(googleAuth.accessToken(cfg.companyId), cfg.cloudProject), body, json)
             } catch (e: AiProviderException) {
                 // Token recusado: renova uma vez sem UI e repete. Se o Google exigir interação, a renovação explica.
                 if (e.httpStatus != 401) throw e.withOAuthWording()
                 try {
-                    http.postJson(displayName, url, oauthHeaders(googleAuth.refreshSilently(), cfg.cloudProject), body, json)
+                    http.postJson(displayName, url, oauthHeaders(googleAuth.refreshSilently(cfg.companyId), cfg.cloudProject), body, json)
                 } catch (retry: AiProviderException) {
                     throw retry.withOAuthWording()
                 }

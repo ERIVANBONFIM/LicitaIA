@@ -22,6 +22,10 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    // Banco cifrado em repouso (SQLCipher 4.x, AES-256-CBC por página + HMAC-SHA512). Só runtime Android;
+    // os testes JVM não carregam a biblioteca nativa (ver core-data/crypto/DatabaseEncryptionMigrator).
+    implementation("net.zetetic:sqlcipher-android:4.6.1")
+    implementation("androidx.sqlite:sqlite-ktx:2.4.0")
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)

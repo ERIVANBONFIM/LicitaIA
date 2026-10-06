@@ -95,14 +95,23 @@ fun CompaniesScreen(viewModel: CompaniesViewModel = hiltViewModel()) {
     val navigator = LocalAppNavigator.current
     LaunchedEffect(Unit) { viewModel.events.collect { navigator.showMessage(it) } }
     val noPermission = "O perfil ${state.session?.user?.role?.label ?: ""} não tem a permissão \"Gerenciar empresas e usuários\"."
+    val demoBlocked = "Na demonstração não é possível criar empresas nem vincular usuários. Saia da demonstração e crie sua conta para usar dados reais."
 
     LicitaScaffold(
         title = "Empresas e Perfis",
         showBack = false,
         actions = {
             if (!state.loading && state.error == null && !state.noSession) {
-                IconButton(onClick = { if (state.canManage) viewModel.newCompany() else navigator.showMessage(noPermission) }) {
-                    Icon(if (state.canManage) Icons.Outlined.Add else Icons.Outlined.Lock, contentDescription = "Nova empresa")
+                IconButton(
+                    onClick = {
+                        when {
+                            state.canCreateCompany -> viewModel.newCompany()
+                            state.demo -> navigator.showMessage(demoBlocked)
+                            else -> navigator.showMessage(noPermission)
+                        }
+                    },
+                ) {
+                    Icon(if (state.canCreateCompany) Icons.Outlined.Add else Icons.Outlined.Lock, contentDescription = "Nova empresa")
                 }
             }
         },
@@ -118,6 +127,9 @@ fun CompaniesScreen(viewModel: CompaniesViewModel = hiltViewModel()) {
                 ) {
                     if (!state.canManage) {
                         item(key = "rbac") { AlertBanner("Somente leitura", "$noPermission Você ainda pode trocar entre as empresas às quais tem acesso.", Tone.WARNING) }
+                    }
+                    if (state.demo) {
+                        item(key = "demo") { AlertBanner("Modo demonstração", "Espaço isolado com dados fictícios. Você pode editar a empresa de demonstração, mas não criar empresas nem gerir usuários.", Tone.WARNING) }
                     }
                     item(key = "companiesHeader") { SectionHeader("Empresas (${state.companies.size})") }
                     if (state.companies.isEmpty()) {
@@ -140,7 +152,7 @@ fun CompaniesScreen(viewModel: CompaniesViewModel = hiltViewModel()) {
                     item(key = "usersHeader") {
                         SectionHeader(
                             "Usuários de ${state.session?.activeCompany?.let { it.tradeName.ifBlank { it.name } } ?: "—"} (${state.users.size})",
-                            actionLabel = if (state.canManage) "Novo usuário" else null,
+                            actionLabel = if (state.canManageUsers) "Novo usuário" else null,
                             onAction = viewModel::newUser,
                         )
                     }
@@ -151,14 +163,14 @@ fun CompaniesScreen(viewModel: CompaniesViewModel = hiltViewModel()) {
                         UserCard(
                             user = user,
                             isSelf = user.id == state.session?.user?.id,
-                            canManage = state.canManage,
+                            canManage = state.canManageUsers,
                             modifier = Modifier.animateItem(),
                             onEdit = { viewModel.editUser(user) },
                             onDelete = { viewModel.askDeleteUser(user) },
                         )
                     }
 
-                    if (state.canManage && state.unassignedUsers.isNotEmpty()) {
+                    if (state.canManageUsers && state.unassignedUsers.isNotEmpty()) {
                         item(key = "pendingHeader") { SectionHeader("Aguardando vínculo (${state.unassignedUsers.size})") }
                         item(key = "pendingHint") {
                             Text(

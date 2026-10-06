@@ -63,17 +63,23 @@ object PortalWebPolicy {
         ),
         Rules(
             portal = Portal.LICITANET,
-            // URL pública de login específica não confirmada: usa a página oficial do portal.
-            startUrl = "https://licitanet.com.br",
-            allowedDomains = listOf("licitanet.com.br"),
+            // Confirmado (2026-10): o botão "Entrar" da home licitanet.com.br leva a https://portal.licitanet.com.br/login
+            // (HTTP 200, "LICITANET | Entrar"). A página pode encaminhar ao SSO https://licita-sso.licitanet.com.br/login (HTTP 200).
+            // A área do fornecedor fica em portal.licitanet.com.br.
+            startUrl = "https://portal.licitanet.com.br/login",
+            allowedDomains = listOf("licitanet.com.br"), // cobre portal.licitanet.com.br e licita-sso.licitanet.com.br
+            loginHosts = listOf("licita-sso.licitanet.com.br"),
             loginPathMarkers = commonMarkers + listOf("/acesso"),
         ),
         Rules(
             portal = Portal.PORTAL_COMPRAS_PUBLICAS,
-            // URL pública de login específica não confirmada: usa a página oficial do portal.
-            startUrl = "https://www.portaldecompraspublicas.com.br",
-            allowedDomains = listOf("portaldecompraspublicas.com.br"),
-            loginPathMarkers = commonMarkers + listOf("/acesso"),
+            // Confirmado (2026-10): "Fazer Login" da home → https://operacao.portaldecompraspublicas.com.br/18/loginext/
+            // que redireciona ao Keycloak https://iam.secure.portaldecompraspublicas.com.br/realms/Portal/protocol/openid-connect/auth
+            // (HTTP 200, "Entrar em Portal") e volta em /18/loginext/oAuth/ (ainda fluxo de login) → área logada em operacao.*.
+            startUrl = "https://operacao.portaldecompraspublicas.com.br/18/loginext/",
+            allowedDomains = listOf("portaldecompraspublicas.com.br"), // cobre www., operacao. e iam.secure.
+            loginHosts = listOf("iam.secure.portaldecompraspublicas.com.br"),
+            loginPathMarkers = commonMarkers + listOf("/acesso", "loginext"),
         ),
     ).associateBy { it.portal }
 

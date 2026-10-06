@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 5,
-    "identityHash": "d5010be1519eeec4bfd044181083556a",
+    "identityHash": "5a21a5049a414a77720b4ef415b80f18",
     "entities": [
       {
         "tableName": "companies",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `tradeName` TEXT NOT NULL, `cnpj` TEXT NOT NULL, `segment` TEXT NOT NULL, `uf` TEXT NOT NULL, `city` TEXT NOT NULL, `preferredAi` TEXT)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `tradeName` TEXT NOT NULL, `cnpj` TEXT NOT NULL, `segment` TEXT NOT NULL, `uf` TEXT NOT NULL, `city` TEXT NOT NULL, `preferredAi` TEXT, `demo` INTEGER NOT NULL DEFAULT 0)",
         "fields": [
           {
             "fieldPath": "id",
@@ -55,6 +55,13 @@
             "columnName": "preferredAi",
             "affinity": "TEXT",
             "notNull": false
+          },
+          {
+            "fieldPath": "demo",
+            "columnName": "demo",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
           }
         ],
         "primaryKey": {
@@ -1434,13 +1441,20 @@
       },
       {
         "tableName": "ai_configs",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider` TEXT NOT NULL, `model` TEXT NOT NULL, `baseUrl` TEXT NOT NULL, `authMode` TEXT NOT NULL DEFAULT 'API_KEY', `oauthAccount` TEXT DEFAULT NULL, `cloudProject` TEXT DEFAULT NULL, PRIMARY KEY(`provider`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider` TEXT NOT NULL, `companyId` INTEGER NOT NULL DEFAULT 0, `model` TEXT NOT NULL, `baseUrl` TEXT NOT NULL, `authMode` TEXT NOT NULL DEFAULT 'API_KEY', `oauthAccount` TEXT DEFAULT NULL, `cloudProject` TEXT DEFAULT NULL, PRIMARY KEY(`provider`, `companyId`))",
         "fields": [
           {
             "fieldPath": "provider",
             "columnName": "provider",
             "affinity": "TEXT",
             "notNull": true
+          },
+          {
+            "fieldPath": "companyId",
+            "columnName": "companyId",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
           },
           {
             "fieldPath": "model",
@@ -1479,7 +1493,8 @@
         "primaryKey": {
           "autoGenerate": false,
           "columnNames": [
-            "provider"
+            "provider",
+            "companyId"
           ]
         },
         "indices": [],
@@ -1729,7 +1744,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'd5010be1519eeec4bfd044181083556a')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5a21a5049a414a77720b4ef415b80f18')"
     ]
   }
 }

@@ -83,7 +83,13 @@ fun LicitaScaffold(
                 },
                 title = {
                     Column {
-                        Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            if (shell.demo) {
+                                Spacer(Modifier.width(8.dp))
+                                DemoBadge()
+                            }
+                        }
                         val sub = subtitle ?: shell.companyName.takeIf { it.isNotBlank() }
                         if (sub != null) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -114,6 +120,23 @@ fun LicitaScaffold(
         bottomBar = bottomBar,
         content = content,
     )
+}
+
+/** Selo persistente do modo demonstração (dados fictícios, espaço isolado). */
+@Composable
+fun DemoBadge(modifier: Modifier = Modifier, compact: Boolean = true) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(LicitaColors.Yellow.copy(alpha = 0.22f))
+            .padding(horizontal = if (compact) 6.dp else 10.dp, vertical = if (compact) 2.dp else 4.dp),
+    ) {
+        Text(
+            "DEMONSTRAÇÃO",
+            style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
+            color = LicitaColors.Yellow, fontWeight = FontWeight.Bold, maxLines = 1,
+        )
+    }
 }
 
 /** Sino de notificações com contador; fica vermelho e pulsa quando [critical]. */

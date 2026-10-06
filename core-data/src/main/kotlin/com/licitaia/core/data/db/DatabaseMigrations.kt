@@ -58,6 +58,38 @@ object DatabaseMigrations {
         }
     }
 
+    /**
+     * Versão 6:
+     * 1. `companies.demo` (empresa do espaço de demonstração isolado) — só adiciona coluna, default 0.
+     * 2. `ai_configs` passa a ter chave primária (provider, companyId): a tabela é recriada copiando TODAS
+     *    as linhas com `companyId = 0` ("padrão do aparelho"). Nenhuma configuração é perdida; as chaves no
+     *    cofre continuam com o nome antigo, que é exatamente o nome do escopo 0.
+     */
+    val FROM_5_TO_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val companyColumns = db.query("PRAGMA table_info(companies)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            if ("demo" !in companyColumns) db.execSQL("ALTER TABLE companies ADD COLUMN demo INTEGER NOT NULL DEFAULT 0")
+
+            val aiColumns = db.query("PRAGMA table_info(ai_configs)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            if ("companyId" in aiColumns) return
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `ai_configs_v6` (`provider` TEXT NOT NULL, `companyId` INTEGER NOT NULL DEFAULT 0, " +
+                    "`model` TEXT NOT NULL, `baseUrl` TEXT NOT NULL, `authMode` TEXT NOT NULL DEFAULT 'API_KEY', " +
+                    "`oauthAccount` TEXT DEFAULT NULL, `cloudProject` TEXT DEFAULT NULL, PRIMARY KEY(`provider`, `companyId`))",
+            )
+            db.execSQL(
+                "INSERT INTO `ai_configs_v6` (`provider`, `companyId`, `model`, `baseUrl`, `authMode`, `oauthAccount`, `cloudProject`) " +
+                    "SELECT `provider`, 0, `model`, `baseUrl`, `authMode`, `oauthAccount`, `cloudProject` FROM `ai_configs`",
+            )
+            db.execSQL("DROP TABLE `ai_configs`")
+            db.execSQL("ALTER TABLE `ai_configs_v6` RENAME TO `ai_configs`")
+        }
+    }
+
     /** Todas as migrações incrementais, na ordem. */
-    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5)
+    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6)
 }

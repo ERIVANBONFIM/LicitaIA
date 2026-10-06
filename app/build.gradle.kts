@@ -30,8 +30,8 @@ android {
     defaultConfig {
         applicationId = "com.licitaia.app"
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.3.0-personal"
+        versionCode = 6
+        versionName = "0.4.0-personal"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
     }
 

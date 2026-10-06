@@ -5,6 +5,7 @@ import com.licitaia.domain.model.PortalConnectionStatus
 import com.licitaia.feature.live.web.PortalWebPolicy.Signal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -39,8 +40,13 @@ class PortalWebPolicyTest {
         Portal.entries.forEach { p -> assertTrue(p.name, PortalWebPolicy.isAllowed(p, PortalWebPolicy.startUrl(p))) }
         assertTrue(PortalWebPolicy.isAllowed(Portal.BLL, "https://bll.org.br/"))
         assertTrue(PortalWebPolicy.isAllowed(Portal.BLL, "https://bllcompras.com/Home/Login"))
-        assertTrue(PortalWebPolicy.isAllowed(Portal.LICITANET, "https://app.licitanet.com.br/"))
+        assertTrue(PortalWebPolicy.isAllowed(Portal.LICITANET, "https://portal.licitanet.com.br/login"))
+        assertTrue(PortalWebPolicy.isAllowed(Portal.LICITANET, "https://licita-sso.licitanet.com.br/login"))
+        assertTrue(PortalWebPolicy.isAllowed(Portal.LICITANET, "https://licitanet.com.br/"))
         assertTrue(PortalWebPolicy.isAllowed(Portal.PORTAL_COMPRAS_PUBLICAS, "https://www.portaldecompraspublicas.com.br/18/"))
+        assertTrue(PortalWebPolicy.isAllowed(Portal.PORTAL_COMPRAS_PUBLICAS, "https://operacao.portaldecompraspublicas.com.br/18/loginext/"))
+        assertTrue(PortalWebPolicy.isAllowed(Portal.PORTAL_COMPRAS_PUBLICAS, "https://iam.secure.portaldecompraspublicas.com.br/realms/Portal/protocol/openid-connect/auth?client_id=aspclient"))
+        assertFalse(PortalWebPolicy.isAllowed(Portal.PORTAL_COMPRAS_PUBLICAS, "https://portaldecompraspublicas.com.br.evil.com/"))
         assertTrue(PortalWebPolicy.isAllowed(Portal.PNCP, "https://pncp.gov.br/api/consulta/v1/x"))
     }
 
@@ -60,9 +66,24 @@ class PortalWebPolicyTest {
         assertTrue(PortalWebPolicy.isLoginPage(Portal.BLL, "https://bllcompras.com/Home/Login?ReturnUrl=x")) // case-insensitive
         assertFalse(PortalWebPolicy.isLoginPage(Portal.BLL, "https://bllcompras.com/Process/ProcessSearchPublic"))
 
+        // Licitanet: login em portal.licitanet.com.br/login; SSO em host dedicado (qualquer caminho).
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.LICITANET, PortalWebPolicy.startUrl(Portal.LICITANET)))
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.LICITANET, "https://portal.licitanet.com.br/login"))
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.LICITANET, "https://licita-sso.licitanet.com.br/login"))
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.LICITANET, "https://licita-sso.licitanet.com.br/callback?code=x"))
         assertTrue(PortalWebPolicy.isLoginPage(Portal.LICITANET, "https://licitanet.com.br/acesso"))
+        assertFalse(PortalWebPolicy.isLoginPage(Portal.LICITANET, "https://portal.licitanet.com.br/fornecedor-publico"))
+        assertFalse(PortalWebPolicy.isLoginPage(Portal.LICITANET, "https://licitanet.com.br/sessao-publica"))
+
+        // Portal de Compras Públicas: /18/loginext/ → Keycloak (iam.secure.*) → /18/loginext/oAuth/ (ainda login) → área logada.
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, PortalWebPolicy.startUrl(Portal.PORTAL_COMPRAS_PUBLICAS)))
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, "https://operacao.portaldecompraspublicas.com.br/18/loginext/"))
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, "https://operacao.portaldecompraspublicas.com.br/18/loginext/oAuth/?code=abc&state=x"))
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, "https://iam.secure.portaldecompraspublicas.com.br/realms/Portal/protocol/openid-connect/auth?client_id=aspclient"))
+        assertTrue(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, "https://iam.secure.portaldecompraspublicas.com.br/realms/Portal/login-actions/authenticate?session_code=x"))
         assertTrue(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, "https://www.portaldecompraspublicas.com.br/18/Login/"))
         assertFalse(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, "https://www.portaldecompraspublicas.com.br/18/Processos/"))
+        assertFalse(PortalWebPolicy.isLoginPage(Portal.PORTAL_COMPRAS_PUBLICAS, "https://operacao.portaldecompraspublicas.com.br/18/Painel/"))
 
         // PNCP não tem login.
         assertFalse(PortalWebPolicy.isLoginPage(Portal.PNCP, "https://pncp.gov.br/login"))
@@ -113,6 +134,23 @@ class PortalWebPolicyTest {
         assertEquals(Signal.NONE, PortalWebPolicy.evaluate(Portal.COMPRAS_GOV, "https://sso.acesso.gov.br/authorize", true, previousWasLoginPage = true, currentStatus = conn))
         // Não conectado numa página de login: nada a registrar.
         assertEquals(Signal.NONE, PortalWebPolicy.evaluate(Portal.BLL, "https://bllcompras.com/home/login", false, false, disc))
+    }
+
+    @Test
+    fun `licitanet and portal de compras publicas connect after their real login flows`() {
+        // Licitanet: login → (SSO) → primeira página normal do portal com cookies.
+        assertEquals(Signal.NONE, PortalWebPolicy.evaluate(Portal.LICITANET, "https://licita-sso.licitanet.com.br/login", true, previousWasLoginPage = true, currentStatus = disc))
+        assertEquals(Signal.CONNECTED, PortalWebPolicy.evaluate(Portal.LICITANET, "https://portal.licitanet.com.br/fornecedor/painel", true, previousWasLoginPage = true, currentStatus = disc))
+        assertEquals(Signal.EXPIRED, PortalWebPolicy.evaluate(Portal.LICITANET, "https://portal.licitanet.com.br/login", true, previousWasLoginPage = false, currentStatus = conn))
+        assertNull(PortalWebPolicy.postLoginRedirect(Portal.LICITANET, "https://portal.licitanet.com.br/fornecedor/painel"))
+
+        // PCP: /18/loginext/ → Keycloak → /18/loginext/oAuth/ (callback, ainda login) → área logada em operacao.*.
+        val pcp = Portal.PORTAL_COMPRAS_PUBLICAS
+        assertEquals(Signal.NONE, PortalWebPolicy.evaluate(pcp, "https://iam.secure.portaldecompraspublicas.com.br/realms/Portal/protocol/openid-connect/auth", true, previousWasLoginPage = true, currentStatus = disc))
+        assertEquals(Signal.NONE, PortalWebPolicy.evaluate(pcp, "https://operacao.portaldecompraspublicas.com.br/18/loginext/oAuth/?code=x", true, previousWasLoginPage = true, currentStatus = disc))
+        assertEquals(Signal.CONNECTED, PortalWebPolicy.evaluate(pcp, "https://operacao.portaldecompraspublicas.com.br/18/Painel/", true, previousWasLoginPage = true, currentStatus = disc))
+        assertEquals(Signal.EXPIRED, PortalWebPolicy.evaluate(pcp, "https://iam.secure.portaldecompraspublicas.com.br/realms/Portal/protocol/openid-connect/auth", false, previousWasLoginPage = false, currentStatus = conn))
+        assertNull(PortalWebPolicy.postLoginRedirect(pcp, "https://operacao.portaldecompraspublicas.com.br/18/Painel/"))
     }
 
     @Test

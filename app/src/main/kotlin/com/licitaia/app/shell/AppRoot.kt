@@ -182,6 +182,8 @@ private fun MainShell(
     val showBottomBar = loggedIn && onTopLevel && settings.showBottomBar
 
     var confirmLogout by remember { mutableStateOf(false) }
+    var confirmExitDemo by remember { mutableStateOf(false) }
+    var confirmResetDemo by remember { mutableStateOf(false) }
     var alert by remember { mutableStateOf<AppNotification?>(null) }
 
     val navigator = remember(nav) {
@@ -290,6 +292,8 @@ private fun MainShell(
                         }
                     },
                     onLogout = { confirmLogout = true },
+                    onExitDemo = { confirmExitDemo = true },
+                    onResetDemo = { confirmResetDemo = true },
                 )
             },
         ) {
@@ -383,6 +387,41 @@ private fun MainShell(
                 viewModel.logout()
             },
             onDismiss = { confirmLogout = false },
+        )
+    }
+    if (confirmExitDemo) {
+        ConfirmDialog(
+            title = "Sair da demonstração?",
+            message = "A empresa de demonstração e todos os seus dados fictícios (licitações, documentos, propostas, mensagens e sessões) serão apagados deste aparelho. Suas empresas reais não são afetadas.",
+            confirmLabel = "Apagar e sair",
+            tone = Tone.DANGER,
+            onConfirm = {
+                confirmExitDemo = false
+                scope.launch { drawerState.close() }
+                viewModel.exitDemo { result ->
+                    result.onFailure { navigator.showMessage(it.message ?: "Não foi possível encerrar a demonstração.") }
+                }
+            },
+            onDismiss = { confirmExitDemo = false },
+        )
+    }
+    if (confirmResetDemo) {
+        ConfirmDialog(
+            title = "Reiniciar demonstração?",
+            message = "Os dados de exemplo voltam ao estado original. Tudo o que foi alterado na demonstração será descartado.",
+            confirmLabel = "Reiniciar",
+            tone = Tone.WARNING,
+            onConfirm = {
+                confirmResetDemo = false
+                scope.launch { drawerState.close() }
+                viewModel.resetDemo { result ->
+                    result.onSuccess {
+                        navigator.navigateTop(Routes.DASHBOARD)
+                        navigator.showMessage("Demonstração reiniciada.")
+                    }.onFailure { navigator.showMessage(it.message ?: "Não foi possível reiniciar a demonstração.") }
+                }
+            },
+            onDismiss = { confirmResetDemo = false },
         )
     }
 }

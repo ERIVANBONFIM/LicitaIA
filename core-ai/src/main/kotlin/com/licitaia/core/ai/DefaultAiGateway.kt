@@ -13,9 +13,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Resolve o provedor: preferido da empresa ativa → provedor global ativo → demonstração.
- * Um provedor sem credencial (chave de API, ou conta Google autorizada no modo OAuth) nunca é
- * escolhido, então o app funciona sem credenciais.
+ * Resolve o provedor: preferido da empresa ativa → provedor global ativo → heurística local (MOCK).
+ * As credenciais são resolvidas por [AiCredentials] na empresa ativa, com fallback para o padrão do
+ * aparelho. Um provedor sem credencial (chave de API, ou conta Google autorizada no modo OAuth) nunca é
+ * escolhido, então o app funciona sem credenciais. A empresa de demonstração "prefere" MOCK: nunca gasta
+ * nem expõe uma chave real.
  */
 @Singleton
 class DefaultAiGateway @Inject constructor(

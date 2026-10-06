@@ -53,29 +53,34 @@ sealed interface GoogleAiAuthResult {
 @Singleton
 class GoogleAiAuthorizer @Inject constructor(
     @ApplicationContext private val context: Context,
-    secrets: SecretStore,
+    private val secrets: SecretStore,
     client: OkHttpClient,
     private val json: Json,
 ) {
     private val http = client
-    private val cache = OAuthTokenCache(
+
+    /**
+     * Cofre do token por escopo: [companyId] = empresa com configuração própria ou
+     * [AiSecretKeys.DEVICE_SCOPE] (padrão do aparelho). O escopo 0 mantém os nomes anteriores à versão 6.
+     */
+    private fun cache(companyId: Long) = OAuthTokenCache(
         secrets = secrets,
-        tokenKey = AiSecretKeys.oauthToken(AiProviderType.GEMINI),
-        expiryKey = AiSecretKeys.oauthExpiry(AiProviderType.GEMINI),
+        tokenKey = AiSecretKeys.oauthToken(AiProviderType.GEMINI, companyId),
+        expiryKey = AiSecretKeys.oauthExpiry(AiProviderType.GEMINI, companyId),
     )
 
-    /** Há consentimento registrado (token no cofre, mesmo que expirado — a renovação é silenciosa). */
-    suspend fun hasAuthorization(): Boolean = cache.exists()
+    /** Há consentimento registrado no escopo (token no cofre, mesmo que expirado — a renovação é silenciosa). */
+    suspend fun hasAuthorization(companyId: Long = AiSecretKeys.DEVICE_SCOPE): Boolean = cache(companyId).exists()
 
     /**
      * Passo 1 (UI): tenta autorizar sem interação. Se o Google precisar mostrar a tela de contas/consentimento,
      * devolve [GoogleAiAuthResult.NeedsResolution] para a UI lançar o `PendingIntent`.
      */
-    suspend fun begin(): GoogleAiAuthResult = try {
+    suspend fun begin(companyId: Long = AiSecretKeys.DEVICE_SCOPE): GoogleAiAuthResult = try {
         val result = authorizeTask().await()
         val intent = result.pendingIntent
         when {
-            !result.hasResolution() -> storeAndDescribe(result)
+            !result.hasResolution() -> storeAndDescribe(result, companyId)
             intent != null -> GoogleAiAuthResult.NeedsResolution(intent)
             else -> GoogleAiAuthResult.Failure("O Google não devolveu a tela de autorização.")
         }
@@ -88,14 +93,14 @@ class GoogleAiAuthorizer @Inject constructor(
     }
 
     /** Passo 2 (UI): conclui a partir do resultado da Activity lançada em [begin]. */
-    suspend fun complete(resultCode: Int, data: Intent?): GoogleAiAuthResult {
+    suspend fun complete(resultCode: Int, data: Intent?, companyId: Long = AiSecretKeys.DEVICE_SCOPE): GoogleAiAuthResult {
         if (resultCode != Activity.RESULT_OK || data == null) return GoogleAiAuthResult.Cancelled
         return try {
             val result = Identity.getAuthorizationClient(context).getAuthorizationResultFromIntent(data)
             if (result.hasResolution()) {
                 GoogleAiAuthResult.Failure("A autorização não foi concluída. Tente novamente.")
             } else {
-                storeAndDescribe(result)
+                storeAndDescribe(result, companyId)
             }
         } catch (e: CancellationException) {
             throw e
@@ -110,16 +115,18 @@ class GoogleAiAuthorizer @Inject constructor(
      * Token para a chamada à API. Usa o do cofre se ainda válido; senão renova sem UI.
      * Lança [AiProviderException] se o Google exigir nova interação do usuário.
      */
-    internal suspend fun accessToken(): String {
+    internal suspend fun accessToken(companyId: Long = AiSecretKeys.DEVICE_SCOPE): String {
+        val cache = cache(companyId)
         cache.valid()?.let { return it }
         if (!cache.exists()) {
             throw AiProviderException("Conta Google não autorizada. Toque em 'Entrar com conta Google' em Configurações > IA.")
         }
-        return refreshSilently()
+        return refreshSilently(companyId)
     }
 
     /** Descarta o token atual (ex.: servidor respondeu 401) e tenta obter outro sem UI. */
-    internal suspend fun refreshSilently(): String {
+    internal suspend fun refreshSilently(companyId: Long = AiSecretKeys.DEVICE_SCOPE): String {
+        val cache = cache(companyId)
         cache.invalidate()
         val result = try {
             authorizeTask().await()
@@ -140,7 +147,8 @@ class GoogleAiAuthorizer @Inject constructor(
      * AuthorizationClient; sem rede a revogação remota é ignorada e o usuário pode removê-la em
      * https://myaccount.google.com/permissions.
      */
-    suspend fun revoke() {
+    suspend fun revoke(companyId: Long = AiSecretKeys.DEVICE_SCOPE) {
+        val cache = cache(companyId)
         val token = cache.valid()
         cache.clear()
         if (token == null) return
@@ -164,13 +172,13 @@ class GoogleAiAuthorizer @Inject constructor(
         return Identity.getAuthorizationClient(context).authorize(request)
     }
 
-    private suspend fun storeAndDescribe(result: AuthorizationResult): GoogleAiAuthResult {
+    private suspend fun storeAndDescribe(result: AuthorizationResult, companyId: Long): GoogleAiAuthResult {
         val token = result.accessToken?.takeIf { it.isNotBlank() }
             ?: return GoogleAiAuthResult.Failure("O Google não devolveu um token de acesso.")
         if (result.grantedScopes.none { it == CLOUD_PLATFORM_SCOPE }) {
             return GoogleAiAuthResult.Failure("A permissão para a API do Google Cloud (Gemini) não foi concedida.")
         }
-        cache.store(token)
+        cache(companyId).store(token)
         val account = runCatching { result.toGoogleSignInAccount()?.email }.getOrNull()?.takeIf { it.isNotBlank() }
             ?: fetchEmail(token)
         return GoogleAiAuthResult.Granted(account?.trim()?.lowercase())

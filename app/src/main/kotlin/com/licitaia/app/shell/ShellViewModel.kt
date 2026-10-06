@@ -68,6 +68,7 @@ class ShellViewModel @Inject constructor(
                 userName = s?.user?.name.orEmpty(),
                 unreadNotifications = unreadCount,
                 criticalPending = s != null && live.any { it.captchaPending },
+                demo = s != null && (s.user.demo || s.activeCompany.demo),
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, ShellState())
 
@@ -118,6 +119,27 @@ class ShellViewModel @Inject constructor(
 
     fun switchCompany(companyId: Long, onResult: (Boolean) -> Unit) {
         viewModelScope.launch { onResult(authRepository.switchCompany(companyId).isSuccess) }
+    }
+
+    /** true quando a sessão atual é a demonstração isolada. */
+    val isDemo: Boolean get() = session.value?.user?.demo == true
+
+    /** "Sair da demonstração": apaga a empresa demo, seus dados e o usuário demo; volta ao login. */
+    fun exitDemo(onResult: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!isDemo) { onResult(Result.failure(IllegalStateException("Sessão não é de demonstração."))); return@launch }
+            val result = runCatching { authRepository.exitDemo().getOrThrow() }
+            onResult(result)
+        }
+    }
+
+    /** "Reiniciar demonstração": recria o espaço demo com os dados de exemplo originais. */
+    fun resetDemo(onResult: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!isDemo) { onResult(Result.failure(IllegalStateException("Sessão não é de demonstração."))); return@launch }
+            val result = runCatching { authRepository.resetDemo().getOrThrow() }.map { }
+            onResult(result)
+        }
     }
 
     fun onBackground() {

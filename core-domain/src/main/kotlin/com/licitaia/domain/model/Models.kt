@@ -14,6 +14,8 @@ data class Company(
     val city: String,
     /** Provedor de IA preferido da empresa; null = usa o provedor global ativo. */
     val preferredAi: AiProviderType? = null,
+    /** Empresa do espaço de demonstração: dados fictícios, visíveis apenas ao usuário demo. */
+    val demo: Boolean = false,
 )
 
 data class UserProfile(
@@ -585,6 +587,11 @@ data class AiConfig(
     val oauthAccount: String? = null,
     /** ID do projeto Google Cloud para `x-goog-user-project` (opcional). */
     val cloudProject: String? = null,
+    /**
+     * true = esta configuração (modelo, URL, credencial) pertence à empresa ativa;
+     * false = é o "padrão do aparelho" (companyId 0), usado por toda empresa sem configuração própria.
+     */
+    val companyScoped: Boolean = false,
 ) {
     /** Há autorização OAuth registrada (conta conhecida + token no cofre). */
     val hasOAuth: Boolean get() = oauthAccount != null

@@ -79,6 +79,8 @@ data class CompaniesUiState(
     val noSession: Boolean = false,
     val session: AuthSession? = null,
     val canManage: Boolean = false,
+    /** Sessão de demonstração: pode editar a própria empresa demo, mas não criar empresas nem gerir usuários. */
+    val demo: Boolean = false,
     val companies: List<Company> = emptyList(),
     val users: List<UserProfile> = emptyList(),
     /** Contas reais identificadas (ex.: Google) sem nenhuma empresa — só para quem pode gerenciar. */
@@ -88,9 +90,12 @@ data class CompaniesUiState(
     val switchingTo: Long? = null,
     val confirmDeleteUser: UserProfile? = null,
 ) {
+    val canCreateCompany: Boolean get() = canManage && !demo
+    val canManageUsers: Boolean get() = canManage && !demo
+
     fun canSwitchTo(company: Company): Boolean {
         val s = session ?: return false
-        return company.id != s.activeCompany.id && (company.id in s.user.companyIds || s.user.role == UserRole.ADMIN)
+        return company.id != s.activeCompany.id && company.demo == s.user.demo && (company.id in s.user.companyIds || s.user.role == UserRole.ADMIN)
     }
 }
 
@@ -118,7 +123,7 @@ class CompaniesViewModel @Inject constructor(
                     val canManage = Rbac.can(session.user.role, Permission.GERENCIAR_EMPRESAS)
                     l.copy(
                         loading = false, error = null, session = session,
-                        canManage = canManage,
+                        canManage = canManage, demo = session.user.demo,
                         companies = list.sortedWith(compareByDescending<Company> { it.id == session.activeCompany.id }.thenBy { it.tradeName.ifBlank { it.name } }),
                         users = users.sortedBy { it.name },
                         unassignedUsers = if (canManage) unassigned.sortedBy { it.name } else emptyList(),
@@ -147,7 +152,7 @@ class CompaniesViewModel @Inject constructor(
     // ------------------------------------------------------------------ empresa
 
     fun newCompany() {
-        if (!state.value.canManage) return
+        if (!state.value.canCreateCompany) return
         local.update { it.copy(companyForm = CompanyForm()) }
     }
 
@@ -165,7 +170,7 @@ class CompaniesViewModel @Inject constructor(
     fun saveCompany() {
         val form = local.value.companyForm ?: return
         val session = state.value.session ?: return
-        if (form.busy || !state.value.canManage) return
+        if (form.busy || !state.value.canManage || (form.isNew && !state.value.canCreateCompany)) return
         val errors = buildMap {
             if (form.name.isBlank()) put("name", "Informe a razão social")
             if (form.cnpjDigits.length != 14) put("cnpj", "O CNPJ deve ter 14 dígitos")
@@ -199,20 +204,20 @@ class CompaniesViewModel @Inject constructor(
 
     fun newUser() {
         val s = state.value
-        if (!s.canManage) return
+        if (!s.canManageUsers) return
         val companyId = s.session?.activeCompany?.id ?: return
         local.update { it.copy(userForm = UserForm(companyIds = listOf(companyId))) }
     }
 
     fun editUser(user: UserProfile) {
-        if (!state.value.canManage) return
+        if (!state.value.canManageUsers) return
         local.update { it.copy(userForm = UserForm.from(user)) }
     }
 
     /** Abre o editor já com a empresa ativa adicionada; o administrador escolhe o perfil antes de salvar. */
     fun linkUserToActiveCompany(user: UserProfile) {
         val s = state.value
-        if (!s.canManage) return
+        if (!s.canManageUsers) return
         val companyId = s.session?.activeCompany?.id ?: return
         local.update { it.copy(userForm = UserForm.from(user).copy(companyIds = (user.companyIds + companyId).distinct())) }
     }
@@ -226,7 +231,7 @@ class CompaniesViewModel @Inject constructor(
     fun saveUser() {
         val form = local.value.userForm ?: return
         val s = state.value
-        if (form.busy || !s.canManage) return
+        if (form.busy || !s.canManageUsers) return
         val email = form.email.trim().lowercase()
         val errors = buildMap {
             if (form.name.isBlank()) put("name", "Informe o nome")
@@ -260,7 +265,7 @@ class CompaniesViewModel @Inject constructor(
         val user = local.value.confirmDeleteUser ?: return
         val s = state.value
         local.update { it.copy(confirmDeleteUser = null) }
-        if (!s.canManage || user.id == s.session?.user?.id) return
+        if (!s.canManageUsers || user.id == s.session?.user?.id) return
         viewModelScope.launch {
             runCatching { companies.deleteUser(user.id) }
                 .onSuccess {

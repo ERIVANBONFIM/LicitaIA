@@ -46,6 +46,21 @@ class RepositoryAccessTest {
         assertTrue(runCatching { access.requireCompany(1) }.isFailure)
     }
 
+    @Test fun `demo account owns only the demo company`() {
+        val demoCompany = company1.copy(id = 7, name = "Demo", tradeName = "Demo", demo = true)
+        login(demo = true, active = demoCompany, companyIds = listOf(7))
+        assertTrue(access.owns(7))
+        assertTrue(runCatching { access.requireCompany(7, Permission.CONFIGURAR_IA) }.isSuccess)
+        assertFalse(access.owns(1))
+    }
+
+    @Test fun `real account never owns a demo company even when linked and active`() {
+        val demoCompany = company1.copy(id = 7, name = "Demo", tradeName = "Demo", demo = true)
+        login(demo = false, active = demoCompany, companyIds = listOf(1, 7))
+        assertFalse(access.owns(7))
+        assertTrue(runCatching { access.requireCompany(7) }.isFailure)
+    }
+
     @Test fun `rbac is enforced on top of ownership`() {
         login(role = UserRole.LICITACOES)
         assertTrue(runCatching { access.requireCompany(1, Permission.OPERAR_SESSOES) }.isSuccess)

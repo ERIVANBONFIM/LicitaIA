@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.licitaia.domain.auth.GoogleIdentity
 import com.licitaia.domain.auth.NoCompanyAccessException
+import com.licitaia.domain.auth.NoLocalLinkException
 import com.licitaia.domain.model.AuthProvider
 import com.licitaia.feature.auth.google.GoogleCredentialClient
 import com.licitaia.feature.auth.google.GoogleSignInResult
@@ -49,6 +50,10 @@ data class LoginUiState(
     val googleConfigured: Boolean = false,
     /** Conta Google identificada que ainda não tem empresa vinculada. */
     val googlePending: GooglePending? = null,
+    /** Conta Google cujo e-mail já pertence a uma conta local com senha: o vínculo exige essa senha. */
+    val linkPending: LinkPending? = null,
+    val linkPassword: String = "",
+    val linkError: String? = null,
     /** Aviso não bloqueante (ex.: "Entrada com Google cancelada."). */
     val info: String? = null,
     val loggedIn: Boolean = false,
@@ -57,6 +62,8 @@ data class LoginUiState(
 }
 
 data class GooglePending(val email: String, val name: String)
+
+data class LinkPending(val email: String, val name: String)
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
@@ -85,7 +92,7 @@ class LoginViewModel @Inject constructor(
             _state.update { it.copy(generalError = "Login Google não está configurado neste build (LICITAIA_GOOGLE_SERVER_CLIENT_ID). Veja o README.") }
             return
         }
-        _state.update { it.copy(googleLoading = true, generalError = null, info = null, googlePending = null) }
+        _state.update { it.copy(googleLoading = true, generalError = null, info = null, googlePending = null, linkPending = null, linkError = null) }
         googleJob = viewModelScope.launch {
             when (val result = google.signIn(activityContext)) {
                 is GoogleSignInResult.Success -> completeGoogleLogin(result.identity)
@@ -115,6 +122,7 @@ class LoginViewModel @Inject constructor(
             when (val error = result.exceptionOrNull()) {
                 null -> it.copy(googleLoading = false, loggedIn = true)
                 is NoCompanyAccessException -> it.copy(googleLoading = false, googlePending = GooglePending(error.email, identity.name))
+                is NoLocalLinkException -> it.copy(googleLoading = false, linkPending = LinkPending(error.email, identity.name), linkPassword = "", linkError = null)
                 else -> it.copy(
                     googleLoading = false,
                     generalError = error.message?.takeIf(String::isNotBlank) ?: "Não foi possível entrar com o Google.",
@@ -134,8 +142,56 @@ class LoginViewModel @Inject constructor(
     /** "Sair da conta Google": limpa o estado de credencial e volta ao formulário. */
     fun signOutGoogle() {
         lastGoogleIdentity = null
-        _state.update { it.copy(googlePending = null, generalError = null, info = "Conta Google desconectada deste aparelho.") }
+        _state.update { it.copy(googlePending = null, linkPending = null, linkPassword = "", linkError = null, generalError = null, info = "Conta Google desconectada deste aparelho.") }
         viewModelScope.launch { google.signOut(AuthProvider.GOOGLE) }
+    }
+
+    // ------------------------------------------------------------------ vínculo Google ↔ conta local
+
+    fun onLinkPassword(v: String) = _state.update { it.copy(linkPassword = v, linkError = null) }
+
+    /** Cancela o vínculo: a conta local continua intacta; a credencial Google é descartada deste aparelho. */
+    fun cancelLink() {
+        lastGoogleIdentity = null
+        _state.update { it.copy(linkPending = null, linkPassword = "", linkError = null, info = "Vínculo cancelado. Você ainda pode entrar com e-mail e senha.") }
+        viewModelScope.launch { google.signOut(AuthProvider.GOOGLE) }
+    }
+
+    /** Confirma a senha da conta local e vincula a identidade Google a ela (o repositório verifica o PBKDF2). */
+    fun linkGoogle() {
+        val identity = lastGoogleIdentity ?: return
+        val s = _state.value
+        if (s.busy || s.linkPending == null) return
+        if (s.linkPassword.isBlank()) {
+            _state.update { it.copy(linkError = "Informe a senha da conta local") }
+            return
+        }
+        _state.update { it.copy(googleLoading = true, linkError = null, generalError = null) }
+        viewModelScope.launch {
+            val result = runSafely { auth.linkGoogleToLocal(identity, s.linkPassword, s.remember) }
+            _state.update {
+                when (val error = result.exceptionOrNull()) {
+                    null -> it.copy(googleLoading = false, loggedIn = true, linkPending = null, linkPassword = "")
+                    is NoCompanyAccessException -> it.copy(googleLoading = false, linkPending = null, linkPassword = "", googlePending = GooglePending(error.email, identity.name))
+                    else -> it.copy(googleLoading = false, linkPassword = "", linkError = error.message?.takeIf(String::isNotBlank) ?: "Não foi possível vincular a conta.")
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ demonstração isolada
+
+    /** "Explorar demonstração": cria (uma vez) o espaço demo isolado e entra sem senha. */
+    fun exploreDemo() {
+        if (_state.value.busy) return
+        _state.update { it.copy(demoLoading = true, generalError = null, info = null) }
+        viewModelScope.launch {
+            val result = runSafely { auth.loginDemo() }
+            _state.update {
+                if (result.isSuccess) it.copy(demoLoading = false, loggedIn = true)
+                else it.copy(demoLoading = false, generalError = result.exceptionOrNull()?.message?.takeIf(String::isNotBlank) ?: "Não foi possível abrir a demonstração.")
+            }
+        }
     }
 
     fun createGoogleCompany() {

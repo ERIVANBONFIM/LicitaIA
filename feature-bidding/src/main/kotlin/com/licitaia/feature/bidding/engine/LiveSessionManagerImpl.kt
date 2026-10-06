@@ -30,6 +30,7 @@ import com.licitaia.domain.repository.TenderRepository
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
 import com.licitaia.domain.util.Formatters
+import com.licitaia.feature.bidding.service.AssistedSessionKeepAlive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -69,9 +70,10 @@ class LiveSessionManagerImpl @Inject constructor(
     private val auth: AuthRepository,
     private val competition: CompetitionRepository,
     private val tenders: TenderRepository,
+    private val keepAlive: AssistedSessionKeepAlive,
 ) : LiveSessionManager {
 
-    /** Construtor para testes JVM: permite trocar o dispatcher e o relógio. */
+    /** Construtor para testes JVM: permite trocar o dispatcher e o relógio (sem Foreground Service). */
     internal constructor(
         store: LiveSessionStore,
         notifier: AppNotifier,
@@ -81,10 +83,12 @@ class LiveSessionManagerImpl @Inject constructor(
         tenders: TenderRepository,
         dispatcher: CoroutineDispatcher,
         clock: () -> Long,
-    ) : this(store, notifier, audit, auth, competition, tenders) {
+        keepAlive: AssistedSessionKeepAlive = AssistedSessionKeepAlive.None,
+    ) : this(store, notifier, audit, auth, competition, tenders, keepAlive) {
         this.clock = clock
         this.scope = CoroutineScope(SupervisorJob() + dispatcher)
         bindAuth()
+        bindKeepAlive()
     }
 
     private var clock: () -> Long = { System.currentTimeMillis() }
@@ -97,6 +101,7 @@ class LiveSessionManagerImpl @Inject constructor(
     private val restoreMutex = Mutex()
     private val muted = MutableStateFlow(false)
     private var authJob: Job? = null
+    private var keepAliveJob: Job? = null
 
     override val sessions: StateFlow<List<LiveSession>> by lazy {
         combine(states, activeCompany) { map, company ->
@@ -106,7 +111,10 @@ class LiveSessionManagerImpl @Inject constructor(
 
     override val alertsMuted: StateFlow<Boolean> = muted.asStateFlow()
 
-    init { bindAuth() }
+    init {
+        bindAuth()
+        bindKeepAlive()
+    }
 
     private fun bindAuth() {
         authJob?.cancel()
@@ -122,6 +130,26 @@ class LiveSessionManagerImpl @Inject constructor(
             }
         }
     }
+
+    /**
+     * Foreground Service: ligado enquanto houver, na empresa ativa, sessão aberta com cronômetro em
+     * andamento ou alerta ativo; desligado ao zerar (encerramento, logout/troca de empresa — que
+     * desmontam as sessões — ou "pausar alertas de todas"). Sessões restauradas voltam com o
+     * cronômetro parado, portanto não religam o serviço sozinhas.
+     */
+    private fun bindKeepAlive() {
+        keepAliveJob?.cancel()
+        keepAliveJob = scope.launch {
+            combine(states, activeCompany, muted) { map, company, muted ->
+                if (muted || company == null) 0 else map.values.count { it.companyId == company && isActivelyTracked(it) }
+            }.distinctUntilChanged().collect { count ->
+                runCatching { keepAlive.update(count) }
+            }
+        }
+    }
+
+    private fun isActivelyTracked(s: LiveSession): Boolean =
+        s.isOpen && (s.timerRunning || AssistedBidding.activeAlerts(s).isNotEmpty())
 
     override fun observeSession(sessionId: String): Flow<LiveSession?> =
         combine(states, auth.session) { map, session ->

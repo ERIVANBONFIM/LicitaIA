@@ -5,11 +5,16 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.licitaia.core.data.db.LicitaDatabase
 import com.licitaia.core.data.session.SessionHolder
 import com.licitaia.core.security.PortableBackupCipher
+import com.licitaia.domain.model.AuditAction
+import com.licitaia.domain.model.AuditEvent
+import com.licitaia.domain.model.AuditOrigin
+import com.licitaia.domain.model.AuditResult
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.BackupRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -34,7 +39,7 @@ class CompanyBackupRepository @Inject constructor(
 
     private companion object {
         /** Versão de schema gravada no backup = versão atual do Room; restauração aceita versões anteriores. */
-        const val BACKUP_SCHEMA = 5
+        const val BACKUP_SCHEMA = 6
     }
 
     private fun session() = requireNotNull(holder.current) { "Entre em sua conta." }.also {
@@ -54,6 +59,8 @@ class CompanyBackupRepository @Inject constructor(
                 db.setTransactionSuccessful()
             } finally { db.endTransaction() }
             val files = JSONObject()
+            // Nome e MIME originais de cada anexo, para restaurar com a extensão certa (formato 1, campo opcional).
+            val fileMeta = JSONObject()
             listOf("documents" to "attachmentUri", "proposals" to "pdfPath").forEach { (table, column) ->
                 val records = tables.getJSONArray(table)
                 for (i in 0 until records.length()) {
@@ -61,6 +68,7 @@ class CompanyBackupRepository @Inject constructor(
                     if (!row.isNull(column)) {
                         val path = row.getString(column)
                         files.put(path, Base64.encodeToString(readAttachment(path), Base64.NO_WRAP))
+                        attachmentMeta(path)?.let { fileMeta.put(path, it) }
                     }
                 }
             }
@@ -76,7 +84,7 @@ class CompanyBackupRepository @Inject constructor(
                 editais.put(id.toString(), filesForTender)
             }
             val payload = JSONObject().put("format", 1).put("schema", BACKUP_SCHEMA).put("cnpj", auth.activeCompany.cnpj.filter(Char::isDigit))
-                .put("createdAt", System.currentTimeMillis()).put("tables", tables).put("files", files).put("editais", editais).toString().toByteArray()
+                .put("createdAt", System.currentTimeMillis()).put("tables", tables).put("files", files).put("fileMeta", fileMeta).put("editais", editais).toString().toByteArray()
             require(payload.size <= limit) { "Backup excede 64 MB. Reduza o tamanho dos anexos." }
             require(holder.current == auth) { "Sessão alterada; tente novamente." }
             val encrypted = PortableBackupCipher.encrypt(payload, password)
@@ -95,6 +103,8 @@ class CompanyBackupRepository @Inject constructor(
             require(payload.getString("cnpj") == auth.activeCompany.cnpj.filter(Char::isDigit)) { "O backup pertence a outro CNPJ. Crie ou selecione a empresa correspondente." }
             val tables = payload.getJSONObject("tables")
             val attachments = payload.getJSONObject("files")
+            // Backups anteriores a este campo não têm metadados: a extensão é inferida do caminho ou do conteúdo.
+            val fileMeta = payload.optJSONObject("fileMeta") ?: JSONObject()
             val db = room.openHelper.writableDatabase
             val prefix = "restored:${UUID.randomUUID()}:"
             val opportunityIds = mutableMapOf<String, String>()
@@ -108,6 +118,7 @@ class CompanyBackupRepository @Inject constructor(
                     val columns = db.query("PRAGMA table_info($table)").use { c -> buildSet { while (c.moveToNext()) add(c.getString(c.getColumnIndexOrThrow("name"))) } }
                     val records = tables.getJSONArray(table)
                     require(records.length() <= 50_000) { "Backup excede limite de registros." }
+                    val auditRows = mutableListOf<Pair<Long, JSONObject>>()
                     for (i in 0 until records.length()) {
                         val row = records.getJSONObject(i)
                         // Backups de versões anteriores podem não ter colunas novas: elas recebem o DEFAULT da tabela.
@@ -127,15 +138,22 @@ class CompanyBackupRepository @Inject constructor(
                         }
                         val column = when (table) { "documents" -> "attachmentUri"; "proposals" -> "pdfPath"; else -> null }
                         if (column != null && !row.isNull(column)) {
-                            val data = Base64.decode(attachments.getString(row.getString(column)), Base64.DEFAULT)
-                            val file = File(root, UUID.randomUUID().toString()).also { createdFiles.add(it); it.writeBytes(data) }
+                            val original = row.getString(column)
+                            val data = Base64.decode(attachments.getString(original), Base64.DEFAULT)
+                            val file = File(root, restoredFileName(original, fileMeta.optJSONObject(original), data)).also { createdFiles.add(it); it.writeBytes(data) }
                             row.put(column, if (table == "documents") androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.licitaia.fileprovider", file).toString() else file.absolutePath)
+                        }
+                        if (table == "audit_events") {
+                            // Inseridos depois, re-encadeados a partir da cabeça local (ver AuditRestoreChain).
+                            auditRows.add(oldId to row)
+                            continue
                         }
                         val values = values(row)
                         val newId = db.insert(table, SQLiteDatabase.CONFLICT_ABORT, values)
                         if (table == "tenders") tenderIds[oldId] = newId
                         count++
                     }
+                    if (auditRows.isNotEmpty()) count += insertRechainedAudit(db, auditRows)
                 }
                 val editais = payload.getJSONObject("editais")
                 tenderIds.forEach { (old, new) ->
@@ -174,6 +192,71 @@ class CompanyBackupRepository @Inject constructor(
             else -> put(key, value.toString())
         } }
     }
+    /** `{name, mime}` do anexo original; `null` se nada puder ser descoberto (nunca falha a exportação). */
+    private fun attachmentMeta(path: String): JSONObject? = runCatching {
+        val uri = Uri.parse(path)
+        var name: String? = null
+        var mime: String? = null
+        if (uri.scheme == "content") {
+            mime = context.contentResolver.getType(uri)
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) name = c.getString(0)
+            }
+        } else {
+            name = (uri.path ?: path).substringAfterLast('/')
+            mime = RestoredAttachmentNaming.mimeOf(name)
+        }
+        if (name == null && mime == null) null
+        else JSONObject().apply { if (name != null) put("name", name); if (mime != null) put("mime", mime) }
+    }.getOrNull()
+
+    /** `UUID.ext` preservando a extensão/MIME originais (metadados do backup, caminho de origem ou assinatura do conteúdo). */
+    private fun restoredFileName(originalPath: String, meta: JSONObject?, data: ByteArray): String {
+        val scheme = Uri.parse(originalPath).scheme
+        val fallbackName = if (scheme == null || scheme == "file") originalPath else null
+        return RestoredAttachmentNaming.fileName(
+            base = UUID.randomUUID().toString(),
+            originalName = meta?.optString("name")?.takeIf { it.isNotBlank() } ?: fallbackName,
+            mime = meta?.optString("mime")?.takeIf { it.isNotBlank() },
+            head = data.copyOf(minOf(data.size, 16)),
+        )
+    }
+
+    /**
+     * Eventos de auditoria do backup, na ordem original, re-encadeados a partir da cabeça atual da cadeia local
+     * (os hashes de origem são descartados: a cadeia é por aparelho). Deve rodar dentro da transação de restauração.
+     */
+    private fun insertRechainedAudit(db: SupportSQLiteDatabase, rows: List<Pair<Long, JSONObject>>): Int {
+        val head = db.query("SELECT hash FROM audit_events ORDER BY id DESC LIMIT 1").use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        val ordered = rows.sortedBy { it.first }.map { it.second }
+        val events = ordered.map { row ->
+            runCatching {
+                AuditEvent(
+                    timestamp = row.getLong("timestamp"),
+                    user = row.getString("user"),
+                    companyId = if (row.isNull("companyId")) null else row.getLong("companyId"),
+                    companyName = row.getString("companyName"),
+                    portal = row.optStringOrNull("portal"),
+                    tenderNumber = row.optStringOrNull("tenderNumber"),
+                    item = row.optStringOrNull("item"),
+                    action = AuditAction.valueOf(row.getString("action")),
+                    previousValue = row.optStringOrNull("previousValue"),
+                    newValue = row.optStringOrNull("newValue"),
+                    reason = row.optStringOrNull("reason"),
+                    origin = AuditOrigin.valueOf(row.getString("origin")),
+                    result = AuditResult.valueOf(row.getString("result")),
+                    details = row.optString("details", ""),
+                )
+            }.getOrElse { throw IllegalArgumentException("Estrutura incompatível: audit_events") }
+        }
+        AuditRestoreChain.rechain(head, events).forEachIndexed { i, chained ->
+            val row = ordered[i].put("prevHash", chained.prevHash).put("hash", chained.hash)
+            db.insert("audit_events", SQLiteDatabase.CONFLICT_ABORT, values(row))
+        }
+        return ordered.size
+    }
+    private fun JSONObject.optStringOrNull(key: String): String? = if (!has(key) || isNull(key)) null else getString(key)
+
     private fun readAttachment(path: String): ByteArray {
         val uri = Uri.parse(path)
         return if (uri.scheme == "content" || uri.scheme == "file") context.contentResolver.openInputStream(uri)!!.use { it.readBytesBounded(limit) }

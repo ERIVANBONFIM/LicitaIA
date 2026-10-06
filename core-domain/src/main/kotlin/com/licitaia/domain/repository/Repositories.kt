@@ -56,6 +56,28 @@ interface AuthRepository {
     suspend fun loginWithGoogle(identity: GoogleIdentity, remember: Boolean): Result<AuthSession>
     suspend fun createGoogleCompany(identity: GoogleIdentity, companyName: String, cnpj: String, remember: Boolean): Result<AuthSession> =
         Result.failure(UnsupportedOperationException("Cadastro Google indisponível."))
+
+    /**
+     * Vincula a identidade Google a uma conta LOCAL já existente com o mesmo e-mail, exigindo a senha
+     * dessa conta (PBKDF2). Mantém perfil e empresas; grava provedor GOOGLE + `externalId`; audita CADASTRO.
+     * Chamado após [loginWithGoogle] falhar com [com.licitaia.domain.auth.NoLocalLinkException].
+     */
+    suspend fun linkGoogleToLocal(identity: GoogleIdentity, password: String, remember: Boolean): Result<AuthSession> =
+        Result.failure(UnsupportedOperationException("Vínculo Google indisponível."))
+
+    /**
+     * Modo demonstração ISOLADO: cria (uma vez por aparelho) a empresa demo, o usuário demo (ADMIN só dela)
+     * e dados de exemplo, e entra sem senha. Usuários reais nunca veem esse espaço e vice-versa.
+     */
+    suspend fun loginDemo(): Result<AuthSession> =
+        Result.failure(UnsupportedOperationException("Demonstração indisponível."))
+
+    /** "Sair da demonstração": apaga a empresa demo, todos os dados por companyId e o usuário demo; encerra a sessão. */
+    suspend fun exitDemo(): Result<Unit> = Result.failure(UnsupportedOperationException("Demonstração indisponível."))
+
+    /** "Reiniciar demonstração": apaga e recria o espaço demo, mantendo a sessão na nova empresa demo. */
+    suspend fun resetDemo(): Result<AuthSession> = Result.failure(UnsupportedOperationException("Demonstração indisponível."))
+
     suspend fun logout()
     suspend fun switchCompany(companyId: Long): Result<AuthSession>
 
@@ -287,26 +309,40 @@ interface SettingsRepository {
     suspend fun update(transform: (AppSettings) -> AppSettings)
 }
 
+/**
+ * Configuração dos provedores de IA por (provedor, empresa). Cada empresa pode ter a própria configuração
+ * (modelo, URL, chave/conta); sem ela, vale o "padrão do aparelho" (companyId 0). As leituras resolvem
+ * sempre pela empresa ativa com esse fallback. O parâmetro `deviceDefault = true` nas alterações edita o
+ * padrão do aparelho em vez da configuração da empresa ativa.
+ */
 interface AiConfigRepository {
-    /** Uma configuração por provedor (inclui MOCK). */
-    fun observeConfigs(): Flow<List<AiConfig>>
+    /**
+     * Uma configuração por provedor (inclui MOCK), resolvida para a empresa ativa com fallback para o padrão
+     * do aparelho (ver [AiConfig.companyScoped]). Com [deviceDefault] = true, mostra só o padrão do aparelho.
+     */
+    fun observeConfigs(deviceDefault: Boolean = false): Flow<List<AiConfig>>
     fun observeActive(): Flow<AiProviderType>
     suspend fun setActive(provider: AiProviderType)
     /**
      * [apiKey] null = mantém a chave atual. A chave é cifrada com o Android Keystore.
      * [cloudProject] null = mantém; vazio = limpa (ID do projeto Google Cloud, só Gemini via conta).
      */
-    suspend fun saveConfig(provider: AiProviderType, model: String, baseUrl: String, apiKey: String?, cloudProject: String? = null)
-    suspend fun clearApiKey(provider: AiProviderType)
+    suspend fun saveConfig(provider: AiProviderType, model: String, baseUrl: String, apiKey: String?, cloudProject: String? = null, deviceDefault: Boolean = false)
+    suspend fun clearApiKey(provider: AiProviderType, deviceDefault: Boolean = false)
     /** Troca o modo de autenticação (chave de API ↔ conta). Só provedores com [AiProviderType.supportsOAuth] aceitam OAUTH. */
-    suspend fun setAuthMode(provider: AiProviderType, mode: AiAuthMode)
+    suspend fun setAuthMode(provider: AiProviderType, mode: AiAuthMode, deviceDefault: Boolean = false)
     /**
      * Registra a autorização concedida: e-mail da conta (exibição) e projeto Google Cloud opcional.
      * O token de acesso é guardado pelo autorizador no cofre, nunca passa por aqui. Ativa o modo OAUTH.
      */
-    suspend fun saveOAuth(provider: AiProviderType, account: String, cloudProject: String?)
+    suspend fun saveOAuth(provider: AiProviderType, account: String, cloudProject: String?, deviceDefault: Boolean = false)
     /** Remove token e conta autorizada; volta ao modo chave de API. */
-    suspend fun clearOAuth(provider: AiProviderType)
+    suspend fun clearOAuth(provider: AiProviderType, deviceDefault: Boolean = false)
+    /**
+     * "Usar padrão do aparelho": apaga a configuração própria da empresa ativa para o provedor
+     * (linha, chave e token no cofre). A empresa passa a usar o padrão do aparelho.
+     */
+    suspend fun useDeviceDefault(provider: AiProviderType) {}
     /** Faz uma chamada mínima ao provedor e devolve uma mensagem de status. */
     suspend fun testConnection(provider: AiProviderType): Result<String>
 }

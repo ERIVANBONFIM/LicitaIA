@@ -265,6 +265,10 @@ interface BidEventDao {
 
     @Query("DELETE FROM bid_events WHERE sessionId = :sessionId")
     suspend fun deleteBySession(sessionId: String)
+
+    /** Eventos de todas as sessões de uma empresa (usado ao apagar o espaço de demonstração). */
+    @Query("DELETE FROM bid_events WHERE sessionId IN (SELECT id FROM live_sessions WHERE companyId = :companyId)")
+    suspend fun deleteByCompany(companyId: Long)
 }
 
 @Dao
@@ -289,6 +293,10 @@ interface NotificationDao {
 
     @Query("DELETE FROM notifications WHERE companyId = :companyId OR companyId IS NULL")
     suspend fun clear(companyId: Long)
+
+    /** Só as notificações da empresa (sem as globais) — usado ao apagar o espaço de demonstração. */
+    @Query("DELETE FROM notifications WHERE companyId = :companyId")
+    suspend fun deleteByCompany(companyId: Long)
 }
 
 @Dao
@@ -319,14 +327,29 @@ interface AuditDao {
 
 @Dao
 interface AiConfigDao {
+    /** Todas as linhas (todas as empresas e o padrão do aparelho); o repositório resolve o escopo. */
     @Query("SELECT * FROM ai_configs")
     fun observeAll(): Flow<List<AiConfigEntity>>
 
-    @Query("SELECT * FROM ai_configs WHERE provider = :provider")
-    suspend fun get(provider: AiProviderType): AiConfigEntity?
+    /** Linha exata do escopo: `companyId = 0` é o padrão do aparelho. */
+    @Query("SELECT * FROM ai_configs WHERE provider = :provider AND companyId = :companyId")
+    suspend fun get(provider: AiProviderType, companyId: Long): AiConfigEntity?
+
+    /** Configuração da empresa, ou o padrão do aparelho se ela não tiver a própria (prioriza companyId > 0). */
+    @Query("SELECT * FROM ai_configs WHERE provider = :provider AND companyId IN (:companyId, 0) ORDER BY companyId DESC LIMIT 1")
+    suspend fun resolve(provider: AiProviderType, companyId: Long): AiConfigEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: AiConfigEntity)
+
+    @Query("DELETE FROM ai_configs WHERE provider = :provider AND companyId = :companyId")
+    suspend fun delete(provider: AiProviderType, companyId: Long)
+
+    @Query("SELECT * FROM ai_configs WHERE companyId = :companyId")
+    suspend fun getByCompany(companyId: Long): List<AiConfigEntity>
+
+    @Query("DELETE FROM ai_configs WHERE companyId = :companyId AND companyId > 0")
+    suspend fun deleteByCompany(companyId: Long)
 }
 
 @Dao
