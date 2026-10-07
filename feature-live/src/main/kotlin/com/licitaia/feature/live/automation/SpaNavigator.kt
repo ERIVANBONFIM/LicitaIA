@@ -428,7 +428,8 @@ class SpaNavigator(
      */
     suspend fun ensureGroupPage(key: String, page: Int): String? {
         repeat(8) {
-            if ((reply(SpaScripts.expandGroups()).int("clicked") ?: 0) > 0) sleep(1_200)
+            // Só ESTE grupo (os outros ficam como estão): o chevron do cartão do grupo alterna v/^.
+            openGroup(key)?.let { return it }
             val pg = groupPager(key) ?: return "o $key não aparece na página"
             when (val a = GroupTraversal.decide(pg, page)) {
                 GroupTraversal.Action.Stay -> return null
@@ -444,7 +445,107 @@ class SpaNavigator(
     }
 
     /** Recolhe o grupo antes de passar para o próximo. */
-    suspend fun collapseGroup(key: String) { reply(SpaScripts.collapseGroup(key)); sleep(600) }
+    suspend fun collapseGroup(key: String) { openGroup(key, open = false) }
+
+    /** Abre ([open]) ou fecha o grupo [key] pelo chevron do próprio cartão e espera o redesenho. null = ok. */
+    suspend fun openGroup(key: String, open: Boolean = true): String? {
+        repeat(5) {
+            val r = reply(SpaScripts.setGroupOpen(key, open))
+            if (!r.found) return "o $key não aparece na página"
+            if (!r.ok) return r.error ?: "não consegui ${if (open) "abrir" else "fechar"} o $key"
+            if (r.flag("already")) return null
+            sleep(1_200)
+        }
+        return if (reply(SpaScripts.setGroupOpen(key, open)).flag("already")) null else "o $key não ${if (open) "abriu" else "fechou"}"
+    }
+
+    /** Cartões de item da página atual do grupo [key] (texto) + cabeçalho do grupo. */
+    data class GroupItemsView(val open: Boolean, val head: String, val items: List<String>)
+
+    suspend fun groupItemsView(key: String): GroupItemsView? {
+        val o = AutomationJson.obj(driver.eval(SpaScripts.groupItemCards(key))) ?: return null
+        return with(AutomationJson) {
+            if (!o.bool("found")) return null
+            val items = (o["items"] as? kotlinx.serialization.json.JsonArray).orEmpty().mapNotNull { (it as? kotlinx.serialization.json.JsonObject)?.str("t") }
+            GroupItemsView(o.bool("open"), o.str("head").orEmpty(), items)
+        }
+    }
+
+    /** Espera os cartões de item do grupo aparecerem e pararem de mudar (redesenho do Angular). */
+    private suspend fun stableGroupItems(key: String, timeoutMs: Long = 8_000): GroupItemsView? {
+        val deadline = clock() + timeoutMs
+        var last: GroupItemsView? = null
+        while (true) {
+            val v = groupItemsView(key)
+            if (v != null && v.items.isNotEmpty() && v.items == last?.items) return v
+            last = v ?: last
+            if (clock() >= deadline) return last
+            sleep(600)
+        }
+    }
+
+    /** Abre SÓ o grupo [key] e lê a estrutura dele (itens da página, campos, botões de salvar). */
+    suspend fun groupStructure(key: String): GroupStructure? {
+        if (openGroup(key) != null) return null
+        sleep(500)
+        return GroupPlanner.parse(driver.eval(SpaScripts.groupsInfo())).firstOrNull { GroupCard.parse(it.text)?.key == key }
+    }
+
+    /** Grupos da compra ("GRUPO 1", "GRUPO 2", …) na ordem da página; vazio = compra sem grupos. */
+    suspend fun groupKeys(): List<String> =
+        GroupPlanner.parse(driver.eval(SpaScripts.groupsInfo())).mapNotNull { GroupCard.parse(it.text)?.key }.distinct()
+
+    /**
+     * LÊ um grupo inteiro sem preencher nada: abre o grupo, percorre TODAS as páginas do paginador interno, guarda o
+     * texto de cada cartão de item e (com [close]) fecha o grupo no fim.
+     */
+    suspend fun readGroup(key: String, close: Boolean = true): GroupRead {
+        openGroup(key)?.let { return GroupRead(key, groupCard(key), emptyList(), it) }
+        var head: String? = null
+        val (pages, warn) = GroupPageWalk.walk(
+            goTo = { p -> ensureGroupPage(key, p) },
+            read = {
+                val v = stableGroupItems(key)
+                if (v != null && v.head.isNotBlank()) head = v.head
+                GroupPageWalk.View(groupPager(key), v?.items.orEmpty())
+            },
+        )
+        val card = head?.let(GroupCard::parse) ?: groupCard(key)
+        log("$key lido: ${pages.size} página(s), ${pages.sumOf { it.size }} item(ns)" + (warn?.let { " · $it" } ?: ""))
+        if (close) openGroup(key, open = false)
+        return GroupRead(key, card, pages, warn)
+    }
+
+    /** Compra SEM grupos: cartões de item de todas as páginas da lista (paginador da página). */
+    suspend fun readFlatItems(maxPages: Int = 30): List<String> {
+        val out = LinkedHashMap<Int, String>()
+        fun take(raw: String?) {
+            val o = AutomationJson.obj(raw) ?: return
+            with(AutomationJson) {
+                (o["items"] as? kotlinx.serialization.json.JsonArray).orEmpty().forEach { el ->
+                    val x = el as? kotlinx.serialization.json.JsonObject ?: return@forEach
+                    val n = x.int("n") ?: return@forEach
+                    if (n > 0) out.putIfAbsent(n, x.str("t").orEmpty())
+                }
+            }
+        }
+        if (reply(SpaScripts.firstPage()).ok) sleep(1_500)
+        take(driver.eval(SpaScripts.items()))
+        for (i in 0 until maxPages) {
+            if (!reply(SpaScripts.nextPage()).ok) break
+            sleep(1_500)
+            take(driver.eval(SpaScripts.items()))
+        }
+        return out.values.toList()
+    }
+
+    /** Situação de TODOS os itens no portal (grupo a grupo, página a página), sem preencher nada. */
+    suspend fun readProposalState(): Pair<com.licitaia.domain.portal.PortalProposalReading, List<GroupRead>> {
+        val keys = groupKeys()
+        if (keys.isEmpty()) return ProposalReadingBuilder.build(clock(), emptyList(), readFlatItems()) to emptyList()
+        val reads = keys.map { readGroup(it) }
+        return ProposalReadingBuilder.build(clock(), reads) to reads
+    }
 
     /** Números dos itens visíveis (diagnóstico). */
     suspend fun visibleItems(): List<Int> =

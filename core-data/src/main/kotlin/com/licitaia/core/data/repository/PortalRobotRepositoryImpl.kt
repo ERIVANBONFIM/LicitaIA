@@ -6,7 +6,10 @@ import com.licitaia.core.data.db.PortalRobotPlanEntity
 import com.licitaia.domain.model.BidStrategy
 import com.licitaia.domain.portal.BidRobotConfig
 import com.licitaia.domain.portal.BidRobotMode
+import com.licitaia.domain.portal.PortalItemReading
+import com.licitaia.domain.portal.PortalItemState
 import com.licitaia.domain.portal.PortalMyTender
+import com.licitaia.domain.portal.PortalProposalReading
 import com.licitaia.domain.portal.PortalRobotPlan
 import com.licitaia.domain.portal.PortalRobotRepository
 import com.licitaia.domain.portal.ProposalItemPlan
@@ -130,6 +133,16 @@ object PortalRobotPlanCodec {
         val floorUnitPrice: Double? = null,
         /** Participação no item (planos antigos sem o campo: todos participam). */
         val selected: Boolean = true,
+        /**
+         * Última leitura da situação no portal ([PortalProposalReading]), guardada no próprio JSON dos itens (sem
+         * mudar o schema): data/hora da leitura (em todos os itens), estado ("LANCADO"/"NAO_CADASTRADO"/
+         * "DESCONHECIDO"; null = item não apareceu no portal), "Meu valor (unitário)", grupo e exclusividade ME/EPP.
+         */
+        val portalReadAt: Long? = null,
+        val portalState: String? = null,
+        val portalUnitPrice: Double? = null,
+        val portalGroup: String? = null,
+        val portalMeEppExclusive: Boolean = false,
     )
 
     @Serializable
@@ -148,7 +161,13 @@ object PortalRobotPlanCodec {
         companyId = plan.companyId,
         tenderKey = plan.tenderKey,
         itemsJson = json.encodeToString(ListSerializer(ItemDto.serializer()), plan.items.map {
-            ItemDto(it.itemNumber, it.description, it.quantity, it.unitPrice, it.brand, it.manufacturer, it.modelVersion, it.detailedDescription, it.floorUnitPrice, it.selected)
+            val r = plan.portalReading
+            val p = r?.of(it.itemNumber)
+            ItemDto(
+                it.itemNumber, it.description, it.quantity, it.unitPrice, it.brand, it.manufacturer, it.modelVersion, it.detailedDescription, it.floorUnitPrice, it.selected,
+                portalReadAt = r?.readAt, portalState = p?.state?.name, portalUnitPrice = p?.portalUnitPrice, portalGroup = p?.group,
+                portalMeEppExclusive = p?.meEppExclusive ?: false,
+            )
         }),
         proposalStatus = plan.proposalStatus.name,
         proposalLogJson = json.encodeToString(ListSerializer(String.serializer()), plan.proposalLog.takeLast(MAX_LOG_LINES)),
@@ -162,8 +181,18 @@ object PortalRobotPlanCodec {
     )
 
     fun decode(e: PortalRobotPlanEntity): PortalRobotPlan {
-        val items = json.decodeFromString(ListSerializer(ItemDto.serializer()), e.itemsJson).map {
+        val dtos = json.decodeFromString(ListSerializer(ItemDto.serializer()), e.itemsJson)
+        val items = dtos.map {
             ProposalItemPlan(it.itemNumber, it.description, it.quantity, it.unitPrice, it.brand, it.manufacturer, it.modelVersion, it.detailedDescription, it.floorUnitPrice, it.selected)
+        }
+        val reading = dtos.mapNotNull { it.portalReadAt }.maxOrNull()?.let { at ->
+            PortalProposalReading(
+                readAt = at,
+                items = dtos.mapNotNull { d ->
+                    val state = PortalItemState.entries.firstOrNull { it.name == d.portalState } ?: return@mapNotNull null
+                    PortalItemReading(d.itemNumber, state, d.portalUnitPrice, d.portalGroup, d.portalMeEppExclusive)
+                },
+            )
         }
         val bid = json.decodeFromString(BidDto.serializer(), e.bidJson).let { b ->
             BidRobotConfig(
@@ -189,6 +218,7 @@ object PortalRobotPlanCodec {
             sessionAt = e.sessionAt,
             liveSessionId = e.liveSessionId,
             updatedAt = e.updatedAt,
+            portalReading = reading,
         )
     }
 

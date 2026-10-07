@@ -14,7 +14,12 @@ import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
 import com.licitaia.domain.util.BrDocuments
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.licitaia.domain.lookup.CompanyLookup
+import com.licitaia.domain.lookup.LookupException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -28,6 +33,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+/** Espera após a última tecla antes de consultar CNPJ/CEP. */
+internal const val LOOKUP_DEBOUNCE_MS = 600L
 
 val BRAZIL_UFS = listOf(
     "AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA", "PB", "PE", "PI",
@@ -64,11 +72,30 @@ data class CompanyForm(
     val declarations: com.licitaia.domain.model.PortalDeclarations = com.licitaia.domain.model.PortalDeclarations(),
     val errors: Map<String, String> = emptyMap(),
     val busy: Boolean = false,
+    // ---- Preenchimento automático (CNPJ/CEP). Nada é salvo até tocar em Salvar.
+    /** O usuário já escolheu o segmento (ou a empresa já existe): a sugestão pelo CNAE não o altera. */
+    val segmentTouched: Boolean = false,
+    /** Campo → fonte ("Receita"/"CEP") dos valores que vieram da consulta e ainda não foram editados. */
+    val autoFilled: Map<String, String> = emptyMap(),
+    val cnpjLookup: LookupStatus = LookupStatus(),
+    val zipLookup: LookupStatus = LookupStatus(),
+    /** Última consulta do CNPJ, para oferecer "Atualizar com os dados da Receita". */
+    val cnpjResult: com.licitaia.domain.lookup.CnpjData? = null,
+    val cnpjConflicts: List<FieldConflict> = emptyList(),
+    val confirmOverwrite: Boolean = false,
+    /** Últimos valores já consultados automaticamente (evita repetir a consulta). */
+    val lastCnpjLookup: String = "",
+    val lastZipLookup: String = "",
 ) {
     val isNew get() = id == 0L
 
     companion object {
-        fun from(c: Company) = CompanyForm(
+        fun from(c: Company) = fromCompany(c).let {
+            // Empresa existente: não consulta de novo sozinha ao abrir (há o botão "Buscar dados do CNPJ").
+            it.copy(segmentTouched = true, lastCnpjLookup = it.cnpjDigits, lastZipLookup = it.zipDigits)
+        }
+
+        private fun fromCompany(c: Company) = CompanyForm(
             id = c.id, name = c.name, tradeName = c.tradeName, cnpjDigits = c.cnpj.filter { it.isDigit() }.take(14),
             segment = c.segment, uf = c.uf, city = c.city, preferredAi = c.preferredAi,
             street = c.street, complement = c.complement, district = c.district,
@@ -155,6 +182,7 @@ data class CompaniesUiState(
 class CompaniesViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val companies: CompanyRepository,
+    private val companyLookup: CompanyLookup,
 ) : ViewModel() {
 
     private val local = MutableStateFlow(CompaniesUiState())
@@ -212,11 +240,152 @@ class CompaniesViewModel @Inject constructor(
         local.update { it.copy(companyForm = CompanyForm.from(company)) }
     }
 
-    fun dismissCompanyForm() = local.update { if (it.companyForm?.busy == true) it else it.copy(companyForm = null) }
-
-    fun updateCompanyForm(transform: (CompanyForm) -> CompanyForm) {
-        local.update { s -> s.copy(companyForm = s.companyForm?.let { f -> transform(f).copy(errors = emptyMap()) }) }
+    fun dismissCompanyForm() {
+        if (local.value.companyForm?.busy == true) return
+        cnpjJob?.cancel()
+        zipJob?.cancel()
+        local.update { it.copy(companyForm = null) }
     }
+
+    /**
+     * Edição de um campo do formulário. [field] = chave do campo editado pelo usuário: deixa de ser marcado como
+     * "preenchido pela Receita/CEP". CNPJ ou CEP completos disparam a consulta automática (com debounce).
+     */
+    fun updateCompanyForm(field: String? = null, transform: (CompanyForm) -> CompanyForm) {
+        val before = local.value.companyForm ?: return
+        local.update { s ->
+            s.copy(
+                companyForm = s.companyForm?.let { f ->
+                    val t = transform(f)
+                    val marks = if (field != null) t.autoFilled - field else t.autoFilled
+                    t.copy(errors = emptyMap(), autoFilled = marks, segmentTouched = t.segmentTouched || field == "segment")
+                },
+            )
+        }
+        val after = local.value.companyForm ?: return
+        if (after.cnpjDigits != before.cnpjDigits) onCnpjChanged(after)
+        if (after.zipDigits != before.zipDigits) onZipChanged(after)
+    }
+
+    // ------------------------------------------------------------------ consulta CNPJ / CEP
+
+    private var cnpjJob: Job? = null
+    private var zipJob: Job? = null
+
+    private fun updateForm(transform: (CompanyForm) -> CompanyForm) =
+        local.update { s -> s.copy(companyForm = s.companyForm?.let(transform)) }
+
+    private fun onCnpjChanged(form: CompanyForm) {
+        cnpjJob?.cancel()
+        val digits = form.cnpjDigits
+        if (digits.length != 14 || !isValidCnpj(digits)) {
+            updateForm { it.copy(cnpjLookup = LookupStatus(), cnpjConflicts = emptyList(), cnpjResult = null) }
+            return
+        }
+        if (digits == form.lastCnpjLookup) return
+        cnpjJob = viewModelScope.launch {
+            delay(LOOKUP_DEBOUNCE_MS)
+            runCnpjLookup(digits)
+        }
+    }
+
+    /** Botão "Buscar dados do CNPJ": consulta agora, mesmo se já consultado. */
+    fun lookupCnpjNow() {
+        val form = local.value.companyForm ?: return
+        if (form.busy) return
+        if (!isValidCnpj(form.cnpjDigits)) {
+            updateForm { it.copy(cnpjLookup = LookupStatus(message = "Digite um CNPJ válido (14 dígitos) para buscar os dados.", error = true)) }
+            return
+        }
+        cnpjJob?.cancel()
+        cnpjJob = viewModelScope.launch { runCnpjLookup(form.cnpjDigits) }
+    }
+
+    private suspend fun runCnpjLookup(digits: String) {
+        updateForm { it.copy(lastCnpjLookup = digits, cnpjLookup = LookupStatus(loading = true, message = "Consultando a Receita Federal…")) }
+        val result = try {
+            companyLookup.lookupCnpj(digits)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val notFound = (e as? LookupException)?.notFound == true
+            updateForm {
+                if (it.cnpjDigits != digits) it
+                else it.copy(
+                    cnpjLookup = LookupStatus(message = e.message ?: "Não foi possível consultar o CNPJ. Preencha manualmente.", error = true),
+                    // Falha temporária: permite nova tentativa automática se o usuário redigitar.
+                    lastCnpjLookup = if (notFound) digits else "",
+                )
+            }
+            return
+        }
+        updateForm { f ->
+            if (f.cnpjDigits != digits) return@updateForm f
+            val applied = CompanyFormAutofill.applyCnpj(f, result, overwrite = false)
+            val changed = changedFields(f, applied)
+            applied.copy(
+                cnpjLookup = CompanyFormAutofill.cnpjStatus(result, changed),
+                cnpjResult = result,
+                cnpjConflicts = CompanyFormAutofill.conflicts(applied, result),
+                zipLookup = LookupStatus(),
+            )
+        }
+    }
+
+    fun askOverwriteWithReceita(show: Boolean) = updateForm { it.copy(confirmOverwrite = show && it.cnpjConflicts.isNotEmpty()) }
+
+    /** "Atualizar com os dados da Receita" confirmado: substitui também os campos divergentes (ainda sem salvar). */
+    fun overwriteWithReceita() = updateForm { f ->
+        val data = f.cnpjResult ?: return@updateForm f.copy(confirmOverwrite = false)
+        val applied = CompanyFormAutofill.applyCnpj(f, data, overwrite = true)
+        applied.copy(
+            confirmOverwrite = false, cnpjConflicts = emptyList(), errors = emptyMap(),
+            cnpjLookup = CompanyFormAutofill.cnpjStatus(data, changedFields(f, applied)),
+        )
+    }
+
+    private fun onZipChanged(form: CompanyForm) {
+        zipJob?.cancel()
+        val digits = form.zipDigits
+        if (digits.length != 8) {
+            updateForm { it.copy(zipLookup = LookupStatus()) }
+            return
+        }
+        if (digits == form.lastZipLookup) return
+        zipJob = viewModelScope.launch {
+            delay(LOOKUP_DEBOUNCE_MS)
+            updateForm { it.copy(lastZipLookup = digits, zipLookup = LookupStatus(loading = true, message = "Consultando o CEP…")) }
+            val result = try {
+                companyLookup.lookupCep(digits)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val notFound = (e as? LookupException)?.notFound == true
+                updateForm {
+                    if (it.zipDigits != digits) it
+                    else it.copy(
+                        zipLookup = LookupStatus(message = e.message ?: "Não foi possível consultar o CEP. Preencha o endereço manualmente.", error = true),
+                        lastZipLookup = if (notFound) digits else "",
+                    )
+                }
+                return@launch
+            }
+            updateForm { f ->
+                if (f.zipDigits != digits) return@updateForm f
+                val applied = CompanyFormAutofill.applyCep(f, result)
+                val generic = result.street.isBlank()
+                applied.copy(
+                    zipLookup = LookupStatus(
+                        message = if (generic) "CEP geral de ${result.city}/${result.uf}: informe o logradouro e o bairro." else "Endereço preenchido pelo CEP (${result.source}). Confira o número.",
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun changedFields(before: CompanyForm, after: CompanyForm): Int =
+        (CompanyFormAutofill.LABELS.keys.count { CompanyFormAutofill.valueOf(before, it) != CompanyFormAutofill.valueOf(after, it) }) +
+            (if (before.segment != after.segment) 1 else 0)
 
     fun saveCompany() {
         val form = local.value.companyForm ?: return
@@ -319,16 +488,4 @@ class CompaniesViewModel @Inject constructor(
 }
 
 /** Validação dos dígitos verificadores do CNPJ (14 dígitos). */
-internal fun isValidCnpj(digits: String): Boolean {
-    if (digits.length != 14 || digits.all { it == digits[0] }) return false
-    fun dv(base: String, weights: IntArray): Int {
-        val sum = base.indices.sumOf { (base[it] - '0') * weights[it] }
-        val r = sum % 11
-        return if (r < 2) 0 else 11 - r
-    }
-    val w1 = intArrayOf(5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
-    val w2 = intArrayOf(6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
-    val d1 = dv(digits.substring(0, 12), w1)
-    val d2 = dv(digits.substring(0, 12) + d1, w2)
-    return digits[12] - '0' == d1 && digits[13] - '0' == d2
-}
+internal fun isValidCnpj(digits: String): Boolean = digits.length == 14 && BrDocuments.isValidCnpj(digits)

@@ -45,7 +45,12 @@ SP.toasts=function(){return [].slice.call(document.querySelectorAll('.p-toast-me
 SP.chk=function(e){if(!e)return false;if(e.checked)return true;var w=e.closest&&e.closest('p-checkbox,p-radiobutton,.p-checkbox,.p-radiobutton');return !!(w&&(w.classList.contains('p-checkbox-checked')||w.classList.contains('p-radiobutton-checked')));};
 SP.focus=function(e){try{e.scrollIntoView({block:'center'});}catch(x){}try{e.focus();}catch(x){}try{e.select();}catch(x){}try{e.setSelectionRange(0,String(e.value||'').length);}catch(x){}return document.activeElement===e;};
 SP.rect=function(e){try{e.scrollIntoView({block:'center'});}catch(x){}var r=e.getBoundingClientRect();var vv=window.visualViewport;var s=(vv?vv.scale:1)*(window.devicePixelRatio||1);var ox=vv?vv.offsetLeft:0,oy=vv?vv.offsetTop:0;return {x:(r.left+r.width/2-ox)*s,y:(r.top+r.height/2-oy)*s};};
-SP.chevron=function(c){var bs=[].slice.call(c.querySelectorAll('button')).filter(function(b){if(b.querySelector('.fa-trash-alt,.fa-heart')||b.getAttribute('aria-label'))return String(b.getAttribute('aria-label')||'')==='Mostrar detalhes da compra';return String(b.className).indexOf('animationRotate')>=0||!!b.querySelector('.fa-chevron-down,.fa-chevron-up');});return bs.length?bs[bs.length-1]:null;};
+SP.mine=function(c,e){var cc=e.closest&&e.closest('div.cp-itens-card');return !cc||cc===c||!c.contains(cc);};
+SP.chevron=function(c){var bs=[].slice.call(c.querySelectorAll('button')).filter(function(b){if(!SP.mine(c,b)||(b.closest&&b.closest('.p-paginator')))return false;if(b.querySelector('.fa-trash-alt,.fa-heart')||b.getAttribute('aria-label'))return String(b.getAttribute('aria-label')||'')==='Mostrar detalhes da compra';return String(b.className).indexOf('animationRotate')>=0||!!b.querySelector('.fa-chevron-down,.fa-chevron-up');});return bs.length?bs[bs.length-1]:null;};
+SP.own=function(c,sel){return [].slice.call(c.querySelectorAll(sel)).filter(function(e){return SP.mine(c,e);})[0]||null;};
+SP.groupIndex=function(hs,key){var gi=-1;hs.forEach(function(h,i){var t=LZ.N(SP.T(h)).replace(/\|/g,' ').replace(/\s+/g,' ');if(gi<0&&t.indexOf(key)===0&&!/\d/.test(t.charAt(key.length)))gi=i;});return gi;};
+SP.groupAx=function(h){return h.getAttribute('aria-expanded')!=null?h:SP.own(h,'[aria-expanded]');};
+SP.groupOpen=function(h,hs,i){var ax=SP.groupAx(h);if(ax)return ax.getAttribute('aria-expanded')==='true';if(SP.cards().some(function(c){return c!==h&&SP.itemNo(c)>0&&SP.inGroup(c,hs,i);}))return true;var b=SP.chevron(h);return !!(b&&b.querySelector('.fa-chevron-up'));};
 """.trimIndent()
 
     private fun script(params: JsonObject, body: String): String =
@@ -294,9 +299,34 @@ if(P.tap)return JSON.stringify({found:true,ok:true,rect:SP.rect(e)});var lb=docu
      * Cartão sem aria-expanded: abre se nenhum item aparece no trecho dele (e nunca toca duas vezes no mesmo).
      */
     fun expandGroups(): String = noParams(
-        """var n=0;var hs=SP.groupHeads();hs.forEach(function(h,i){var ax=h.getAttribute('aria-expanded')!=null?h:h.querySelector('[aria-expanded]');var collapsed;
-if(ax)collapsed=ax.getAttribute('aria-expanded')==='false';else{var at=parseInt(h.getAttribute('data-lz-open-at')||'0',10);if(Date.now()-at<4000)return;collapsed=!SP.cards().some(function(c){return SP.itemNo(c)>0&&SP.inGroup(c,hs,i);});}
+        """var n=0;var hs=SP.groupHeads();hs.forEach(function(h,i){var ax=SP.groupAx(h);var collapsed;
+if(ax)collapsed=ax.getAttribute('aria-expanded')==='false';else{var at=parseInt(h.getAttribute('data-lz-open-at')||'0',10);if(Date.now()-at<4000)return;collapsed=!SP.groupOpen(h,hs,i);}
 if(!collapsed)return;var b=ax||SP.chevron(h)||h;LZ.click(b);h.setAttribute('data-lz-open-at',String(Date.now()));n++;});return JSON.stringify({ok:true,clicked:n,groups:hs.length});""",
+    )
+
+    /**
+     * Abre ([open]) ou fecha UM grupo pelo chevron do PRÓPRIO cartão (v fechado / ^ aberto; nunca a seta de um item de
+     * dentro, a lixeira ou o coração). `already` = já estava assim; `pending` = tocado há pouco (aguardar o redesenho).
+     */
+    fun setGroupOpen(key: String, open: Boolean): String = script(
+        buildJsonObject { put("key", TextNorm.norm(key)); put("open", open) },
+        """var hs=SP.groupHeads();var gi=SP.groupIndex(hs,P.key);if(gi<0)return JSON.stringify({found:false});var h=hs[gi];
+if(SP.groupOpen(h,hs,gi)===P.open)return JSON.stringify({found:true,ok:true,already:true});
+var at=parseInt(h.getAttribute('data-lz-open-at')||'0',10);if(Date.now()-at<2500)return JSON.stringify({found:true,ok:true,pending:true});
+var b=SP.groupAx(h)||SP.chevron(h);if(!b)return JSON.stringify({found:true,ok:false,error:'seta do grupo não encontrada'});
+LZ.click(b);h.setAttribute('data-lz-open-at',String(Date.now()));return JSON.stringify({found:true,ok:true,clicked:true});""",
+    )
+
+    /**
+     * Cartões de ITEM da página atual DENTRO do cartão do grupo [key] (depois do separador; texto de cada um) + o texto
+     * do cabeçalho do grupo (cortado antes do 1º item) e se o grupo está aberto. SÓ leitura.
+     */
+    fun groupItemCards(key: String): String = script(
+        buildJsonObject { put("key", TextNorm.norm(key)) },
+        """var hs=SP.groupHeads();var gi=SP.groupIndex(hs,P.key);if(gi<0)return JSON.stringify({found:false});var h=hs[gi];
+var cs=SP.cards().filter(function(c){return c!==h&&SP.itemNo(c)>0&&SP.inGroup(c,hs,gi);});
+var head=SP.T(h);if(cs.length){var k=head.indexOf(SP.T(cs[0]).slice(0,30));if(k>0)head=head.slice(0,k);}
+return JSON.stringify({found:true,open:SP.groupOpen(h,hs,gi),head:head.slice(0,400),items:cs.map(function(c){return {n:SP.itemNo(c),t:SP.T(c).slice(0,800)};})});""",
     )
 
     /** Estrutura de cada grupo aberto (itens, campos de valor, Salvar por item x Salvar do grupo, valor do grupo). */
@@ -337,12 +367,7 @@ return JSON.stringify(r);""",
     )
 
     /** Recolhe o grupo [key] (seta do cartão) quando os itens dele estão visíveis — antes de ir para o próximo grupo. */
-    fun collapseGroup(key: String): String = script(
-        buildJsonObject { put("key", TextNorm.norm(key)) },
-        """var hs=SP.groupHeads();var gi=-1;hs.forEach(function(h,i){var t=LZ.N(SP.T(h)).replace(/\|/g,' ').replace(/\s+/g,' ');if(gi<0&&t.indexOf(P.key)===0&&!/\d/.test(t.charAt(P.key.length)))gi=i;});
-if(gi<0)return JSON.stringify({ok:false});var h=hs[gi];var open=SP.cards().some(function(c){return SP.itemNo(c)>0&&SP.inGroup(c,hs,gi);});if(!open)return JSON.stringify({ok:true,already:true});
-var ax=h.getAttribute('aria-expanded')!=null?h:h.querySelector('[aria-expanded]');var b=ax||SP.chevron(h);if(!b)return JSON.stringify({ok:false});LZ.click(b);h.setAttribute('data-lz-open-at',String(Date.now()));return JSON.stringify({ok:true});""",
-    )
+    fun collapseGroup(key: String): String = setGroupOpen(key, open = false)
 
     /** Rola a página (e contêineres de rolagem/virtualizados) um passo; [top] = volta ao topo. Toca "Carregar mais". */
     fun scrollLoad(top: Boolean): String = script(

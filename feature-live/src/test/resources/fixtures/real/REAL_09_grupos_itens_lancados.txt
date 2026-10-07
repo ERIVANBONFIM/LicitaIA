@@ -1,0 +1,11 @@
+# REAL_TEXTO — textos dos prints do usuário (Pregão 48/2026 UASG 160192, cadastro-propostas), depois de uma execução parcial.
+# Seção antes dos itens: "Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.133/2021." e o título "Itens".
+# GRUPO1 fechado (ícone "!" vermelho, lixeira, coração cheio, chevron "v"); aberto o chevron vira "^" e os cartões de item ficam DENTRO do cartão do grupo, depois de um separador.
+SECAO: Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.133/2021. Itens
+GRUPO1: GRUPO 1 | 24 itens < apelido > Valor estimado (total) R$ 90.523,1600 Meu valor (total) R$ 25.098,0000 Proposta incompleta
+GRUPO2: GRUPO 2 | 16 itens Exclusividade ME/EPP < apelido > Valor estimado (total) R$ 55.272,0000 Proposta não cadastrada
+GRUPO3: GRUPO 3 | 24 itens
+ITEM_LANCADO: 1 ACESSO A INTERNET VIA… < apelido > Quantidade solicitada 12 Unidade fornecimento Valor estimado (unitário) Meu valor (unitário) Meu valor (total) R$ 238,3300 R$ 209,2500 R$ 2.511,0000
+ITEM_10: 10 ACESSO A INTERNET VIA… < apelido > Quantidade solicitada 12 Unidade fornecimento Valor estimado (unitário) Meu valor (unitário) Meu valor (total) R$ 238,3300 R$ 208,2500 R$ 2.499,0000
+ITEM_NAO_LANCADO: 11 ACESSO A INTERNET VI… Quantidade solicitada 12 Unidade fornecimento Valor estimado (unitário) R$ 238,3300 Proposta não cadastrada
+PAGINADOR: «  ‹  [1]  2  3  ›  »

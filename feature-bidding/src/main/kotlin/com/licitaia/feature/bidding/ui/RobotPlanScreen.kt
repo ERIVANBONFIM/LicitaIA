@@ -73,7 +73,9 @@ import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
 import com.licitaia.domain.util.Formatters
 import com.licitaia.feature.bidding.robot.RobotScheduler
+import com.licitaia.feature.live.automation.PortalMarker
 import com.licitaia.feature.live.automation.PortalRobotEngine
+import com.licitaia.feature.live.automation.ProposalReadingRules
 import com.licitaia.feature.live.automation.PurchaseText
 import com.licitaia.feature.live.automation.RobotKind
 import com.licitaia.feature.live.automation.RobotPlanRules
@@ -182,7 +184,25 @@ class RobotPlanViewModel @Inject constructor(
      * Confirmação "Soltar o robô": salva a seleção de itens no plano, grava as declarações escolhidas no cadastro da
      * empresa (se mudaram) e solta o robô com a autorização do Termo/declarações (registrada na auditoria pelo motor).
      */
-    fun startProposal(items: List<ProposalItemPlan>, sessionAt: Long?, declarations: com.licitaia.domain.model.PortalDeclarations, saveDeclarations: Boolean) {
+    /**
+     * "Ler situação no portal": salva os itens do plano (a leitura fica guardada neles) e solta a LEITURA (nada é
+     * preenchido). O resultado chega pelo plano ([PortalRobotPlan.portalReading]).
+     */
+    fun readPortal(items: List<ProposalItemPlan>, sessionAt: Long?) {
+        val id = state.value.companyId ?: return
+        val base = basePlan() ?: return
+        viewModelScope.launch {
+            runCatching { repo.savePlan(base.copy(items = items, sessionAt = sessionAt ?: base.sessionAt)) }
+                .onFailure { _events.send(it.message ?: "Falha ao salvar o plano."); return@launch }
+            engine.startPortalReading(id, key).onSuccess { _events.send("Lendo a situação no portal (nada será preenchido)…") }
+                .onFailure { _events.send(it.message ?: "Não foi possível ler o portal.") }
+        }
+    }
+
+    fun startProposal(
+        items: List<ProposalItemPlan>, sessionAt: Long?, declarations: com.licitaia.domain.model.PortalDeclarations, saveDeclarations: Boolean,
+        updateDifferent: Boolean = false,
+    ) {
         val id = state.value.companyId ?: return
         viewModelScope.launch {
             if (saveDeclarations) {
@@ -196,7 +216,7 @@ class RobotPlanViewModel @Inject constructor(
             val auth = com.licitaia.domain.portal.ProposalAuthorization(
                 acceptTerms = true, declarations = declarations, authorizedBy = state.value.userName.ifBlank { "Operador" }, authorizedAt = System.currentTimeMillis(),
             )
-            engine.startProposal(id, key, auth).onSuccess { _events.send("Robô de proposta solto. Acompanhe aqui ou no portal.") }
+            engine.startProposal(id, key, auth, updateDifferent).onSuccess { _events.send("Robô de proposta solto. Acompanhe aqui ou no portal.") }
                 .onFailure { _events.send(it.message ?: "Não foi possível iniciar.") }
         }
     }
@@ -281,6 +301,18 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
     var onTotal by remember { mutableStateOf(false) }
     var confirmProposal by remember { mutableStateOf<List<ProposalItemPlan>?>(null) }
     var confirmBid by remember { mutableStateOf<String?>(null) }
+    /** "Ler situação no portal" pedido: quando a leitura nova chegar, pré-seleciona só os não cadastrados. */
+    var awaitingReadSince by remember { mutableStateOf<Long?>(null) }
+    val reading = state.plan?.portalReading
+    LaunchedEffect(reading?.readAt) {
+        val since = awaitingReadSince ?: return@LaunchedEffect
+        val r = reading ?: return@LaunchedEffect
+        if (r.readAt < since) return@LaunchedEffect
+        awaitingReadSince = null
+        val chosen = ProposalReadingRules.preselect(items.mapNotNull { it.toPlan() }, r, state.declarations.meEpp).associateBy { it.itemNumber }
+        items.forEach { f -> f.number.trim().toIntOrNull()?.let { n -> chosen[n]?.let { f.selected = it.selected } } }
+        navigator.showMessage("Pré-selecionados só os itens “Proposta não cadastrada”. ${ProposalReadingRules.summary(items.mapNotNull { it.toPlan() }, r, state.declarations.meEpp)}")
+    }
 
     // Carrega o plano salvo UMA vez nos campos (depois o usuário edita).
     LaunchedEffect(state.loading, state.plan?.updatedAt) {
@@ -317,14 +349,22 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
         if (tender != null) {
             ProposalConfirmDialog(
                 tender = tender, planItems = list, companyDeclarations = state.declarations,
+                reading = reading,
+                readingActive = state.runs.any { it.active && it.kind == RobotKind.LEITURA },
+                onReadPortal = { chosen ->
+                    val byNumber = chosen.associateBy { it.itemNumber }
+                    items.forEach { f -> f.number.trim().toIntOrNull()?.let { n -> byNumber[n]?.let { f.selected = it.selected } } }
+                    awaitingReadSince = System.currentTimeMillis()
+                    vm.readPortal(planItems(), sessionAt())
+                },
                 onEditCompany = { confirmProposal = null; navigator.navigate(Routes.COMPANIES) },
                 onDismiss = { confirmProposal = null },
-                onConfirm = { chosen, decl, saveDecl ->
+                onConfirm = { chosen, decl, saveDecl, updateDifferent ->
                     confirmProposal = null
                     // A seleção feita na confirmação volta para o plano (e para os campos desta tela).
                     val byNumber = chosen.associateBy { it.itemNumber }
                     items.forEach { f -> f.number.trim().toIntOrNull()?.let { n -> byNumber[n]?.let { f.selected = it.selected } } }
-                    vm.startProposal(planItems(), sessionAt(), decl, saveDecl)
+                    vm.startProposal(planItems(), sessionAt(), decl, saveDecl, updateDifferent)
                 },
             )
         }
@@ -398,7 +438,30 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
                 }
             }
             DeclarationsHint(state.declarations) { navigator.navigate(Routes.COMPANIES) }
-            items.forEachIndexed { index, f -> ItemEditor(f, onRemove = { items.removeAt(index) }) }
+            val readingNow = state.runs.any { it.active && it.kind == RobotKind.LEITURA }
+            LicitaCard(Modifier.fillMaxWidth()) {
+                Text("Situação no portal", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                Text(
+                    reading?.let { ProposalReadingRules.summary(planItems(), it, state.declarations.meEpp) }
+                        ?: "Ainda não lida. Toque em “Ler situação no portal” para marcar cada item: ✓ lançado (valor), ⚠ valor diferente, ○ não cadastrado.",
+                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                )
+                Spacer(Modifier.height(6.dp))
+                SecondaryButton(
+                    if (readingNow) "Lendo o portal…" else "Ler situação no portal",
+                    { awaitingReadSince = System.currentTimeMillis(); vm.readPortal(planItems(), sessionAt()) },
+                    Modifier.fillMaxWidth(), icon = Icons.Outlined.Language, tone = Tone.NEUTRAL,
+                    enabled = state.canOperate && !readingNow && active.none { it.kind == RobotKind.PROPOSTA },
+                )
+                Text(
+                    "Só lê (nada é preenchido): abre cada grupo, percorre todas as páginas e pré-seleciona apenas os itens “Proposta não cadastrada” (você pode mudar).",
+                    style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                )
+            }
+            items.forEachIndexed { index, f ->
+                val marker = f.toPlan()?.let { ProposalReadingRules.marker(it, reading, state.declarations.meEpp) }
+                ItemEditor(f, marker, onRemove = { items.removeAt(index) })
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SecondaryButton("Salvar", { vm.saveItems(planItems(), sessionAt()) }, Modifier.weight(1f), icon = Icons.Outlined.Save, enabled = state.canOperate)
                 if (tender.matchedTenderId != null) {
@@ -518,7 +581,7 @@ private fun RunCard(run: RobotRun, onStop: () -> Unit, onContinue: () -> Unit, o
 }
 
 @Composable
-private fun ItemEditor(f: ItemForm, onRemove: () -> Unit) {
+private fun ItemEditor(f: ItemForm, marker: PortalMarker?, onRemove: () -> Unit) {
     val noPrice = f.toPlan()?.hasPrice != true
     LicitaCard(Modifier.fillMaxWidth(), accent = if (noPrice) LicitaColors.Yellow else if (!f.selected) LicitaColors.TextMuted else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -528,6 +591,7 @@ private fun ItemEditor(f: ItemForm, onRemove: () -> Unit) {
             Text(f.description.ifBlank { "Item do portal" }, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary, maxLines = 2, modifier = Modifier.weight(1f))
             IconButton(onClick = onRemove) { Icon(Icons.Outlined.Delete, contentDescription = "Remover item") }
         }
+        marker?.let { PortalMarkerText(it) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Field("Quantidade", f.qty, { f.qty = it }, Modifier.weight(1f), KeyboardType.Decimal)
             Field("Valor unitário (R$)", f.price, { f.price = it }, Modifier.weight(1f), KeyboardType.Decimal)

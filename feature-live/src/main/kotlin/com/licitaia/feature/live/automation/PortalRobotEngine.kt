@@ -60,7 +60,7 @@ interface PortalRobotForeground {
     object None : PortalRobotForeground { override fun updateRobots(active: Int) = Unit }
 }
 
-enum class RobotKind(val label: String) { PROPOSTA("Robô de proposta"), LANCE("Robô de lance") }
+enum class RobotKind(val label: String) { PROPOSTA("Robô de proposta"), LANCE("Robô de lance"), LEITURA("Leitura da situação no portal") }
 
 enum class RunStatus(val label: String) {
     EXECUTANDO("Executando"),
@@ -165,9 +165,14 @@ class PortalRobotEngine @Inject constructor(
      * "Autorizo o aceite do Termo…" marcado na confirmação) o robô aceita o termo e aplica as declarações da empresa;
      * sem ela, para e pede o usuário no termo (comportamento anterior). A autorização vai para a auditoria.
      */
-    suspend fun startProposal(companyId: Long, tenderKey: String, authorization: ProposalAuthorization? = null): Result<String> = runCatching {
+    suspend fun startProposal(
+        companyId: Long, tenderKey: String, authorization: ProposalAuthorization? = null,
+        /** "Atualizar itens já lançados com valor diferente" (padrão desligado: o robô NÃO sobrescreve). */
+        updateDifferent: Boolean = false,
+    ): Result<String> = runCatching {
         requireOperator(companyId)
         activeRun(companyId, tenderKey, RobotKind.PROPOSTA)?.let { error("O robô de proposta já está rodando para esta licitação.") }
+        activeRun(companyId, tenderKey, RobotKind.LEITURA)?.let { error("A leitura da situação no portal ainda está rodando. Aguarde terminar.") }
         val tender = myTender(companyId, tenderKey)
         val plan = repo.getPlan(companyId, tenderKey) ?: error("Configure os itens da proposta antes.")
         RobotPlanRules.proposalErrors(plan.items).firstOrNull()?.let { error(it) }
@@ -182,7 +187,19 @@ class PortalRobotEngine @Inject constructor(
                 )
             }
         }
-        launchRun(companyId, tender, RobotKind.PROPOSTA) { ctrl, id -> proposalRun(ctrl, id, companyId, tender, plan, auth) }
+        launchRun(companyId, tender, RobotKind.PROPOSTA) { ctrl, id -> proposalRun(ctrl, id, companyId, tender, plan, auth, updateDifferent) }
+    }
+
+    /**
+     * "Ler situação no portal": abre o cadastro de proposta da compra e SÓ LÊ (nada é preenchido nem marcado) cada grupo,
+     * página a página — item lançado (valor) × "Proposta não cadastrada". O resultado vai para o plano com data/hora.
+     */
+    suspend fun startPortalReading(companyId: Long, tenderKey: String): Result<String> = runCatching {
+        requireOperator(companyId)
+        activeRun(companyId, tenderKey, RobotKind.LEITURA)?.let { return@runCatching it.id }
+        activeRun(companyId, tenderKey, RobotKind.PROPOSTA)?.let { error("O robô de proposta está rodando: a leitura é feita por ele.") }
+        val tender = myTender(companyId, tenderKey)
+        launchRun(companyId, tender, RobotKind.LEITURA) { ctrl, id -> readingRun(ctrl, id, companyId, tender) }
     }
 
     /** Inicia o robô de lance (agenda ou "Entrar na disputa agora"). Exige o plano ARMADO pelo usuário. */
@@ -392,6 +409,8 @@ class PortalRobotEngine @Inject constructor(
     private sealed interface ItemOutcome {
         data object Saved : ItemOutcome
         data object AlreadySaved : ItemOutcome
+        /** Já lançado com OUTRO valor e o usuário não pediu para atualizar: não sobrescreve. */
+        data class Different(val portal: Double) : ItemOutcome
         /** O item não está nesta compra (segue com os demais e lista no fim). */
         data class NotFound(val reason: String) : ItemOutcome
         /** Falha no preenchimento/salvamento do item (segue; 3 seguidas → para e pede o usuário). */
@@ -400,19 +419,65 @@ class PortalRobotEngine @Inject constructor(
         data class PageLost(val reason: String) : ItemOutcome
     }
 
-    private suspend fun proposalRun(ctrl: Control, runId: String, companyId: Long, t: PortalMyTender, plan: PortalRobotPlan, auth: ProposalAuthorization?) {
+    /** "Ler situação no portal" (só leitura): abre a compra, lê grupo a grupo/página a página e grava no plano. */
+    private suspend fun readingRun(ctrl: Control, runId: String, companyId: Long, t: PortalMyTender) {
+        val nav = SpaNavigator(gate.driver(companyId), log = { log(runId, it) })
+        val owner = "a leitura da situação no portal"
+        gate.claimTab(owner)?.let { other ->
+            setStatus(runId, RunStatus.PARADO, "A aba do Comprasnet está em uso ($other). Tente de novo quando terminar.")
+            return
+        }
+        try {
+            if (!step(ctrl, runId, "Abrir Compras eletrônicas pelo menu") { gateOutcome(gate.ensureElectronic(companyId), "Compras eletrônicas") }) return
+            if (!step(ctrl, runId, "Localizar e abrir a compra ${t.label}") { openPurchase(companyId, nav, t) }) return
+            setStep(runId, "Lendo a situação no portal (grupo a grupo, página a página — nada é preenchido)")
+            val (reading, groups) = nav.readProposalState()
+            groups.forEach { log(runId, ProposalReadingBuilder.groupLine(it, reading)) }
+            val meEpp = companyMeEpp(null)
+            groups.forEach { g -> GroupEligibility.skipReason(g.key, g.card, meEpp)?.let { log(runId, "Aviso: $it.") } }
+            val plan = repo.getPlan(companyId, t.tenderKey)
+            if (plan != null) repo.savePlan(plan.copy(portalReading = reading))
+            val summary = plan?.let { ProposalReadingRules.summary(it.items, reading, meEpp) }
+                ?: "Leitura de ${Formatters.dateTime(reading.readAt)}: ${reading.items.size} item(ns) no portal"
+            log(runId, summary)
+            setStatus(runId, RunStatus.CONCLUIDO, summary, step = "Leitura concluída")
+            safely { notifier.notify(NotificationCategory.SESSOES, "Situação da proposta no portal", "${t.label}: $summary", route = null, companyId = companyId) }
+        } finally {
+            gate.releaseTab(owner)
+        }
+    }
+
+    /** Declaração ME/EPP valendo nesta execução (autorização da confirmação, senão o cadastro da empresa). */
+    private fun companyMeEpp(auth: ProposalAuthorization?): Boolean? =
+        auth?.declarations?.meEpp ?: this.auth.session.value?.activeCompany?.portalDeclarations?.meEpp
+
+    private suspend fun proposalRun(
+        ctrl: Control, runId: String, companyId: Long, t: PortalMyTender, plan: PortalRobotPlan, auth: ProposalAuthorization?, updateDifferent: Boolean = false,
+    ) {
         val lines = mutableListOf<String>()
         fun record(line: String) { lines += line; log(runId, line) }
         val nav = SpaNavigator(gate.driver(companyId), log = { log(runId, it) })
         val purchase = purchaseOf(t)
-        val items = plan.items.filter { it.selected }.sortedBy { it.itemNumber }
-        val total = items.size
-        record("Robô de proposta solto por ${userName()}: $total de ${plan.items.size} item(ns) selecionados, total ${Formatters.brl(items.sumOf { it.totalPrice })}.")
+        val selectedItems = plan.items.filter { it.selected }.sortedBy { it.itemNumber }
+        // Itens que o robô vai de fato preencher (sem os já lançados / grupo vedado) — definidos após a leitura do portal.
+        var items = selectedItems
+        var total = items.size
+        val meEpp = companyMeEpp(auth)
+        record("Robô de proposta solto por ${userName()}: ${selectedItems.size} de ${plan.items.size} item(ns) selecionados, total ${Formatters.brl(selectedItems.sumOf { it.totalPrice })}.")
+        if (updateDifferent) record("Opção ligada: atualizar itens já lançados com valor diferente.")
         auth?.let { record("Termo/declarações autorizados por ${it.authorizedBy} em ${Formatters.dateTime(it.authorizedAt)}: ${it.declarations.summary()}.") }
         savePlan(companyId, t.tenderKey) { it.copy(proposalStatus = RobotProposalStatus.EXECUTANDO) }
-        safely { audit.record(AuditAction.ROBO_ATIVADO, origin = AuditOrigin.USUARIO, portal = Portal.COMPRAS_GOV, tenderNumber = "${t.number}/${t.year}", details = "Robô de proposta: $total item(ns)") }
+        safely { audit.record(AuditAction.ROBO_ATIVADO, origin = AuditOrigin.USUARIO, portal = Portal.COMPRAS_GOV, tenderNumber = "${t.number}/${t.year}", details = "Robô de proposta: ${selectedItems.size} item(ns)") }
 
         val saved = LinkedHashSet<Int>()
+        /** Já lançados com o mesmo valor (pulados). */
+        val already = LinkedHashSet<Int>()
+        /** Lançados com valor diferente e NÃO sobrescritos. */
+        val different = LinkedHashMap<Int, Double>()
+        /** Grupos pulados (ex.: exclusivo ME/EPP com declaração Não) → motivo. */
+        val skippedGroups = LinkedHashMap<String, String>()
+        var reading: com.licitaia.domain.portal.PortalProposalReading? = null
+        var groupReads: List<GroupRead> = emptyList()
         val failures = LinkedHashMap<Int, String>()
         var consecutiveFails = 0
         var position = 0
@@ -444,15 +509,20 @@ class PortalRobotEngine @Inject constructor(
             val n = item.itemNumber
             while (!ctrl.stop) {
                 progress(listOfNotNull(group?.invoke(), "item $n: preenchendo").joinToString(" · "))
-                when (val r = proposalItem(companyId, nav, purchase, item)) {
+                when (val r = proposalItem(companyId, nav, purchase, item, updateDifferent)) {
                     ItemOutcome.Saved -> {
                         saved += n; consecutiveFails = 0
                         record("Item $n: OK — ${Formatters.brl(item.unitPrice)} (unitário) salvo; o portal confirmou e o cartão mostra “Meu valor (unitário)” igual.")
                         return true
                     }
                     ItemOutcome.AlreadySaved -> {
-                        saved += n; consecutiveFails = 0
-                        record("Item $n: já estava com ${Formatters.brl(item.unitPrice)} no portal — nada a alterar.")
+                        already += n; consecutiveFails = 0
+                        record("Item $n: já lançado: ${brlText(item.unitPrice)} — nada a alterar.")
+                        return true
+                    }
+                    is ItemOutcome.Different -> {
+                        different[n] = r.portal; consecutiveFails = 0
+                        record(ProposalItemDecision.describe(n, ItemAction.SkipDifferent(r.portal, item.unitPrice)) + ".")
                         return true
                     }
                     is ItemOutcome.NotFound -> {
@@ -501,14 +571,15 @@ class PortalRobotEngine @Inject constructor(
                 progress("${g.label.take(30)} · item $n: digitando")
                 var outcome: ItemOutcome? = null
                 while (!ctrl.stop) {
-                    outcome = fillOnly(companyId, nav, purchase, item)
+                    outcome = fillOnly(companyId, nav, purchase, item, updateDifferent)
                     if (outcome !is ItemOutcome.PageLost) break
                     record("Item $n: PARADO — ${outcome.reason}.")
                     if (!awaitUser(ctrl, runId, "Item $n: ${outcome.reason}. Confira no portal e toque em Tentar de novo.", showPortal = true)) return false
                 }
                 when (outcome) {
                     null -> { values += n to item.unitPrice }
-                    ItemOutcome.AlreadySaved -> { saved += n; record("Item $n: já estava com ${Formatters.brl(item.unitPrice)} no portal.") }
+                    ItemOutcome.AlreadySaved -> { already += n; record("Item $n: já lançado: ${brlText(item.unitPrice)}.") }
+                    is ItemOutcome.Different -> { different[n] = outcome.portal; record(ProposalItemDecision.describe(n, ItemAction.SkipDifferent(outcome.portal, item.unitPrice)) + ".") }
                     is ItemOutcome.NotFound -> { failures[n] = outcome.reason; record("Item $n: NÃO ENCONTRADO — ${outcome.reason}."); snapshotOnce("item $n não encontrado no grupo") }
                     is ItemOutcome.Failed -> { failures[n] = outcome.reason; record("Item $n: FALHOU — ${outcome.reason}.") }
                     else -> Unit
@@ -537,12 +608,14 @@ class PortalRobotEngine @Inject constructor(
          * o portal redesenha e fecha o grupo) e, no fim, o cartão do grupo não pode continuar "Proposta incompleta" —
          * só então o robô passa para o próximo grupo. false = parar tudo.
          */
-        suspend fun runGroup(g: GroupStructure, inGroup: List<ProposalItemPlan>): Boolean {
+        suspend fun runGroup(g: GroupStructure, inGroup: List<ProposalItemPlan>, groupKey: String? = null): Boolean {
             val card0 = GroupCard.parse(g.text)
-            val key = card0?.key ?: g.label.take(30)
+            val key = groupKey ?: card0?.key ?: g.label.take(30)
+            val inGroupNumbers = inGroup.map { it.itemNumber }.toSet()
+            fun handledHere(n: Int) = n in saved || n in already || n in different
             fun groupProgress(): String {
-                val done = g.items.count { it in saved }
-                return card0?.progress(done) ?: "${g.label.take(30)}: $done/${g.items.size}"
+                val done = inGroupNumbers.count { it in saved }
+                return card0?.progress(done) ?: "${g.label.take(30)}: $done/${inGroup.size}"
             }
             record("$key: ${inGroup.size} item(ns) selecionado(s) de ${card0?.itemCount ?: g.items.size}" + if (card0?.incomplete == true) " · portal mostra “Proposta incompleta”." else ".")
             when (val s = GroupPlanner.decide(g)) {
@@ -577,10 +650,10 @@ class PortalRobotEngine @Inject constructor(
                         val visible = nav.groupItems(key)
                         seen += visible
                         if (page == 1) pages = GroupTraversal.expectedPages(card0?.itemCount, visible.size, nav.groupPager(key))
-                        val todo = visible.mapNotNull { wanted[it] }.filter { it.itemNumber !in saved && it.itemNumber !in failures }
+                        val todo = visible.mapNotNull { wanted[it] }.filter { !handledHere(it.itemNumber) && it.itemNumber !in failures }
                         if (visible.isNotEmpty()) record("$key · página $page/$pages: itens ${visible.first()}–${visible.last()} (${todo.size} a preencher).")
                         val currentPage = page
-                        val label = { GroupTraversal.progress(key, currentPage, pages, g.items.count { it in saved }, card0?.itemCount) }
+                        val label = { GroupTraversal.progress(key, currentPage, pages, inGroupNumbers.count { it in saved }, card0?.itemCount) }
                         for (item in todo) {
                             if (ctrl.stop) return false
                             // Depois de salvar o portal pode fechar o grupo / voltar para a página 1.
@@ -598,35 +671,64 @@ class PortalRobotEngine @Inject constructor(
                         }
                     }
                     // Selecionados que não apareceram em nenhuma página do grupo: o grupo fica incompleto → para nele.
-                    for (item in inGroup.filter { it.itemNumber !in seen && it.itemNumber !in saved && it.itemNumber !in failures }) {
+                    for (item in inGroup.filter { it.itemNumber !in seen && !handledHere(it.itemNumber) && it.itemNumber !in failures }) {
                         position++
                         if (!runItem(item, ::groupProgress)) return false
                     }
                 }
             }
-            // "Proposta incompleta" ainda no cartão do grupo? Não passa para o próximo grupo sem o usuário.
-            var checks = 0
-            while (!ctrl.stop && checks < 2) {
-                checks++
-                nav.prepareGroups()
-                val card = nav.groupCard(key) ?: run { record("$key: não consegui reler o cartão do grupo."); return true }
-                if (!card.incomplete && !card.notRegistered) {
-                    record("$key completo: ${groupProgress()}${card.myTotal?.let { " · Meu valor (total) R$ ${it.toPlainString().replace('.', ',')}" }.orEmpty()}.")
-                    nav.collapseGroup(key)
-                    return true
+            // Relê o grupo INTEIRO (todas as páginas): sobrou selecionado "Proposta não cadastrada"? 1ª vez o robô tenta de
+            // novo (na página do item); 2ª pede você; 3ª só registra. Itens lançados à mão contam como feitos.
+            for (pass in 1..3) {
+                if (ctrl.stop) return false
+                val again = nav.readGroup(key, close = false)
+                if (again.pages.isEmpty()) { record("$key: não consegui reler o grupo (${again.warning ?: "sem itens"})."); break }
+                val now = ProposalReadingBuilder.build(System.currentTimeMillis(), listOf(again))
+                inGroup.filter { !handledHere(it.itemNumber) }.forEach { i ->
+                    val r = now.of(i.itemNumber) ?: return@forEach
+                    val p = r.portalUnitPrice
+                    if (r.state == com.licitaia.domain.portal.PortalItemState.LANCADO && p != null) {
+                        if (ProposalItemDecision.samePrice(i.unitPrice, p)) { saved += i.itemNumber; failures.remove(i.itemNumber); record("Item ${i.itemNumber}: lançado no portal (${brlText(p)}) — conferido na releitura do grupo.") }
+                        else if (!updateDifferent) { different[i.itemNumber] = p; failures.remove(i.itemNumber); record(ProposalItemDecision.describe(i.itemNumber, ItemAction.SkipDifferent(p, i.unitPrice)) + ".") }
+                    }
                 }
-                val pending = inGroup.filter { it.itemNumber !in saved }.map { it.itemNumber }
-                val why = if (pending.isNotEmpty()) "itens selecionados ainda sem valor: ${pending.joinToString()}"
-                else "o portal pede TODOS os ${card.itemCount ?: "?"} itens do grupo e o plano tem ${inGroup.size} selecionado(s)"
-                record("$key continua “Proposta incompleta” (${groupProgress()}): $why.")
-                if (checks >= 2) { record("$key segue incompleto; seguindo por decisão sua."); return true }
-                if (!awaitUser(
-                        ctrl, runId,
-                        "$key continua “Proposta incompleta” ($why). O robô não passa para outro grupo: complete no portal e toque em Tentar de novo (ou Continuar manualmente).",
-                        showPortal = true,
-                    )
-                ) return false
+                val pending = inGroup.filter { !handledHere(it.itemNumber) }
+                if (pending.isEmpty()) break
+                val list = pending.joinToString { it.itemNumber.toString() }
+                when (pass) {
+                    1 -> {
+                        record("$key: ${pending.size} selecionado(s) ainda sem valor depois de percorrer ${again.pages.size} página(s): $list. Tentando de novo.")
+                        for (item in pending) {
+                            if (ctrl.stop) return false
+                            val idx = again.pages.indexOfFirst { pg -> pg.any { ItemNumber.of(it) == item.itemNumber } }
+                            nav.ensureGroupPage(key, if (idx >= 0) idx + 1 else 1)
+                            failures.remove(item.itemNumber)
+                            if (!runItem(item, ::groupProgress)) return false
+                        }
+                    }
+                    2 -> {
+                        record("$key: selecionados ainda sem valor: $list.")
+                        if (!awaitUser(
+                                ctrl, runId,
+                                "$key: os itens selecionados $list continuam “Proposta não cadastrada”. O robô não passa para outro grupo: lance no portal e toque em Tentar de novo (ou Continuar manualmente).",
+                                showPortal = true,
+                            )
+                        ) return false
+                    }
+                    else -> {
+                        record("$key: seguindo com $list ainda sem valor (por decisão sua).")
+                        pending.forEach { failures.putIfAbsent(it.itemNumber, "continua “Proposta não cadastrada” no $key") }
+                    }
+                }
             }
+            val card = nav.groupCard(key)
+            when {
+                card == null -> record("$key: não consegui reler o cartão do grupo.")
+                !card.incomplete && !card.notRegistered ->
+                    record("$key completo: ${groupProgress()}${card.myTotal?.let { " · Meu valor (total) R$ ${it.toPlainString().replace('.', ',')}" }.orEmpty()}.")
+                else -> record("$key segue “${if (card.incomplete) "Proposta incompleta" else "Proposta não cadastrada"}” no portal: itens fora da seleção (ou com valor diferente) continuam sem o valor do plano.")
+            }
+            nav.collapseGroup(key)
             return !ctrl.stop
         }
 
@@ -654,20 +756,63 @@ class PortalRobotEngine @Inject constructor(
             if (!handleDeclarations(ctrl, runId, companyId, nav, t, auth, ::record)) {
                 finish(RobotProposalStatus.AGUARDANDO_USUARIO, "Parado aguardando o termo/declarações."); return
             }
-            setStep(runId, "Abrindo grupos/lotes e carregando os itens")
-            val groups = nav.prepareGroups()
-            if (groups.isNotEmpty()) {
-                record("Compra com ${groups.size} grupo(s)/lote(s): " + groups.joinToString { "${it.label.take(40)} (${it.items.size} item(ns))" } + ".")
+            // 1) Estado REAL antes de agir: cada grupo aberto, todas as páginas internas, item a item.
+            setStep(runId, "Lendo a situação no portal (lançados × “Proposta não cadastrada”)")
+            val read = try { nav.readProposalState() } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            if (read != null && read.first.items.isNotEmpty()) {
+                reading = read.first
+                groupReads = read.second
+                groupReads.forEach { record(ProposalReadingBuilder.groupLine(it, read.first)) }
+                savePlan(companyId, t.tenderKey) { it.copy(portalReading = read.first) }
+            } else {
+                record("Não consegui ler a situação dos itens antes de começar: cada item é conferido no próprio cartão antes de preencher.")
             }
+            // 2) Grupo "Exclusividade ME/EPP" com a empresa declarando Não: não pode participar → avisa e pula.
+            groupReads.forEach { g ->
+                GroupEligibility.skipReason(g.key, g.card, meEpp)?.let { why ->
+                    skippedGroups[g.key] = why
+                    record("Aviso: $why.")
+                    safely { notifier.notify(NotificationCategory.SESSOES, "Robô de proposta: grupo pulado", "${t.label}: $why.", route = null, companyId = companyId) }
+                }
+            }
+            // 3) Só os selecionados "Proposta não cadastrada"; já lançados são pulados (valor diferente: não sobrescreve).
+            val r0 = reading
+            items = selectedItems.filter { item ->
+                val r = r0?.of(item.itemNumber)
+                if (r?.group != null && r.group in skippedGroups) return@filter false
+                when (val a = ProposalItemDecision.decide(item, r, updateDifferent)) {
+                    ItemAction.Fill -> true
+                    is ItemAction.Update -> { record(ProposalItemDecision.describe(item.itemNumber, a) + "."); true }
+                    is ItemAction.SkipAlready -> { already += item.itemNumber; record(ProposalItemDecision.describe(item.itemNumber, a) + "."); false }
+                    is ItemAction.SkipDifferent -> { different[item.itemNumber] = a.portal; record(ProposalItemDecision.describe(item.itemNumber, a) + "."); false }
+                }
+            }
+            total = items.size
+            if (r0 != null) {
+                record(
+                    "A preencher: $total item(ns) “Proposta não cadastrada”" + (if (updateDifferent) " ou com valor a atualizar" else "") +
+                        " · ${already.size} já lançado(s) (pulados)" + (if (different.isNotEmpty()) " · ${different.size} com valor diferente (não sobrescritos)" else "") +
+                        (if (skippedGroups.isNotEmpty()) " · grupo(s) pulado(s): ${skippedGroups.keys.joinToString()}" else "") + ".",
+                )
+            }
+            setStep(runId, "Abrindo grupos/lotes e carregando os itens")
+            val keys = groupReads.map { it.key }.ifEmpty { if (r0 == null) nav.groupKeys() else emptyList() }
+            // Sem leitura: estrutura antiga (grupos abertos de uma vez; itens da 1ª página de cada grupo).
+            val structures = if (r0 == null && keys.isNotEmpty()) nav.prepareGroups() else emptyList()
+            if (keys.isNotEmpty()) record("Compra com ${keys.size} grupo(s)/lote(s): ${keys.joinToString()}.")
+            fun groupOf(n: Int): String? =
+                r0?.of(n)?.group ?: structures.firstOrNull { n in it.items }?.let { GroupCard.parse(it.text)?.key }
             val handled = HashSet<Int>()
             for (item in items) {
                 if (ctrl.stop) break
                 if (item.itemNumber in handled) continue
-                val g = groups.firstOrNull { item.itemNumber in it.items }
-                if (g != null) {
-                    val inGroup = items.filter { it.itemNumber in g.items && it.itemNumber !in handled }
+                val key = groupOf(item.itemNumber)
+                if (key != null) {
+                    val inGroup = items.filter { it.itemNumber !in handled && groupOf(it.itemNumber) == key }
                     handled += inGroup.map { it.itemNumber }
-                    if (!runGroup(g, inGroup)) break
+                    val g = nav.groupStructure(key)
+                        ?: GroupStructure(0, key, key, inGroup.map { it.itemNumber }, inputs = 0, perItemSave = 0, groupSaves = emptyList(), groupValueField = false)
+                    if (!runGroup(g, inGroup, key)) break
                     continue
                 }
                 handled += item.itemNumber
@@ -681,24 +826,59 @@ class PortalRobotEngine @Inject constructor(
         val savedValue = items.filter { it.itemNumber in saved }.sumOf { it.totalPrice }
         val failText = failures.entries.take(12).joinToString("; ") { (n, why) -> "item $n: ${why.take(90)}" } +
             if (failures.size > 12) "; +${failures.size - 12}" else ""
+        // Resumo por grupo: "Grupo 1: 10 já lançados · 14 cadastrados agora · 0 faltando".
+        val rf = reading
+        val tallies = when {
+            rf == null -> emptyList()
+            groupReads.isEmpty() -> listOf(
+                GroupTally.of(
+                    "ITENS", null, rf.items.map { it.itemNumber }.toSet(),
+                    rf.items.filter { it.state == com.licitaia.domain.portal.PortalItemState.LANCADO }.map { it.itemNumber }.toSet(), saved, different.keys,
+                ),
+            )
+            else -> groupReads.map { g ->
+                skippedGroups[g.key]?.let { GroupTally(g.key, 0, 0, 0, skipped = it) } ?: run {
+                    val mine = rf.items.filter { it.group == g.key }
+                    GroupTally.of(
+                        g.key, g.card?.itemCount, mine.map { it.itemNumber }.toSet(),
+                        mine.filter { it.state == com.licitaia.domain.portal.PortalItemState.LANCADO }.map { it.itemNumber }.toSet(), saved, different.keys,
+                    )
+                }
+            }
+        }
+        tallies.forEach { record(it.line()) }
+        val tallyText = tallies.joinToString(" | ") { it.line() }.let { if (it.isBlank()) "" else " $it." }
+        val diffText = if (different.isEmpty()) "" else
+            " Lançados com valor diferente (não sobrescritos): " + different.entries.take(8).joinToString("; ") { (n, p) ->
+                "item $n portal ${brlText(p)} × plano ${brlText(selectedItems.firstOrNull { it.itemNumber == n }?.unitPrice)}"
+            } + (if (different.size > 8) "; +${different.size - 8}" else "") + "."
+        val ok = items.all { it.itemNumber in saved || it.itemNumber in already || it.itemNumber in different }
         when {
-            saved.size == total -> {
-                finish(RobotProposalStatus.CADASTRADA, "Proposta cadastrada: ${saved.size} de $total itens salvos · total ${Formatters.brl(savedValue)}. Confira no portal antes do prazo.")
+            total == 0 && failures.isEmpty() -> {
+                finish(RobotProposalStatus.CADASTRADA, "Nada a preencher: ${already.size} item(ns) selecionado(s) já lançado(s) no portal.$tallyText$diffText")
+                if (already.isNotEmpty()) safely { repo.upsertMyTenders(companyId, listOf(t.copy(hasProposal = true, updatedAt = System.currentTimeMillis()))) }
+            }
+            ok -> {
+                finish(RobotProposalStatus.CADASTRADA, "Proposta cadastrada: ${saved.size} de $total itens salvos agora · total ${Formatters.brl(savedValue)}.$tallyText$diffText Confira no portal antes do prazo.")
                 safely { repo.upsertMyTenders(companyId, listOf(t.copy(hasProposal = true, updatedAt = System.currentTimeMillis()))) }
             }
             saved.isNotEmpty() -> finish(
                 RobotProposalStatus.PARCIAL,
-                "Proposta em parte: ${saved.size} de $total itens salvos · total ${Formatters.brl(savedValue)}." + if (failText.isNotBlank()) " Faltam: $failText." else "",
+                "Proposta em parte: ${saved.size} de $total itens salvos agora · total ${Formatters.brl(savedValue)}.$tallyText$diffText" + if (failText.isNotBlank()) " Faltam: $failText." else "",
             )
-            else -> finish(RobotProposalStatus.FALHOU, "Nenhum item foi salvo." + if (failText.isNotBlank()) " $failText." else "")
+            else -> finish(RobotProposalStatus.FALHOU, "Nenhum item foi salvo.$tallyText$diffText" + if (failText.isNotBlank()) " $failText." else "")
         }
         safely {
             audit.record(
-                AuditAction.ENVIO, if (saved.size == total) AuditResult.SUCESSO else AuditResult.FALHA, AuditOrigin.ROBO, portal = Portal.COMPRAS_GOV,
-                tenderNumber = "${t.number}/${t.year}", details = "Robô de proposta: ${saved.size}/$total item(ns) salvos" + if (failures.isNotEmpty()) "; falhas: ${failures.keys.joinToString()}" else "",
+                AuditAction.ENVIO, if (ok) AuditResult.SUCESSO else AuditResult.FALHA, AuditOrigin.ROBO, portal = Portal.COMPRAS_GOV,
+                tenderNumber = "${t.number}/${t.year}",
+                details = "Robô de proposta: ${saved.size}/$total item(ns) salvos · ${already.size} já lançado(s)" +
+                    (if (different.isNotEmpty()) " · ${different.size} com valor diferente" else "") +
+                    (if (skippedGroups.isNotEmpty()) " · grupos pulados: ${skippedGroups.keys.joinToString()}" else "") +
+                    if (failures.isNotEmpty()) "; falhas: ${failures.keys.joinToString()}" else "",
             )
         }
-        setStatus(runId, if (saved.size == total) RunStatus.CONCLUIDO else if (ctrl.stop) RunStatus.PARADO else RunStatus.FALHOU, lines.lastOrNull())
+        setStatus(runId, if (ok) RunStatus.CONCLUIDO else if (ctrl.stop) RunStatus.PARADO else RunStatus.FALHOU, lines.lastOrNull())
     }
 
     /**
@@ -778,7 +958,7 @@ class PortalRobotEngine @Inject constructor(
     }
 
     /** Página certa + cartão do item [item] (número exato). null = pronto para preencher; senão o resultado final. */
-    private suspend fun reachItem(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan): ItemOutcome? {
+    private suspend fun reachItem(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan, overwrite: Boolean): ItemOutcome? {
         if (!gate.ensureLive(companyId)) return ItemOutcome.PageLost(PortalSessionGate.OPEN_APP_MESSAGE)
         // Ainda na página da compra certa? (o portal pode ter navegado) — nunca preenche fora dela.
         nav.openPurchase(p)?.let { return ItemOutcome.PageLost("a página da compra certa não está aberta ($it)") }
@@ -789,12 +969,14 @@ class PortalRobotEngine @Inject constructor(
             return ItemOutcome.NotFound("o item $n não aparece no cadastro de proposta desta compra ($hint)")
         }
         if (card.myUnitValue != null && ProposalMoney.matches(item.unitPrice, card.myUnitValue.toPlainString().replace('.', ','))) return ItemOutcome.AlreadySaved
+        // Já lançado com OUTRO valor (a leitura pode ter perdido): sem a opção "Atualizar…", nunca sobrescreve.
+        if (card.myUnitValue != null && !overwrite) return ItemOutcome.Different(card.myUnitValue.toDouble())
         return null
     }
 
     /** Abre o formulário do item e digita/confere os campos (sem salvar). null = pronto para salvar. */
-    private suspend fun fillOnly(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan): ItemOutcome? {
-        reachItem(companyId, nav, p, item)?.let { return it }
+    private suspend fun fillOnly(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan, overwrite: Boolean = false): ItemOutcome? {
+        reachItem(companyId, nav, p, item, overwrite)?.let { return it }
         val n = item.itemNumber
         nav.openItemForm(n)?.let { return ItemOutcome.Failed(it) }
         nav.fillOptional(n, "quantidade ofertada", TextNorm.formatInputNumber(item.quantity), numeric = true)?.let { return ItemOutcome.Failed(it) }
@@ -807,8 +989,8 @@ class PortalRobotEngine @Inject constructor(
     }
 
     /** Preenche e salva UM item (Salvar do próprio bloco), relendo "Meu valor (unitário)". */
-    private suspend fun proposalItem(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan): ItemOutcome {
-        fillOnly(companyId, nav, p, item)?.let { return it }
+    private suspend fun proposalItem(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan, overwrite: Boolean = false): ItemOutcome {
+        fillOnly(companyId, nav, p, item, overwrite)?.let { return it }
         // Valor ainda certo logo antes de salvar (nada mexeu no campo).
         return nav.saveItem(item.itemNumber, item.unitPrice)?.let { ItemOutcome.Failed(it) } ?: ItemOutcome.Saved
     }

@@ -13,6 +13,9 @@
       - generativelanguage.googleapis.com→ provedor de IA (Gemini)
       - oauth2.googleapis.com            → OAuth Google (token) / JWKS do Sign in with Google
       - www.googleapis.com               → JWKS (oauth2/v3/certs) e APIs Google
+      - brasilapi.com.br                 → consulta pública de CNPJ/CEP (cadastro da empresa)
+      - publica.cnpj.ws                  → consulta pública de CNPJ (alternativa)
+      - viacep.com.br                    → consulta pública de CEP
 
     Certificate pinning: NÃO habilitado de propósito. Pinning real exige gestão de rotação das chaves de
     cada operador (prazo de validade, pins de backup, expiração do <pin-set>) — sem isso o app para de

@@ -20,6 +20,21 @@ object BrDocuments {
         return dv(9) == d[9] - '0' && dv(10) == d[10] - '0'
     }
 
+    /** CNPJ com 14 dígitos e dígitos verificadores corretos (rejeita sequências repetidas). */
+    fun isValidCnpj(raw: String): Boolean {
+        val d = digits(raw)
+        if (d.length != 14 || d.all { it == d[0] }) return false
+        fun dv(base: String, weights: IntArray): Int {
+            val r = base.indices.sumOf { (base[it] - '0') * weights[it] } % 11
+            return if (r < 2) 0 else 11 - r
+        }
+        val w1 = intArrayOf(5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
+        val w2 = intArrayOf(6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
+        val d1 = dv(d.substring(0, 12), w1)
+        val d2 = dv(d.substring(0, 12) + d1, w2)
+        return d[12] - '0' == d1 && d[13] - '0' == d2
+    }
+
     fun isValidCep(raw: String): Boolean = digits(raw).length == 8
 
     fun isValidEmail(raw: String): Boolean = emailRegex.matches(raw.trim())

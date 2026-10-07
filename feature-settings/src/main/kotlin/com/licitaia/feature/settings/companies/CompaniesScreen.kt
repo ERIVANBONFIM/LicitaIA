@@ -25,6 +25,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -356,27 +359,22 @@ private fun CompanyEditor(form: CompanyForm, viewModel: CompaniesViewModel) {
     ) {
         Text(if (form.isNew) "Nova empresa" else "Editar empresa", style = MaterialTheme.typography.headlineSmall, color = LicitaColors.TextPrimary)
         form.errors["form"]?.let { AlertBanner("Não foi possível salvar", it, Tone.DANGER) }
-        OutlinedTextField(
-            value = form.name, onValueChange = { v -> viewModel.updateCompanyForm { it.copy(name = v.take(150)) } },
-            label = { Text("Razão social") }, singleLine = true, isError = form.errors.containsKey("name"),
-            supportingText = form.errors["name"]?.let { { Text(it) } }, enabled = !form.busy,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next), modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = form.tradeName, onValueChange = { v -> viewModel.updateCompanyForm { it.copy(tradeName = v.take(100)) } },
-            label = { Text("Nome fantasia") }, singleLine = true, enabled = !form.busy,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next), modifier = Modifier.fillMaxWidth(),
-        )
+        // CNPJ primeiro: ao completar 14 dígitos válidos, os dados públicos da Receita preenchem os campos vazios.
         OutlinedTextField(
             value = form.cnpjDigits,
-            onValueChange = { v -> viewModel.updateCompanyForm { it.copy(cnpjDigits = v.filter { c -> c.isDigit() }.take(14)) } },
+            onValueChange = { v -> viewModel.updateCompanyForm("cnpj") { it.copy(cnpjDigits = v.filter { c -> c.isDigit() }.take(14)) } },
             label = { Text("CNPJ") }, singleLine = true, enabled = !form.busy,
             visualTransformation = CnpjVisualTransformation,
             isError = form.errors.containsKey("cnpj"),
+            trailingIcon = if (form.cnpjLookup.loading) {
+                @Composable { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = LicitaColors.BlueBright) }
+            } else {
+                null
+            },
             supportingText = {
                 Text(
                     form.errors["cnpj"] ?: when {
-                        form.cnpjDigits.length < 14 -> "${form.cnpjDigits.length}/14 dígitos"
+                        form.cnpjDigits.length < 14 -> "${form.cnpjDigits.length}/14 dígitos · os dados da Receita são buscados ao completar"
                         isValidCnpj(form.cnpjDigits) -> "CNPJ com dígitos verificadores válidos"
                         else -> "Atenção: dígitos verificadores não conferem"
                     },
@@ -384,18 +382,33 @@ private fun CompanyEditor(form: CompanyForm, viewModel: CompaniesViewModel) {
             },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next), modifier = Modifier.fillMaxWidth(),
         )
+        CnpjLookupPanel(form, viewModel)
+        OutlinedTextField(
+            value = form.name, onValueChange = { v -> viewModel.updateCompanyForm("name") { it.copy(name = v.take(150)) } },
+            label = { Text("Razão social") }, singleLine = true, isError = form.errors.containsKey("name"),
+            supportingText = fieldSupport(form, "name"), enabled = !form.busy,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next), modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = form.tradeName, onValueChange = { v -> viewModel.updateCompanyForm("tradeName") { it.copy(tradeName = v.take(100)) } },
+            label = { Text("Nome fantasia") }, singleLine = true, enabled = !form.busy,
+            supportingText = fieldSupport(form, "tradeName"),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next), modifier = Modifier.fillMaxWidth(),
+        )
         Text("Segmento", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Segment.entries.forEach { s -> SelectChip(s.label, form.segment == s, { viewModel.updateCompanyForm { it.copy(segment = s) } }) }
+            Segment.entries.forEach { s -> SelectChip(s.label, form.segment == s, { viewModel.updateCompanyForm("segment") { it.copy(segment = s) } }) }
         }
+        if (form.autoFilled.containsKey("segment")) AutoFilledNote("Sugerido pela atividade principal (CNAE) — toque para trocar")
         Text("UF", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(BRAZIL_UFS) { uf -> SelectChip(uf, form.uf == uf, { viewModel.updateCompanyForm { it.copy(uf = uf) } }) }
+            items(BRAZIL_UFS) { uf -> SelectChip(uf, form.uf == uf, { viewModel.updateCompanyForm("uf") { it.copy(uf = uf) } }) }
         }
+        autoFilledLabel(form, "uf")?.let { AutoFilledNote(it) }
         OutlinedTextField(
-            value = form.city, onValueChange = { v -> viewModel.updateCompanyForm { it.copy(city = v.take(80)) } },
+            value = form.city, onValueChange = { v -> viewModel.updateCompanyForm("city") { it.copy(city = v.take(80)) } },
             label = { Text("Cidade") }, singleLine = true, isError = form.errors.containsKey("city"),
-            supportingText = form.errors["city"]?.let { { Text(it) } }, enabled = !form.busy,
+            supportingText = fieldSupport(form, "city"), enabled = !form.busy,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next), modifier = Modifier.fillMaxWidth(),
         )
         Text("IA preferida", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
@@ -406,35 +419,49 @@ private fun CompanyEditor(form: CompanyForm, viewModel: CompaniesViewModel) {
 
         // Dados que saem na proposta comercial em PDF (opcionais; campos vazios não aparecem no documento).
         FormSection("Endereço", "Sai no cabeçalho e na qualificação da proponente no PDF da proposta.")
-        FormField(form, "Logradouro e número", form.street, { v -> viewModel.updateCompanyForm { it.copy(street = v.take(150)) } }, capitalization = KeyboardCapitalization.Words)
-        FormField(form, "Complemento", form.complement, { v -> viewModel.updateCompanyForm { it.copy(complement = v.take(80)) } }, capitalization = KeyboardCapitalization.Sentences)
-        FormField(form, "Bairro", form.district, { v -> viewModel.updateCompanyForm { it.copy(district = v.take(80)) } }, capitalization = KeyboardCapitalization.Words)
         FormField(
-            form, "CEP", form.zipDigits, { v -> viewModel.updateCompanyForm { it.copy(zipDigits = v.filter { c -> c.isDigit() }.take(8)) } },
-            errorKey = "zip", keyboardType = KeyboardType.Number, mask = CepMask,
-            hint = "Cidade/UF: ${listOf(form.city.trim(), form.uf).filter { it.isNotEmpty() }.joinToString("/")}",
+            form, "CEP", form.zipDigits, { v -> viewModel.updateCompanyForm("zip") { it.copy(zipDigits = v.filter { c -> c.isDigit() }.take(8)) } },
+            errorKey = "zip", keyboardType = KeyboardType.Number, mask = CepMask, fieldKey = "zip", loading = form.zipLookup.loading,
+            hint = form.zipLookup.message
+                ?: "Cidade/UF: ${listOf(form.city.trim(), form.uf).filter { it.isNotEmpty() }.joinToString("/")} · ao completar o CEP o endereço é preenchido",
+            hintColor = when {
+                form.zipLookup.error -> LicitaColors.Yellow
+                form.zipLookup.message != null && !form.zipLookup.loading -> LicitaColors.Green
+                else -> null
+            },
         )
+        FormField(form, "Logradouro e número", form.street, { v -> viewModel.updateCompanyForm("street") { it.copy(street = v.take(150)) } }, capitalization = KeyboardCapitalization.Words, fieldKey = "street")
+        FormField(form, "Complemento", form.complement, { v -> viewModel.updateCompanyForm("complement") { it.copy(complement = v.take(80)) } }, capitalization = KeyboardCapitalization.Sentences, fieldKey = "complement")
+        FormField(form, "Bairro", form.district, { v -> viewModel.updateCompanyForm("district") { it.copy(district = v.take(80)) } }, capitalization = KeyboardCapitalization.Words, fieldKey = "district")
 
         FormSection("Contato")
         FormField(
-            form, "Telefone com DDD", form.phoneDigits, { v -> viewModel.updateCompanyForm { it.copy(phoneDigits = v.filter { c -> c.isDigit() }.take(11)) } },
-            errorKey = "phone", keyboardType = KeyboardType.Phone, mask = PhoneMask,
+            form, "Telefone com DDD", form.phoneDigits, { v -> viewModel.updateCompanyForm("phone") { it.copy(phoneDigits = v.filter { c -> c.isDigit() }.take(11)) } },
+            errorKey = "phone", keyboardType = KeyboardType.Phone, mask = PhoneMask, fieldKey = "phone",
         )
-        FormField(form, "E-mail", form.email, { v -> viewModel.updateCompanyForm { it.copy(email = v.trim().take(120)) } }, errorKey = "email", keyboardType = KeyboardType.Email)
+        FormField(form, "E-mail", form.email, { v -> viewModel.updateCompanyForm("email") { it.copy(email = v.trim().take(120)) } }, errorKey = "email", keyboardType = KeyboardType.Email, fieldKey = "email")
 
         FormSection("Representante legal", "Assina a proposta: nome, CPF e cargo saem no bloco de assinatura.")
-        FormField(form, "Nome completo", form.legalRepName, { v -> viewModel.updateCompanyForm { it.copy(legalRepName = v.take(120)) } }, capitalization = KeyboardCapitalization.Words)
         FormField(
-            form, "CPF", form.legalRepCpfDigits, { v -> viewModel.updateCompanyForm { it.copy(legalRepCpfDigits = v.filter { c -> c.isDigit() }.take(11)) } },
+            form, "Nome completo", form.legalRepName, { v -> viewModel.updateCompanyForm("legalRepName") { it.copy(legalRepName = v.take(120)) } },
+            capitalization = KeyboardCapitalization.Words, fieldKey = "legalRepName",
+        )
+        FormField(
+            form, "CPF", form.legalRepCpfDigits, { v -> viewModel.updateCompanyForm("cpf") { it.copy(legalRepCpfDigits = v.filter { c -> c.isDigit() }.take(11)) } },
             errorKey = "cpf", keyboardType = KeyboardType.Number, mask = CpfMask,
             hint = when {
+                // A Receita não divulga o CPF completo dos sócios: precisa ser digitado.
+                form.legalRepCpfDigits.isEmpty() && form.autoFilled.containsKey("legalRepName") -> "Digite o CPF — a Receita não divulga o CPF completo dos sócios"
                 form.legalRepCpfDigits.isEmpty() -> null
                 form.legalRepCpfDigits.length < 11 -> "${form.legalRepCpfDigits.length}/11 dígitos"
                 BrDocuments.isValidCpf(form.legalRepCpfDigits) -> "CPF com dígitos verificadores válidos"
                 else -> "Atenção: dígitos verificadores não conferem"
             },
         )
-        FormField(form, "Cargo", form.legalRepRole, { v -> viewModel.updateCompanyForm { it.copy(legalRepRole = v.take(80)) } }, capitalization = KeyboardCapitalization.Sentences)
+        FormField(
+            form, "Cargo", form.legalRepRole, { v -> viewModel.updateCompanyForm("legalRepRole") { it.copy(legalRepRole = v.take(80)) } },
+            capitalization = KeyboardCapitalization.Sentences, fieldKey = "legalRepRole",
+        )
 
         FormSection("Dados bancários (opcional)", "Para pagamento: aparecem na proposta somente se preenchidos.")
         FormField(form, "Banco", form.bankName, { v -> viewModel.updateCompanyForm { it.copy(bankName = v.take(80)) } }, capitalization = KeyboardCapitalization.Words)
@@ -549,7 +576,10 @@ private fun FormSection(title: String, hint: String? = null) {
     hint?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
 }
 
-/** Campo de texto do editor da empresa: erro por [errorKey] (prioritário) ou [hint] no texto de apoio. */
+/**
+ * Campo de texto do editor da empresa: erro por [errorKey] (prioritário), marca "preenchido pela Receita/CEP"
+ * (campo [fieldKey] vindo da consulta e ainda não editado) e/ou [hint] no texto de apoio.
+ */
 @Composable
 private fun FormField(
     form: CompanyForm,
@@ -563,15 +593,107 @@ private fun FormField(
     capitalization: KeyboardCapitalization = KeyboardCapitalization.None,
     imeAction: ImeAction = ImeAction.Next,
     mask: VisualTransformation = VisualTransformation.None,
+    fieldKey: String? = null,
+    loading: Boolean = false,
+    hintColor: androidx.compose.ui.graphics.Color? = null,
 ) {
     val error = errorKey?.let { form.errors[it] }
+    val auto = fieldKey?.let { autoFilledLabel(form, it) }
+    val support = error ?: listOfNotNull(auto, hint).joinToString(" · ").ifEmpty { null }
+    val supportColor = when {
+        error != null -> null
+        hintColor != null -> hintColor
+        auto != null -> LicitaColors.Green
+        else -> null
+    }
     OutlinedTextField(
         value = value, onValueChange = onValueChange, label = { Text(label) }, singleLine = true, enabled = !form.busy,
         isError = error != null, visualTransformation = mask,
-        supportingText = (error ?: hint)?.let { { Text(it) } },
+        supportingText = support?.let { { if (supportColor != null) Text(it, color = supportColor) else Text(it) } },
+        trailingIcon = if (loading) {
+            @Composable { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = LicitaColors.BlueBright) }
+        } else if (auto != null) {
+            @Composable { Icon(Icons.Outlined.AutoAwesome, contentDescription = auto, tint = LicitaColors.Green, modifier = Modifier.size(18.dp)) }
+        } else {
+            null
+        },
         keyboardOptions = KeyboardOptions(capitalization = capitalization, keyboardType = keyboardType, imeAction = imeAction),
         modifier = modifier,
     )
+}
+
+/** "preenchido pela Receita" / "preenchido pelo CEP" quando o campo veio da consulta e não foi editado. */
+private fun autoFilledLabel(form: CompanyForm, key: String): String? = when (form.autoFilled[key]) {
+    CompanyFormAutofill.SOURCE_RECEITA -> "preenchido pela Receita"
+    CompanyFormAutofill.SOURCE_CEP -> "preenchido pelo CEP"
+    else -> null
+}
+
+/** Texto de apoio dos campos fixos (razão social, nome fantasia, cidade): erro ou marca de preenchimento automático. */
+private fun fieldSupport(form: CompanyForm, key: String): (@Composable () -> Unit)? {
+    form.errors[key]?.let { return { Text(it) } }
+    val auto = autoFilledLabel(form, key) ?: return null
+    return { Text(auto, color = LicitaColors.Green) }
+}
+
+@Composable
+private fun AutoFilledNote(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = LicitaColors.Green, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(text, style = MaterialTheme.typography.labelSmall, color = LicitaColors.Green)
+    }
+}
+
+/**
+ * Consulta do CNPJ: botão "Buscar dados do CNPJ", progresso, resultado (situação cadastral — amarelo se não ATIVA)
+ * e, se havia campos já preenchidos diferentes, "Atualizar com os dados da Receita" (com confirmação).
+ */
+@Composable
+private fun CnpjLookupPanel(form: CompanyForm, viewModel: CompaniesViewModel) {
+    val status = form.cnpjLookup
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = viewModel::lookupCnpjNow, enabled = !form.busy && !status.loading && isValidCnpj(form.cnpjDigits)) {
+                Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Buscar dados do CNPJ")
+            }
+            if (status.loading) {
+                Spacer(Modifier.width(4.dp))
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = LicitaColors.BlueBright)
+            }
+        }
+        status.message?.let { msg ->
+            when {
+                status.loading -> Text(msg, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary)
+                status.warning -> AlertBanner("Situação cadastral", msg, Tone.WARNING)
+                status.error -> Text(msg, style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+                else -> AutoFilledNote("$msg. Confira e toque em Salvar.")
+            }
+        }
+        if (form.cnpjConflicts.isNotEmpty() && !status.loading) {
+            AlertBanner(
+                "Dados diferentes da Receita",
+                "${form.cnpjConflicts.size} campo(s) já preenchido(s) diferem da Receita: " +
+                    form.cnpjConflicts.joinToString(", ") { it.label } + ". Mantivemos o que você digitou.",
+                Tone.INFO,
+                actionLabel = "Atualizar com os dados da Receita",
+                onAction = { viewModel.askOverwriteWithReceita(true) },
+            )
+        }
+    }
+    if (form.confirmOverwrite) {
+        ConfirmDialog(
+            title = "Atualizar com os dados da Receita?",
+            message = form.cnpjConflicts.joinToString("\n") { "• ${it.label}: \"${it.current}\" → \"${it.incoming}\"" } +
+                "\n\nOs valores atuais serão substituídos no formulário. Nada é gravado até você tocar em Salvar.",
+            confirmLabel = "Atualizar",
+            onConfirm = viewModel::overwriteWithReceita,
+            onDismiss = { viewModel.askOverwriteWithReceita(false) },
+            icon = Icons.Outlined.AutoAwesome,
+        )
+    }
 }
 
 private val CepMask = DigitMaskTransformation { "#####-###" }

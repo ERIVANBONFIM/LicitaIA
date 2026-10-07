@@ -140,8 +140,41 @@ data class PortalRobotPlan(
     /** Sessão de acompanhamento (Pregões ao Vivo) criada para o histórico de lances. */
     val liveSessionId: String? = null,
     val updatedAt: Long = 0,
+    /** Última leitura da situação no portal (“Ler situação no portal” ou início do robô); null = nunca lida. */
+    val portalReading: PortalProposalReading? = null,
 ) {
     val bidArmed: Boolean get() = bidArmedAt != null && bid.mode != BidRobotMode.DESLIGADO
+}
+
+/** Situação de um item no cadastro de proposta do portal. */
+enum class PortalItemState(val label: String) {
+    /** Cartão com “Meu valor (unitário)” + valor. */
+    LANCADO("lançado"),
+    /** Cartão com “Proposta não cadastrada”. */
+    NAO_CADASTRADO("não cadastrado"),
+    /** Cartão sem nenhum dos dois (não deu para concluir). */
+    DESCONHECIDO("sem leitura"),
+}
+
+/** Um item como o portal mostrou na leitura. */
+data class PortalItemReading(
+    val itemNumber: Int,
+    val state: PortalItemState,
+    /** “Meu valor (unitário)” do portal (só quando lançado). */
+    val portalUnitPrice: Double? = null,
+    /** Grupo/lote do item ("GRUPO 1"), null = compra sem grupos. */
+    val group: String? = null,
+    /** O grupo do item é “Exclusividade ME/EPP”. */
+    val meEppExclusive: Boolean = false,
+)
+
+/** Leitura (só leitura, nada preenchido) da situação da proposta no portal, com data/hora. */
+data class PortalProposalReading(
+    val readAt: Long,
+    val items: List<PortalItemReading>,
+) {
+    private val byNumber by lazy { items.associateBy { it.itemNumber } }
+    fun of(itemNumber: Int): PortalItemReading? = byNumber[itemNumber]
 }
 
 /** Persistência das "minhas licitações" do Comprasnet e dos planos do robô (Room, por empresa). */

@@ -26,9 +26,11 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +51,9 @@ import com.licitaia.domain.model.PortalDeclarations
 import com.licitaia.domain.portal.PortalMyTender
 import com.licitaia.domain.portal.ProposalItemPlan
 import com.licitaia.domain.util.Formatters
+import com.licitaia.domain.portal.PortalProposalReading
+import com.licitaia.feature.live.automation.PortalMarker
+import com.licitaia.feature.live.automation.ProposalReadingRules
 import com.licitaia.feature.live.automation.RobotPlanRules
 import com.licitaia.feature.live.automation.TextNorm
 
@@ -65,15 +70,32 @@ internal fun ProposalConfirmDialog(
     tender: PortalMyTender,
     planItems: List<ProposalItemPlan>,
     companyDeclarations: PortalDeclarations,
+    /** Última leitura da situação no portal (null = nunca lida). */
+    reading: PortalProposalReading? = null,
+    /** Leitura rodando agora. */
+    readingActive: Boolean = false,
+    /** "Ler situação no portal" (só leitura) com a seleção atual da confirmação. */
+    onReadPortal: (items: List<ProposalItemPlan>) -> Unit = {},
     onEditCompany: () -> Unit,
     onDismiss: () -> Unit,
-    onConfirm: (items: List<ProposalItemPlan>, declarations: PortalDeclarations, saveDeclarations: Boolean) -> Unit,
+    onConfirm: (items: List<ProposalItemPlan>, declarations: PortalDeclarations, saveDeclarations: Boolean, updateDifferent: Boolean) -> Unit,
 ) {
     val items = remember(planItems) { mutableStateListOf<ProposalItemPlan>().apply { addAll(planItems.sortedBy { it.itemNumber }.map { it.copy(selected = it.selected && it.hasPrice) }) } }
     var accept by remember { mutableStateOf(false) }
     var decl by remember(companyDeclarations) { mutableStateOf(companyDeclarations) }
+    /** "Atualizar itens já lançados com valor diferente" (padrão desligado: não sobrescreve). */
+    var updateDifferent by remember { mutableStateOf(false) }
     val sel = RobotPlanRules.selection(items)
     val errors = RobotPlanRules.confirmationErrors(items, accept, decl)
+    // Leitura NOVA chegou com a confirmação aberta: pré-seleciona só os "Proposta não cadastrada".
+    val firstReadAt = remember { reading?.readAt }
+    LaunchedEffect(reading?.readAt) {
+        val r = reading ?: return@LaunchedEffect
+        if (r.readAt == firstReadAt) return@LaunchedEffect
+        val pre = ProposalReadingRules.preselect(items.toList(), r, decl.meEpp, updateDifferent)
+        items.clear(); items.addAll(pre)
+    }
+    val differentNumbers = items.filter { ProposalReadingRules.marker(it, reading, decl.meEpp)?.kind == PortalMarker.Kind.DIFERENTE }.map { it.itemNumber }.toSet()
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Column(Modifier.fillMaxSize().background(LicitaColors.Background).statusBarsPadding().navigationBarsPadding().imePadding()) {
@@ -94,9 +116,43 @@ internal fun ProposalConfirmDialog(
                         Spacer(Modifier.height(4.dp))
                         Text(
                             "O robô vai localizar a compra, conferir que é a compra certa (UASG e número), verificar o prazo, aceitar os termos, " +
-                                "abrir os grupos, preencher, salvar e reler cada item selecionado.",
+                                "ler o que já está lançado (grupo a grupo, todas as páginas) e preencher, salvar e reler SÓ os selecionados com “Proposta não cadastrada”. " +
+                                "Itens já lançados são pulados e informados.",
                             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                         )
+                    }
+                }
+                item {
+                    LicitaCard(Modifier.fillMaxWidth()) {
+                        Text("Situação no portal", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                        Text(
+                            reading?.let { ProposalReadingRules.summary(items, it, decl.meEpp) } ?: "Ainda não lida: o robô lê antes de preencher, mas você pode ler agora e conferir.",
+                            style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                        )
+                        TextButton(onClick = { onReadPortal(items.toList()) }, enabled = !readingActive) {
+                            Text(if (readingActive) "Lendo o portal…" else "Ler situação no portal")
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Atualizar itens já lançados com valor diferente", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextPrimary)
+                                Text(
+                                    if (updateDifferent) "O robô sobrescreve o valor do portal pelo do plano nesses itens."
+                                    else "Desligado: itens lançados com outro valor NÃO são alterados (aparecem no relatório).",
+                                    style = MaterialTheme.typography.labelSmall, color = if (updateDifferent) LicitaColors.Yellow else LicitaColors.TextMuted,
+                                )
+                            }
+                            Switch(
+                                checked = updateDifferent,
+                                onCheckedChange = { on ->
+                                    updateDifferent = on
+                                    // Liga/desliga junto a seleção dos itens marcados ⚠ diferente.
+                                    if (differentNumbers.isNotEmpty()) {
+                                        val next = items.map { if (it.itemNumber in differentNumbers && it.hasPrice) it.copy(selected = on) else it }
+                                        items.clear(); items.addAll(next)
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
                 item {
@@ -114,7 +170,7 @@ internal fun ProposalConfirmDialog(
                 }
                 items(items, key = { it.itemNumber }) { i ->
                     val index = items.indexOfFirst { it.itemNumber == i.itemNumber }
-                    ItemRow(i) { checked -> if (index >= 0 && (i.hasPrice || !checked)) items[index] = i.copy(selected = checked) }
+                    ItemRow(i, ProposalReadingRules.marker(i, reading, decl.meEpp)) { checked -> if (index >= 0 && (i.hasPrice || !checked)) items[index] = i.copy(selected = checked) }
                 }
                 item {
                     HorizontalDivider(color = LicitaColors.Outline)
@@ -145,7 +201,7 @@ internal fun ProposalConfirmDialog(
                 errors.firstOrNull()?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow) }
                 PrimaryButton(
                     "Soltar o robô",
-                    { onConfirm(items.toList(), decl, decl != companyDeclarations) },
+                    { onConfirm(items.toList(), decl, decl != companyDeclarations, updateDifferent) },
                     Modifier.fillMaxWidth(), enabled = errors.isEmpty(), icon = Icons.Outlined.SmartToy, tone = Tone.WARNING,
                 )
             }
@@ -154,7 +210,7 @@ internal fun ProposalConfirmDialog(
 }
 
 @Composable
-private fun ItemRow(i: ProposalItemPlan, onCheck: (Boolean) -> Unit) {
+private fun ItemRow(i: ProposalItemPlan, marker: PortalMarker?, onCheck: (Boolean) -> Unit) {
     val noPrice = !i.hasPrice
     LicitaCard(Modifier.fillMaxWidth(), accent = if (noPrice) LicitaColors.Yellow else null, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -165,6 +221,7 @@ private fun ItemRow(i: ProposalItemPlan, onCheck: (Boolean) -> Unit) {
                     else "Item ${i.itemNumber}: ${Formatters.brl(i.unitPrice)} × ${TextNorm.formatInputNumber(i.quantity)} = ${Formatters.brl(i.totalPrice)}",
                     style = MaterialTheme.typography.bodySmall, color = if (noPrice) LicitaColors.Yellow else LicitaColors.TextPrimary,
                 )
+                marker?.let { PortalMarkerText(it) }
                 if (i.description.isNotBlank()) Text(i.description, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, maxLines = 1)
                 listOf("Marca" to i.brand, "Modelo" to i.modelVersion).filter { it.second.isNotBlank() }.takeIf { it.isNotEmpty() }?.let { l ->
                     Text(l.joinToString(" · ") { (k, v) -> "$k: $v" }, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, maxLines = 1)
@@ -186,6 +243,19 @@ private fun DeclarationLine(label: String, value: Boolean?, onChange: (Boolean) 
             FilterChip(selected = value == false, onClick = { onChange(false) }, label = { Text("Não") })
         }
     }
+}
+
+/** Marca da leitura do portal no item: ✓ lançado (valor), ⚠ diferente, ○ não cadastrado. */
+@Composable
+internal fun PortalMarkerText(m: PortalMarker) {
+    val color = when (m.kind) {
+        PortalMarker.Kind.LANCADO -> LicitaColors.Green
+        PortalMarker.Kind.DIFERENTE -> LicitaColors.Yellow
+        PortalMarker.Kind.NAO_CADASTRADO -> LicitaColors.Blue
+        PortalMarker.Kind.BLOQUEADO -> LicitaColors.Red
+        PortalMarker.Kind.AUSENTE -> LicitaColors.TextMuted
+    }
+    Text(m.label, style = MaterialTheme.typography.labelMedium, color = color, fontWeight = FontWeight.SemiBold)
 }
 
 /** Banner usado no plano quando as declarações da empresa ainda não foram respondidas. */

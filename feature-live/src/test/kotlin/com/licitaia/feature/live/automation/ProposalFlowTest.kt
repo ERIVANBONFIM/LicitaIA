@@ -295,6 +295,158 @@ class ProposalFlowTest {
         assertTrue(SpaScripts.groupPager("GRUPO 1", "next").contains("SP.inGroup(x,hs,gi)"))
     }
 
+    // ------------------------------------------------------------------ leitura do que já está lançado (REAL_TEXTO)
+
+    private val reais by lazy {
+        real("REAL_09_grupos_itens_lancados.txt").lines().filter { it.isNotBlank() && !it.startsWith("#") }
+            .associate { it.substringBefore(": ") to it.substringAfter(": ") }
+    }
+
+    /** Texto REAL do cartão do item [n] na situação do print (1–9 lançados a 209,25; 10 a 208,25; 11–24 não cadastrados). */
+    private fun cardText(n: Int): String = when {
+        n == 10 -> reais.getValue("ITEM_10")
+        n < 10 -> reais.getValue("ITEM_LANCADO").replaceFirst(Regex("^1 "), "$n ")
+        else -> reais.getValue("ITEM_NAO_LANCADO").replaceFirst(Regex("^11 "), "$n ")
+    }
+
+    /** Grupo 1 do print: 24 itens em 3 páginas (10 por página), lidas pelo percurso do paginador interno. */
+    private fun readGroup1(): GroupRead {
+        var current = 1
+        val (pages, warn) = kotlinx.coroutines.runBlocking {
+            GroupPageWalk.walk(
+                goTo = { p -> current = p; null },
+                read = {
+                    val items = ((current - 1) * 10 + 1..minOf(current * 10, 24)).map(::cardText)
+                    GroupPageWalk.View(GroupPager(true, listOf(1, 2, 3), current, current < 3), items)
+                },
+            )
+        }
+        assertNull(warn)
+        return GroupRead("GRUPO 1", GroupCard.parse(reais.getValue("GRUPO1")), pages)
+    }
+
+    private val plan24 = (1..24).map { item(it, 209.25, 12.0) }
+
+    /** REAL_TEXTO: item lançado (tem "Meu valor (unitário)" + valor) e item "Proposta não cadastrada". */
+    @Test fun realItemCardLaunchedAndNotRegistered() {
+        val l = PortalItemCard.parse(reais.getValue("ITEM_LANCADO"))!!
+        assertEquals(1, l.number)
+        assertEquals(12.0, l.quantity!!, 1e-9)
+        assertEquals(0, BigDecimal("238.3300").compareTo(l.estimatedUnit))
+        assertEquals(0, BigDecimal("209.2500").compareTo(l.myUnit))
+        assertEquals(0, BigDecimal("2511.0000").compareTo(l.myTotal))
+        assertEquals(com.licitaia.domain.portal.PortalItemState.LANCADO, l.state)
+        val n = PortalItemCard.parse(reais.getValue("ITEM_NAO_LANCADO"))!!
+        assertEquals(11, n.number)
+        assertEquals(0, BigDecimal("238.3300").compareTo(n.estimatedUnit))
+        assertNull(n.myUnit)
+        assertTrue(n.notRegistered)
+        assertEquals(com.licitaia.domain.portal.PortalItemState.NAO_CADASTRADO, n.state)
+        // O cartão do grupo não é item.
+        assertNull(PortalItemCard.parse(reais.getValue("GRUPO1")))
+        // O parser antigo (conferência depois de salvar) continua lendo o "Meu valor (unitário)".
+        assertEquals(0, BigDecimal("209.2500").compareTo(ProposalItemCardParser.parse(reais.getValue("ITEM_LANCADO"))!!.myUnitValue))
+    }
+
+    /** REAL_TEXTO: item 10 lançado com valor diferente do plano → não sobrescreve por padrão; atualiza só com a opção. */
+    @Test fun realItem10DifferentValueIsNotOverwrittenByDefault() {
+        val c = PortalItemCard.parse(reais.getValue("ITEM_10"))!!
+        assertEquals(0, BigDecimal("208.2500").compareTo(c.myUnit))
+        assertEquals(0, BigDecimal("2499.0000").compareTo(c.myTotal))
+        val r = ProposalReadingBuilder.build(0, listOf(readGroup1())).of(10)!!
+        val skip = ProposalItemDecision.decide(item(10, 209.25, 12.0), r, updateDifferent = false)
+        assertEquals(ItemAction.SkipDifferent(208.25, 209.25), skip)
+        assertTrue(ProposalItemDecision.describe(10, skip).contains("lançado com valor diferente (portal R$ 208,25 × plano R$ 209,25)"))
+        assertEquals(ItemAction.Update(208.25, 209.25), ProposalItemDecision.decide(item(10, 209.25, 12.0), r, updateDifferent = true))
+    }
+
+    /** REAL_TEXTO: grupo 1 com paginador interno «‹ [1] 2 3 ›» → 3 páginas, 24 itens: 10 lançados e 14 não cadastrados. */
+    @Test fun realGroupPaginationThreePagesBuildsItemMap() {
+        val g = readGroup1()
+        assertEquals(3, g.pages.size)
+        assertEquals(listOf(10, 10, 4), g.pages.map { it.size })
+        val card = g.card!!
+        assertEquals(24, card.itemCount)
+        assertTrue(card.incomplete)
+        assertEquals(0, BigDecimal("25098.0000").compareTo(card.myTotal))
+        val reading = ProposalReadingBuilder.build(1_000, listOf(g))
+        assertEquals((1..24).toList(), reading.items.map { it.itemNumber })
+        assertEquals((1..10).toList(), reading.items.filter { it.state == com.licitaia.domain.portal.PortalItemState.LANCADO }.map { it.itemNumber })
+        assertEquals((11..24).toList(), reading.items.filter { it.state == com.licitaia.domain.portal.PortalItemState.NAO_CADASTRADO }.map { it.itemNumber })
+        assertTrue(reading.items.all { it.group == "GRUPO 1" })
+        assertEquals("Grupo 1 (24 itens, 3 página(s)): 10 lançado(s) · 14 não cadastrado(s)", ProposalReadingBuilder.groupLine(g, reading))
+        // Percurso que não avança (o portal ficou na página 1) → aviso, sem repetir itens.
+        val (stuck, warn) = kotlinx.coroutines.runBlocking {
+            GroupPageWalk.walk(goTo = { null }, read = { GroupPageWalk.View(GroupPager(true, listOf(1, 2, 3), 1, true), (1..10).map(::cardText)) })
+        }
+        assertEquals(1, stuck.size)
+        assertNotNull(warn)
+    }
+
+    /** Decisão: lançado igual → pula ("já lançado: R$ 209,25"); não cadastrado → preenche; resumo do grupo. */
+    @Test fun decisionSkipsLaunchedAndFillsNotRegistered() {
+        val reading = ProposalReadingBuilder.build(0, listOf(readGroup1()))
+        val a1 = ProposalItemDecision.decide(item(1, 209.25, 12.0), reading.of(1), false)
+        assertEquals(ItemAction.SkipAlready(209.25), a1)
+        assertEquals("Item 1: já lançado: R$ 209,25", ProposalItemDecision.describe(1, a1))
+        assertEquals(ItemAction.Fill, ProposalItemDecision.decide(item(11, 209.25, 12.0), reading.of(11), false))
+        assertEquals(ItemAction.Fill, ProposalItemDecision.decide(item(30, 1.0), null, false))
+        // Execução: 14 salvos agora (11–24), item 10 diferente não sobrescrito.
+        val tally = GroupTally.of(
+            "GRUPO 1", 24, (1..24).toSet(),
+            reading.items.filter { it.state == com.licitaia.domain.portal.PortalItemState.LANCADO }.map { it.itemNumber }.toSet(),
+            savedNow = (11..24).toSet(), different = setOf(10),
+        )
+        assertTrue(tally.line(), tally.line().startsWith("Grupo 1: 10 já lançados · 14 cadastrados agora · 0 faltando"))
+        assertEquals("Grupo 1: 10 já lançados · 14 cadastrados agora · 0 faltando", tally.copy(different = 0).line())
+        // Com a opção de atualizar: o item 10 salvo agora sai de "já lançados".
+        assertEquals("Grupo 1: 9 já lançados · 15 cadastrados agora · 0 faltando", GroupTally.of("GRUPO 1", 24, (1..24).toSet(), (1..10).toSet(), (10..24).toSet(), emptySet()).line())
+    }
+
+    /** REAL_TEXTO: GRUPO 2 "Exclusividade ME/EPP" e a empresa declarou "Não" → avisa e pula o grupo. */
+    @Test fun meEppExclusiveGroupIsSkippedWhenCompanyDeclaresNo() {
+        val card = GroupCard.parse(reais.getValue("GRUPO2"))!!
+        assertTrue(card.meEppExclusive && card.notRegistered)
+        val why = GroupEligibility.skipReason("GRUPO 2", card, meEpp = false)!!
+        assertTrue(why.contains("Exclusividade ME/EPP") && why.contains("não pode participar"))
+        assertNull(GroupEligibility.skipReason("GRUPO 2", card, meEpp = true))
+        assertNull(GroupEligibility.skipReason("GRUPO 1", GroupCard.parse(reais.getValue("GRUPO1")), meEpp = false))
+        assertEquals("Grupo 2: pulado — $why", GroupTally("GRUPO 2", 0, 0, 0, skipped = why).line())
+        // Itens do grupo 2 (não cadastrados) não são pré-selecionados com ME/EPP = Não.
+        val g2 = GroupRead("GRUPO 2", card, listOf((25..26).map { reais.getValue("ITEM_NAO_LANCADO").replaceFirst(Regex("^11 "), "$it ") }))
+        val reading = ProposalReadingBuilder.build(0, listOf(g2))
+        assertTrue(reading.of(25)!!.meEppExclusive)
+        val pre = ProposalReadingRules.preselect(listOf(item(25, 5.0), item(26, 5.0)), reading, meEpp = false)
+        assertTrue(pre.none { it.selected })
+        assertEquals(PortalMarker.Kind.BLOQUEADO, ProposalReadingRules.marker(item(25, 5.0), reading, false)!!.kind)
+        assertTrue(ProposalReadingRules.preselect(listOf(item(25, 5.0)), reading, meEpp = true).single().selected)
+        assertEquals("GRUPO 3", GroupCard.parse(reais.getValue("GRUPO3"))!!.key)
+    }
+
+    /** Depois da leitura: só os "Proposta não cadastrada" ficam selecionados; marcas ✓ / ⚠ / ○. */
+    @Test fun preselectionAfterReadingKeepsOnlyNotRegistered() {
+        val reading = ProposalReadingBuilder.build(0, listOf(readGroup1()))
+        val plan = plan24.map { if (it.itemNumber == 5) it.copy(selected = false) else it } + item(99, 1.0) + item(12, 0.0).copy(itemNumber = 98)
+        val pre = ProposalReadingRules.preselect(plan, reading, meEpp = true)
+        assertEquals((11..24).toList(), pre.filter { it.selected }.map { it.itemNumber })
+        assertEquals((10..24).toList(), ProposalReadingRules.preselect(plan, reading, true, updateDifferent = true).filter { it.selected }.map { it.itemNumber })
+        assertEquals("✓ lançado (R$ 209,25)", ProposalReadingRules.marker(item(1, 209.25, 12.0), reading, true)!!.label)
+        assertEquals("⚠ diferente (portal R$ 208,25 × plano R$ 209,25)", ProposalReadingRules.marker(item(10, 209.25, 12.0), reading, true)!!.label)
+        assertEquals("○ não cadastrado", ProposalReadingRules.marker(item(11, 209.25, 12.0), reading, true)!!.label)
+        assertEquals(PortalMarker.Kind.AUSENTE, ProposalReadingRules.marker(item(99, 1.0), reading, true)!!.kind)
+        assertNull(ProposalReadingRules.marker(item(1, 1.0), null, true))
+        assertTrue(ProposalReadingRules.summary(plan24, reading, true).contains("9 lançado(s) · 1 com valor diferente · 14 não cadastrado(s)"))
+    }
+
+    /** Scripts: o chevron do GRUPO ignora as setas dos itens de dentro do cartão; abrir/fechar só o grupo pedido. */
+    @Test fun scriptsUseOwnGroupChevronAndReadItemsInsideGroup() {
+        assertTrue(SpaScripts.SPA_PRELUDE.contains("SP.mine=function(c,e)"))
+        assertTrue(SpaScripts.SPA_PRELUDE.contains("if(!SP.mine(c,b)"))
+        assertTrue(SpaScripts.setGroupOpen("GRUPO 1", true).contains("SP.groupOpen(h,hs,gi)===P.open"))
+        assertTrue(SpaScripts.collapseGroup("GRUPO 1").contains("\"open\":false"))
+        assertTrue(SpaScripts.groupItemCards("GRUPO 1").contains("SP.inGroup(c,hs,gi)"))
+    }
+
     @Test fun scriptsTreatGroupCardsAsNonItemsAndReexpandAfterSave() {
         assertTrue(SpaScripts.SPA_PRELUDE.contains("SP.itemNo=function(c){if(SP.isGroupText(SP.T(c)))return -1;"))
         val expand = SpaScripts.expandGroups()

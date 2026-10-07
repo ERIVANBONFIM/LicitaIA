@@ -2,6 +2,21 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.5.4] — 2026-10-07
+
+### Adicionado
+- Cadastro da empresa: ao digitar o CNPJ, preenche razão social, nome fantasia, endereço, telefone, e-mail e o
+  representante (nome e cargo do sócio-administrador) pelos dados públicos da Receita; ao digitar o CEP, preenche
+  logradouro, bairro, cidade e UF. Só preenche campos vazios; mostra a situação cadastral.
+- Robô: "Ler situação no portal" marca cada item como lançado (✓), com valor diferente (⚠) ou não cadastrado (○)
+  e pré-seleciona só os não cadastrados.
+
+### Alterado
+- O robô pula itens já lançados e cadastra apenas os "Proposta não cadastrada"; itens com valor diferente não são
+  sobrescritos (opção "Atualizar itens já lançados com valor diferente").
+- Grupo "Exclusividade ME/EPP" é pulado com aviso quando a declaração ME/EPP da empresa é "Não".
+- Resumo por grupo: "Grupo 1: 10 já lançados · 14 cadastrados agora · 0 faltando".
+
 ## [0.5.3] — 2026-10-07
 
 ### Adicionado
