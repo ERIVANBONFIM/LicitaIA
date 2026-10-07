@@ -126,6 +126,11 @@ data class Opportunity(
      * comparando com o cache; null = nunca mudou. Versão 14.
      */
     val previousProposalDeadline: Long? = null,
+    /**
+     * Página oficial da compra no sistema de origem (`linkSistemaOrigem` do PNCP). Só em memória (não vai para o cache
+     * local): quando ausente, "Abrir no portal" consulta o PNCP na hora ([OfficialLinksRepository.originUrl]).
+     */
+    val originUrl: String? = null,
 ) {
     /** ADIADA: o prazo mudou em relação ao que estava salvo, ou a fonte publicou "adiada"/"remarcada". */
     val postponed: Boolean get() = Postponement.isPostponed(this)
@@ -929,6 +934,11 @@ data class AppSettings(
     val searchPeriod: PeriodFilter = PeriodFilter(),
     /** Última abertura da Busca (selo "Nova": o que entrou no cache depois dela). */
     val lastSearchOpenedAt: Long? = null,
+    /**
+     * "Analisar automaticamente ao marcar interesse" (Configurações > IA). Padrão DESLIGADO: o "Tenho interesse"
+     * só salva a licitação; a análise por IA roda quando o usuário pede ("Analisar com IA").
+     */
+    val autoAnalyzeOnInterest: Boolean = false,
 ) {
     fun isPortalKeepAliveOn(companyId: Long, portal: Portal): Boolean = portalKeepAliveKey(companyId, portal) in portalKeepAlive
 

@@ -45,6 +45,8 @@ private object Keys {
     val periodFrom = longPreferencesKey("search_period_from")
     val periodTo = longPreferencesKey("search_period_to")
     val lastSearchOpenedAt = longPreferencesKey("last_search_opened_at")
+    // "Analisar automaticamente ao marcar interesse" (padrão desligado).
+    val autoAnalyzeOnInterest = booleanPreferencesKey("auto_analyze_on_interest")
 
     val rememberedUser = longPreferencesKey("session_user_id")
     val rememberedCompany = longPreferencesKey("session_company_id")
@@ -83,6 +85,7 @@ private fun Preferences.toSettings(): AppSettings {
             customTo = this[Keys.periodTo],
         ),
         lastSearchOpenedAt = this[Keys.lastSearchOpenedAt],
+        autoAnalyzeOnInterest = this[Keys.autoAnalyzeOnInterest] ?: defaults.autoAnalyzeOnInterest,
     )
 }
 
@@ -120,6 +123,7 @@ class SettingsRepositoryImpl @Inject constructor(
             next.searchPeriod.customFrom?.let { prefs[Keys.periodFrom] = it } ?: prefs.remove(Keys.periodFrom)
             next.searchPeriod.customTo?.let { prefs[Keys.periodTo] = it } ?: prefs.remove(Keys.periodTo)
             next.lastSearchOpenedAt?.let { prefs[Keys.lastSearchOpenedAt] = it } ?: prefs.remove(Keys.lastSearchOpenedAt)
+            prefs[Keys.autoAnalyzeOnInterest] = next.autoAnalyzeOnInterest
         }
     }
 }

@@ -58,6 +58,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.update
@@ -77,6 +79,7 @@ class TenderRepositoryImpl @Inject constructor(
     private val analysisDao: TenderAnalysisDao,
     private val proposalDao: ProposalDao,
     private val questionDao: com.licitaia.core.data.db.EditalQuestionDao,
+    private val flagDao: com.licitaia.core.data.db.OpportunityFlagDao,
     private val opportunityDao: OpportunityDao,
     private val companyDao: CompanyDao,
     private val documentDao: DocumentDao,
@@ -90,6 +93,8 @@ class TenderRepositoryImpl @Inject constructor(
     private val pdfOcrEngine: PdfOcrEngine,
     private val editalDownloader: EditalDownloader,
     @DataScope private val scope: CoroutineScope,
+    /** "Analisar automaticamente ao marcar interesse" (Configurações > IA; padrão desligado). */
+    private val settings: com.licitaia.domain.repository.SettingsRepository,
 ) : TenderRepository {
 
     private val interestMutex = Mutex()
@@ -101,19 +106,50 @@ class TenderRepositoryImpl @Inject constructor(
     private val importJobs = HashMap<Long, Deferred<Result<EditalImportResult>>>()
     private val importProgress = MutableStateFlow<Map<Long, EditalImportProgress>>(emptyMap())
 
+    /** Análises em andamento por licitação (uma por vez; "Analisar" repetido reaproveita a mesma). */
+    private val analysisJobs = HashMap<Long, Deferred<Result<TenderAnalysis>>>()
+
     init {
-        // Análises interrompidas por morte do processo são retomadas na próxima abertura.
+        // Análise interrompida por morte do processo NÃO é retomada sozinha (gastaria cota de IA sem pedido): a licitação
+        // sai de "Em análise" e o usuário pede de novo ("Analisar com IA").
         scope.launch {
             runCatching {
-                tenderDao.getByStatus(TenderStatus.EM_ANALISE)
-                    .filter { analysisDao.get(it.id) == null }
-                    .forEach { runAnalysis(it.id, background = true) }
+                tenderDao.getByStatus(TenderStatus.EM_ANALISE).forEach { t ->
+                    val target = com.licitaia.domain.model.InterestFollowUp.recoverInterrupted(analysisDao.get(t.id) != null)
+                    tenderDao.updateStatus(t.id, target, System.currentTimeMillis())
+                }
             }
         }
     }
 
+    /** Licitações de interesse VISÍVEIS: as arquivadas ficam só em "Licitações arquivadas" (dados preservados). */
     override fun observeTenders(companyId: Long): Flow<List<Tender>> =
-        tenderDao.observeByCompany(companyId).map { list -> if (access.owns(companyId)) list.map { it.toDomain() } else emptyList() }
+        kotlinx.coroutines.flow.combine(tenderDao.observeByCompany(companyId), flagDao.observe(companyId)) { list, flags ->
+            if (!access.owns(companyId)) return@combine emptyList()
+            val archived = flags.filter { it.discardedAt != null }.mapTo(HashSet()) { it.opportunityId }
+            com.licitaia.domain.model.ArchiveRules.visibleTenders(list.map { it.toDomain() }, archived)
+        }
+
+    override suspend fun archive(tenderId: Long, archived: Boolean) {
+        withContext(Dispatchers.IO) {
+            val tender = tenderDao.getById(tenderId) ?: return@withContext
+            access.requireCompany(tender.companyId)
+            val current = flagDao.get(tender.companyId, tender.opportunityId)
+                ?: com.licitaia.core.data.db.OpportunityFlagEntity(tender.companyId, tender.opportunityId, null, null)
+            flagDao.upsert(current.copy(discardedAt = if (archived) System.currentTimeMillis() else null))
+            audit.record(
+                AuditAction.CADASTRO, portal = tender.portal, tenderNumber = tender.number,
+                details = if (archived) "Licitação arquivada (dados preservados)" else "Licitação desarquivada",
+            )
+        }
+    }
+
+    override fun observeArchived(tenderId: Long): Flow<Boolean> =
+        tenderDao.observeById(tenderId).map { t -> t?.let { it.companyId to it.opportunityId } }.distinctUntilChanged()
+            .flatMapLatest { key ->
+                if (key == null) kotlinx.coroutines.flow.flowOf(false)
+                else flagDao.observe(key.first).map { rows -> rows.any { it.opportunityId == key.second && it.discardedAt != null } }
+            }.distinctUntilChanged()
 
     override fun observeTender(id: Long): Flow<Tender?> =
         tenderDao.observeById(id).map { it?.takeIf { e -> access.owns(e.companyId) }?.toDomain() }
@@ -137,26 +173,36 @@ class TenderRepositoryImpl @Inject constructor(
             }
             val now = System.currentTimeMillis()
             opportunityDao.upsertAll(listOf(opportunity.toEntity(now)))
-            val newId = tenderDao.upsert(opportunity.toTender(companyId, now, editalRegistered = opportunity.editalUrl != null).toEntity())
-            val pncpControl = PncpControlNumbers.fromOpportunityId(opportunity.id)
-            audit.record(
-                AuditAction.ANALISE, portal = opportunity.portal, tenderNumber = opportunity.number,
-                details = "Interesse registrado; edital ${if (opportunity.editalUrl != null) "registrado" else "pendente"}; " +
-                    if (pncpControl != null) "download do edital oficial (PNCP $pncpControl) e análise iniciados" else "análise iniciada",
+            val newId = tenderDao.upsert(
+                opportunity.toTender(companyId, now, editalRegistered = opportunity.editalUrl != null)
+                    .copy(status = com.licitaia.domain.model.InterestFollowUp.INITIAL_STATUS).toEntity(),
             )
-            scope.launch {
-                // Com número de controle PNCP: baixa o edital oficial ANTES da análise para a IA receber o texto real.
-                // Falha no download (sem rede, sem PDF) não impede o interesse nem a análise (metadados); o card mostra o motivo.
-                if (pncpControl != null) {
-                    try {
-                        fetchOfficialEdital(newId)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // já registrado em fetchErrors/auditoria
+            val pncpControl = PncpControlNumbers.fromOpportunityId(opportunity.id)
+            val auto = runCatching { settings.settings.first().autoAnalyzeOnInterest }.getOrDefault(false)
+            val plan = com.licitaia.domain.model.InterestFollowUp.plan(auto, hasPncpControl = pncpControl != null)
+            audit.record(
+                AuditAction.CADASTRO, portal = opportunity.portal, tenderNumber = opportunity.number,
+                details = "Interesse registrado; edital ${if (opportunity.editalUrl != null) "registrado" else "pendente"}; " +
+                    when {
+                        plan.downloadOfficialEdital -> "análise automática ligada: download do edital oficial (PNCP $pncpControl) e análise iniciados"
+                        plan.analyze -> "análise automática ligada: análise iniciada"
+                        else -> "sem análise automática (o usuário pede \"Analisar com IA\")"
+                    },
+            )
+            if (!plan.idle) {
+                scope.launch {
+                    // Com número de controle PNCP: baixa o edital oficial ANTES da análise para a IA receber o texto real.
+                    if (plan.downloadOfficialEdital) {
+                        try {
+                            fetchOfficialEdital(newId)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // já registrado em fetchErrors/auditoria
+                        }
                     }
+                    if (plan.analyze) runAnalysisJob(newId, background = true)
                 }
-                runAnalysis(newId, background = true)
             }
             newId
         }
@@ -183,7 +229,44 @@ class TenderRepositoryImpl @Inject constructor(
     override suspend fun findByOpportunity(companyId: Long, opportunityId: String): Tender? =
         tenderDao.getByOpportunity(companyId, opportunityId)?.takeIf { access.owns(it.companyId) }?.toDomain()
 
-    override suspend fun analyze(tenderId: Long): Result<TenderAnalysis> = runAnalysis(tenderId, background = false)
+    override suspend fun analyze(tenderId: Long): Result<TenderAnalysis> = runAnalysisJob(tenderId, background = false)
+
+    override suspend fun startAnalysis(tenderId: Long) {
+        withContext(Dispatchers.IO) {
+            val tender = tenderDao.getById(tenderId) ?: throw IllegalArgumentException("Licitação não encontrada.")
+            access.requireCompany(tender.companyId, Permission.ANALISAR)
+        }
+        analysisJob(tenderId, background = true)
+    }
+
+    private val analyzingIds = MutableStateFlow<Set<Long>>(emptySet())
+
+    override fun observeAnalyzing(tenderId: Long): Flow<Boolean> = analyzingIds.map { tenderId in it }.distinctUntilChanged()
+
+    /** Registra (ou reaproveita) a análise da licitação no escopo da camada de dados — síncrono, sem esperar. */
+    private fun analysisJob(tenderId: Long, background: Boolean): Deferred<Result<TenderAnalysis>> = synchronized(analysisJobs) {
+        analysisJobs[tenderId]?.takeIf { it.isActive } ?: run {
+            analyzingIds.update { it + tenderId }
+            scope.async(Dispatchers.IO) {
+                try {
+                    runAnalysis(tenderId, background)
+                } finally {
+                    synchronized(analysisJobs) { analysisJobs.remove(tenderId) }
+                    analyzingIds.update { it - tenderId }
+                }
+            }.also { analysisJobs[tenderId] = it }
+        }
+    }
+
+    /** Uma análise por licitação: chamadas repetidas aguardam a mesma (roda no escopo da camada de dados). */
+    private suspend fun runAnalysisJob(tenderId: Long, background: Boolean): Result<TenderAnalysis> {
+        if (!background) {
+            val tender = withContext(Dispatchers.IO) { tenderDao.getById(tenderId) }
+                ?: return Result.failure(IllegalArgumentException("Licitação não encontrada."))
+            runCatching { access.requireCompany(tender.companyId, Permission.ANALISAR) }.onFailure { return Result.failure(it) }
+        }
+        return analysisJob(tenderId, background).await()
+    }
 
     override suspend fun updateStatus(tenderId: Long, status: TenderStatus) {
         withContext(Dispatchers.IO) {
@@ -345,8 +428,10 @@ class TenderRepositoryImpl @Inject constructor(
      * Baixa os documentos (principal primeiro, guardado como o PDF do edital; os demais em arquivo temporário), extrai o
      * texto página a página (OCR local quando escaneado, com limite de páginas) e grava UM texto com os marcadores
      * `=== DOCUMENTO: <tipo — título> (página N) ===` na ordem Edital → TR → Anexos → Minuta → ETP → outros.
-     * Limites: [EditalDocumentBase.MAX_DOCUMENTS] documentos, [MAX_BASE_BYTES] baixados, [EditalDocumentBase.MAX_PAGES_PER_DOC]
-     * páginas por documento, [MAX_OCR_PAGES_TOTAL] páginas de OCR; [DOC_SPACING_MS] entre downloads (não sobrecarrega o PNCP).
+     * Edital e Termo de Referência são lidos INTEIROS (todas as páginas, OCR de todas quando escaneados, nunca cortados
+     * pelo teto de download). Anexos: [EditalDocumentBase.MAX_DOCUMENTS] documentos, [MAX_BASE_BYTES] baixados,
+     * [EditalDocumentBase.MAX_PAGES_PER_DOC] páginas e [EditalDocumentBase.MAX_OCR_PAGES_ANNEXES] páginas de OCR no total;
+     * [DOC_SPACING_MS] entre downloads (não sobrecarrega o PNCP). Roda no escopo da camada de dados (sair da tela não para).
      * Falha num documento não derruba os demais: ele só fica de fora (citado na auditoria).
      */
     private suspend fun buildDocumentBase(tender: Tender, documents: List<OfficialDocument>): Result<EditalImportResult> {
@@ -366,7 +451,8 @@ class TenderRepositoryImpl @Inject constructor(
                 val isMain = index == 0
                 val kind = EditalDocumentBase.classify(doc.title, doc.typeName, doc.typeId)
                     .let { if (isMain && doc.role == OfficialDocument.Role.EDITAL && it == EditalDocKind.OUTRO) EditalDocKind.EDITAL else it }
-                if (downloadedBytes >= MAX_BASE_BYTES) {
+                // Edital e Termo de Referência nunca ficam de fora pelo teto de download (só anexos).
+                if (downloadedBytes >= MAX_BASE_BYTES && !EditalDocumentBase.isCore(kind) && !isMain) {
                     skipped += "${doc.title} (limite total de download)"
                     continue
                 }
@@ -377,19 +463,21 @@ class TenderRepositoryImpl @Inject constructor(
                     editalDownloader.download(doc.url, file)
                     downloadedBytes += file.length()
                     publishProgress(tenderId, EditalImportProgress.Stage.EXTRAINDO, index + 1, list.size)
-                    val extraction = pdfExtractor.extract(file, maxPages = EditalDocumentBase.MAX_PAGES_PER_DOC)
+                    // Edital e Termo de Referência: TODAS as páginas (sem teto); anexos: teto generoso.
+                    val extraction = pdfExtractor.extract(file, maxPages = EditalDocumentBase.maxPagesFor(kind))
                     var pages = extraction.pageTexts.map(EditalTextPreparer::normalize)
                     var ocr = false
                     if (EditalOcrSupport.needsOcr(extraction.scanned, pages.sumOf { EditalOcrSupport.meaningfulChars(it) })) {
-                        val allowance = minOf(OCR_PAGES_PER_DOC, MAX_OCR_PAGES_TOTAL - ocrPages)
+                        val core = EditalDocumentBase.isCore(kind) || isMain
+                        val allowance = if (core) Int.MAX_VALUE else EditalDocumentBase.ocrAllowance(kind, ocrPages)
                         pages = emptyList()
-                        if (allowance <= 0 || (!isMain && kind.priority > EditalDocKind.ANEXO.priority)) {
+                        if (allowance <= 0 || (!core && kind.priority > EditalDocKind.ANEXO.priority)) {
                             skipped += "${doc.title} (escaneado; OCR não executado para economizar tempo)"
                         } else {
                             val result = pdfOcrEngine.recognize(file, maxPages = allowance) { done, total ->
                                 publishProgress(tenderId, EditalImportProgress.Stage.OCR, done, total)
                             }
-                            ocrPages += result.pagesProcessed
+                            if (!core) ocrPages += result.pagesProcessed
                             if (result.usable) {
                                 pages = result.pageTexts.map(EditalTextPreparer::normalize)
                                 ocr = true
@@ -803,11 +891,8 @@ class TenderRepositoryImpl @Inject constructor(
         // ~50 mil tokens: cabe com folga nos modelos atuais (GPT, Claude, Gemini) e cobre editais completos com TR.
         const val MAX_PROMPT_CHARS = 200_000
         const val MIN_PASTED_CHARS = 200
-        /** Teto do que é baixado por licitação ao montar a base de documentos. */
-        const val MAX_BASE_BYTES = 120L * 1024 * 1024
-        /** OCR (lento) por documento escaneado e no total da base. */
-        const val OCR_PAGES_PER_DOC = 40
-        const val MAX_OCR_PAGES_TOTAL = 80
+        /** Teto do que é baixado em ANEXOS ao montar a base de documentos (Edital/TR nunca ficam de fora). */
+        const val MAX_BASE_BYTES = 250L * 1024 * 1024
         /** Espaçamento entre downloads de arquivos do PNCP. */
         const val DOC_SPACING_MS = 400L
     }

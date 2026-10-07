@@ -50,7 +50,8 @@ class PncpConnector internal constructor(
     private val pageDelayMs: Long = DEFAULT_PAGE_DELAY_MS,
     /** Esperas entre retentativas após HTTP 429 sem `Retry-After` (testes usam 0). */
     private val retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS,
-) : PortalConnector, OfficialDocumentSource, OfficialItemsSource, WithdrawnListingSource, com.licitaia.connector.api.OfficialStatusSource {
+) : PortalConnector, OfficialDocumentSource, OfficialItemsSource, WithdrawnListingSource, com.licitaia.connector.api.OfficialStatusSource,
+    com.licitaia.connector.api.OfficialFilesSource {
 
     constructor(
         client: OkHttpClient,
@@ -268,6 +269,19 @@ class PncpConnector internal constructor(
         val ref = PncpControlNumber.parse(pncpControlNumber) ?: return null
         val compra = withRateLimitRetry { api.contratacao(ref) } ?: return null
         return PncpMapper.toBuyer(compra)
+    }
+
+    /** Todos os arquivos ativos da contratação (`/arquivos`), na ordem do PNCP, sem seleção (lista "Arquivos da licitação"). */
+    override suspend fun officialFiles(pncpControlNumber: String): List<com.licitaia.domain.model.OfficialFile> {
+        val ref = PncpControlNumber.parse(pncpControlNumber)
+            ?: throw IllegalArgumentException("Número de controle PNCP inválido: $pncpControlNumber")
+        return withRateLimitRetry { api.documentos(ref) }.mapNotNull(PncpMapper::toOfficialFile)
+    }
+
+    /** `linkSistemaOrigem` da contratação (página da compra no portal de origem), só HTTP(S). */
+    override suspend fun originUrl(pncpControlNumber: String): String? {
+        val ref = PncpControlNumber.parse(pncpControlNumber) ?: return null
+        return PncpMapper.originUrl(withRateLimitRetry { api.contratacao(ref) }?.linkSistemaOrigem)
     }
 
     /** Situação oficial e datas (`/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}`), para a conferência diária. */

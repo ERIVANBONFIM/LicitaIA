@@ -43,6 +43,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -98,6 +99,10 @@ internal fun localToUtcMidnight(localMillis: Long): Long {
 sealed interface OpportunityEvent {
     data class Message(val text: String) : OpportunityEvent
     data class Navigate(val route: String) : OpportunityEvent
+    /** "Abrir no portal" (navegador interno ou externo). */
+    data class Open(val target: com.licitaia.domain.model.PortalLinks.Target?) : OpportunityEvent
+    /** "Ver no PNCP" (navegador externo). */
+    data class External(val url: String) : OpportunityEvent
 }
 
 data class OpportunityListState(
@@ -602,17 +607,46 @@ abstract class OpportunityListViewModel(
         } else {
             tenders.markInterest(companyId, item.opportunity)
             markInterested(item.opportunity.id)
-            _events.tryEmit(OpportunityEvent.Message("Adicionada às Licitações de Interesse. A IA já está analisando o edital."))
+            val auto = viewSettings?.let { s -> runCatching { s.settings.first().autoAnalyzeOnInterest }.getOrDefault(false) } ?: false
+            _events.tryEmit(
+                OpportunityEvent.Message(
+                    if (auto) "Adicionada às Licitações de Interesse. A IA já está analisando o edital."
+                    else "Adicionada às Licitações de Interesse. Toque em \"Analisar\" quando quiser a análise por IA.",
+                ),
+            )
         }
     }
 
-    /** "Analisar" — marca interesse se preciso e abre a análise do edital. */
+    /** "Analisar" — marca interesse se preciso, INICIA a análise (pedido explícito) e abre a tela da análise. */
     fun onAnalyze(item: ScoredOpportunity) = withBusy(item) { companyId ->
         markSeen(companyId, item.opportunity.id)
-        val id = tenders.findByOpportunity(companyId, item.opportunity.id)?.id
-            ?: tenders.markInterest(companyId, item.opportunity)
+        val existing = tenders.findByOpportunity(companyId, item.opportunity.id)
+        val id = existing?.id ?: tenders.markInterest(companyId, item.opportunity)
         markInterested(item.opportunity.id)
+        val alreadyAnalyzed = existing != null && tenders.observeAnalysis(id).first() != null
+        if (!alreadyAnalyzed) tenders.startAnalysis(id)
         _events.tryEmit(OpportunityEvent.Navigate(Routes.tenderAnalysis(id)))
+    }
+
+    /** Links oficiais (`linkSistemaOrigem`) consultados na hora quando o item não os traz. null = sem consulta. */
+    protected open val officialLinks: com.licitaia.domain.model.OfficialLinksRepository? get() = null
+
+    /** "Abrir no portal": Comprasnet com pesquisa da compra; demais pela URL oficial da compra. */
+    fun openPortal(item: ScoredOpportunity) {
+        val op = item.opportunity
+        viewModelScope.launch {
+            val compras = com.licitaia.domain.model.PortalLinks.comprasTarget(op.portal, com.licitaia.domain.model.UasgCode.of(op), op.number, op.modality)
+            val origin = if (op.portal == com.licitaia.domain.model.Portal.COMPRAS_GOV) null
+            else op.originUrl ?: runCatching { officialLinks?.originUrl(op.id) }.getOrNull()
+            val target = com.licitaia.domain.model.PortalLinks.openTarget(op.portal, origin, compras, com.licitaia.domain.model.PortalLinks.pncpPageUrl(op.id))
+            _events.tryEmit(OpportunityEvent.Open(target))
+        }
+    }
+
+    /** "Ver no PNCP". */
+    fun openPncp(item: ScoredOpportunity) {
+        val url = com.licitaia.domain.model.PortalLinks.pncpPageUrl(item.opportunity.id)
+        _events.tryEmit(if (url != null) OpportunityEvent.External(url) else OpportunityEvent.Message("Esta licitação não tem página no PNCP."))
     }
 
     private fun markInterested(opportunityId: String) = _list.update { state ->

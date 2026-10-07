@@ -44,6 +44,8 @@ class TenderPhaseWatcher @Inject constructor(
         for (t in tracked) {
             val tenderId = t.tenderId ?: continue
             val tender = tenderDao.getById(tenderId)?.takeIf { it.companyId == companyId } ?: continue
+            // Arquivada: sem conferência de fase nem aviso (os dados continuam guardados).
+            if (runCatching { flagDao.get(companyId, tender.opportunityId)?.discardedAt != null }.getOrDefault(false)) continue
             val status = try {
                 source.officialStatus(t.controlNumber)
             } catch (e: CancellationException) {

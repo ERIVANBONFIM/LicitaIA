@@ -2,6 +2,23 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.5.2] — 2026-10-07
+
+### Alterado
+- "Tenho interesse" não dispara mais análise por IA: a licitação abre com os dados da fonte e a análise só roda
+  ao tocar em "Analisar com IA" (opção em Configurações > IA para voltar ao automático).
+- "Descartar" virou "Arquivar"; licitações de interesse também podem ser arquivadas (dados preservados).
+
+### Adicionado
+- Menu "Licitações arquivadas" com busca, Desarquivar e Abrir.
+- Concorrentes reais: em "Vale a pena participar?" a concorrência abre a lista com nome, CNPJ, vitórias, valor e
+  desconto médios (resultados públicos do PNCP, mesmo órgão e segmento) e "Buscar concorrentes agora".
+- "Abrir no portal" (Compras.gov.br no navegador do app, indo até a compra; BLL/Licitanet/PCP pelo link oficial)
+  e "Ver no PNCP", na licitação e no card da busca.
+- Arquivos oficiais da licitação (edital, termo de referência, anexos…) com Baixar, Abrir, Copiar link e Compartilhar.
+- Pergunte ao edital lê o Edital e o Termo de Referência inteiros (OCR de todas as páginas) e envia a base completa
+  quando cabe; mostra a cobertura lida.
+
 ## [0.5.1] — 2026-10-07
 
 ### Adicionado

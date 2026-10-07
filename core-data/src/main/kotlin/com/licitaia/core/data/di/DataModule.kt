@@ -145,5 +145,9 @@ abstract class DataBindingsModule {
     @Binds abstract fun tenderItemsRepository(impl: com.licitaia.core.data.repository.TenderItemsRepositoryImpl): com.licitaia.domain.repository.TenderItemsRepository
     /** v14: descartadas/vistas por empresa e selo "Nova". */
     @Binds abstract fun opportunityFlagsRepository(impl: com.licitaia.core.data.repository.OpportunityFlagsRepositoryImpl): com.licitaia.domain.repository.OpportunityFlagsRepository
+    /** Arquivos oficiais e links ("Abrir no portal", "Ver no PNCP") por licitação, com cache no DataStore. */
+    @Binds abstract fun officialLinksRepository(impl: com.licitaia.core.data.repository.OfficialLinksRepositoryImpl): com.licitaia.domain.model.OfficialLinksRepository
+    /** "Licitações arquivadas" (marca de v14, sem coluna nova). */
+    @Binds abstract fun archiveRepository(impl: com.licitaia.core.data.repository.ArchiveRepositoryImpl): com.licitaia.domain.model.ArchiveRepository
     @Binds abstract fun listingRowStore(impl: com.licitaia.core.data.repository.RoomListingRowStore): com.licitaia.connector.api.ListingRowStore
 }

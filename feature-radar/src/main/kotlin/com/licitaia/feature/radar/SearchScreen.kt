@@ -84,7 +84,10 @@ class SearchViewModel @Inject constructor(
     private val daily: DailySyncRepository,
     private val settings: SettingsRepository,
     private val flags: OpportunityFlagsRepository,
+    private val links: com.licitaia.domain.model.OfficialLinksRepository,
 ) : OpportunityListViewModel(auth, tenders, connectivity) {
+
+    override val officialLinks: com.licitaia.domain.model.OfficialLinksRepository get() = links
 
     override val dailySync: DailySyncRepository get() = daily
 

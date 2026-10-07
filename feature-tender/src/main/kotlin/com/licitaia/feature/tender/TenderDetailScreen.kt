@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Balance
@@ -55,6 +57,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.components.AlertBanner
+import com.licitaia.core.ui.components.OfficialLinksUi
 import com.licitaia.core.ui.components.ButtonRow
 import com.licitaia.core.ui.components.ErrorState
 import com.licitaia.core.ui.components.GradientCard
@@ -84,7 +87,12 @@ import com.licitaia.domain.model.Tender
 import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
 import com.licitaia.domain.model.UserRole
+import com.licitaia.domain.model.OfficialLinks
+import com.licitaia.domain.model.OfficialLinksRepository
+import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.PortalLinks
 import com.licitaia.domain.model.pncpControlNumber
+import kotlinx.coroutines.flow.first
 import com.licitaia.domain.repository.AiConfigRepository
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompetitionRepository
@@ -138,6 +146,10 @@ data class TenderDetailState(
     val officialEditalError: String? = null,
     /** Provedor de IA que o app usa agora (MOCK = nenhum provedor real disponível). */
     val activeAi: AiProviderType = AiProviderType.MOCK,
+    /** Arquivos oficiais e links da compra (cache por licitação). */
+    val links: OfficialLinks? = null,
+    val linksLoading: Boolean = false,
+    val linksError: String? = null,
 ) {
     val canAnalyze: Boolean get() = role?.let { Rbac.can(it, Permission.ANALISAR) } ?: false
     /** Pode criar/operar sessões assistidas (mesma regra do FAB "Acompanhar pregão" em Pregões ao Vivo). */
@@ -161,6 +173,7 @@ class TenderDetailViewModel @Inject constructor(
     private val competition: CompetitionRepository,
     private val liveSessions: LiveSessionManager,
     aiConfig: AiConfigRepository,
+    private val officialLinks: OfficialLinksRepository,
 ) : ViewModel() {
 
     private val tenderId: Long = savedStateHandle.longArg("tenderId") ?: -1L
@@ -212,6 +225,16 @@ class TenderDetailViewModel @Inject constructor(
 
     private val activeAi = aiConfig.observeEffective().catch { emit(AiProviderType.MOCK) }
 
+    private data class LinksUi(val links: OfficialLinks? = null, val loading: Boolean = false, val error: String? = null)
+
+    private val linksFlags = MutableStateFlow(LinksUi())
+
+    private val linksState = tenders.observeTender(tenderId)
+        .map { it?.opportunityId }
+        .distinctUntilChanged()
+        .flatMapLatest { opp -> if (opp == null) flowOf(null) else officialLinks.observe(opp).catch { emit(null) } }
+        .combine(linksFlags) { cached, f -> f.copy(links = cached) }
+
     val state: StateFlow<TenderDetailState> = combine(remote, flags, progress, liveSessionId, officialError) { s, f, p, live, official ->
         s.copy(
             // Uma importação/OCR que continua em segundo plano (após sair e voltar à tela) também conta como "importando".
@@ -219,7 +242,56 @@ class TenderDetailViewModel @Inject constructor(
             importProgress = p, savingResult = f.savingResult, liveSessionId = live, officialEditalError = official,
         )
     }.combine(activeAi) { s, ai -> s.copy(activeAi = ai) }
+        .combine(tenders.observeAnalyzing(tenderId).catch { emit(false) }) { s, busy -> s.copy(analyzing = s.analyzing || busy) }
+        .combine(linksState) { s, l -> s.copy(links = l.links, linksLoading = l.loading, linksError = l.error) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderDetailState())
+
+    // ------------------------------------------------------------------ arquivos oficiais e "Abrir no portal"
+
+    /** Arquivada (sai das listas, avisos e robôs; nada é apagado). */
+    val archived: StateFlow<Boolean> = tenders.observeArchived(tenderId).catch { emit(false) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    fun toggleArchive() {
+        val to = !archived.value
+        viewModelScope.launch {
+            runCatching { tenders.archive(tenderId, to) }
+                .onSuccess { _messages.tryEmit(if (to) "Licitação arquivada: some das listas e avisos (dados preservados). Veja em \"Licitações arquivadas\"." else "Licitação desarquivada.") }
+                .onFailure { _messages.tryEmit(it.message ?: "Não foi possível arquivar.") }
+        }
+    }
+
+    private var linksAutoLoaded = false
+
+    /** Lista os arquivos oficiais (cache por licitação); a 1ª abertura sem cache consulta o PNCP uma vez. */
+    fun loadLinksIfNeeded() {
+        if (linksAutoLoaded) return
+        linksAutoLoaded = true
+        viewModelScope.launch {
+            val tender = state.first { !it.loading }.tender ?: return@launch
+            if (tender.pncpControlNumber == null) return@launch
+            if (officialLinks.observe(tender.opportunityId).first() == null) refreshLinks()
+        }
+    }
+
+    /** "Atualizar" a lista de arquivos oficiais. */
+    fun refreshLinks() {
+        val tender = state.value.tender ?: return
+        if (linksFlags.value.loading) return
+        linksFlags.update { it.copy(loading = true, error = null) }
+        viewModelScope.launch {
+            val r = try { officialLinks.refresh(tender.opportunityId) } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
+            linksFlags.update { it.copy(loading = false, error = r.exceptionOrNull()?.let { e -> e.message ?: "Não foi possível listar os arquivos no PNCP." }) }
+        }
+    }
+
+    /** Destino do "Abrir no portal" (consulta o `linkSistemaOrigem` quando ainda não está no cache). */
+    suspend fun portalTarget(): PortalLinks.Target? {
+        val t = state.value.tender ?: return null
+        val compras = PortalLinks.comprasTarget(t.portal, t.uasg, t.number, t.modality)
+        val origin = if (t.portal == Portal.COMPRAS_GOV || t.isManual) null else officialLinks.originUrl(t.opportunityId)
+        return PortalLinks.openTarget(t.portal, origin, compras, PortalLinks.pncpPageUrl(t.opportunityId))
+    }
 
     /** Baixa o edital oficial publicado no PNCP (com anexos relevantes) e extrai o texto; o erro fica no card. */
     fun fetchOfficialEdital() {
@@ -357,7 +429,7 @@ class TenderDetailViewModel @Inject constructor(
         flags.update { it.copy(analyzing = true, editalError = null) }
         viewModelScope.launch {
             val result = try {
-                tenders.analyze(tenderId)
+                tenders.analyzeWithOfficialEdital(state.value.tender, tenderId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -385,7 +457,21 @@ fun TenderDetailScreen(viewModel: TenderDetailViewModel = hiltViewModel()) {
     LaunchedEffect(viewModel) { viewModel.messages.collect(navigator::showMessage) }
 
     val tender = state.tender
-    LicitaScaffold(title = tender?.number ?: "Licitação", showBack = true) { padding ->
+    val archived by viewModel.archived.collectAsStateWithLifecycle()
+    LicitaScaffold(
+        title = tender?.number ?: "Licitação",
+        showBack = true,
+        actions = {
+            if (tender != null) {
+                androidx.compose.material3.IconButton(onClick = viewModel::toggleArchive) {
+                    Icon(
+                        if (archived) Icons.Outlined.Unarchive else Icons.Outlined.Archive,
+                        contentDescription = if (archived) "Desarquivar licitação" else "Arquivar licitação",
+                    )
+                }
+            }
+        },
+    ) { padding ->
         when {
             state.loading -> SkeletonList(Modifier.padding(padding))
             state.notFound || tender == null -> ErrorState(
@@ -401,6 +487,7 @@ fun TenderDetailScreen(viewModel: TenderDetailViewModel = hiltViewModel()) {
 private fun TenderDetailContent(state: TenderDetailState, tender: Tender, padding: PaddingValues, viewModel: TenderDetailViewModel) {
     val navigator = LocalAppNavigator.current
     val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val analysis = state.analysis
     val onToggle: (Int) -> Unit = viewModel::toggleChecklist
     var pasteOpen by remember { mutableStateOf(false) }
@@ -463,6 +550,11 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 FlowTimeline(completedSteps(tender, analysis, state.proposals))
             }
         }
+        item(key = "portal") {
+            PortalLinksCard(tender, state.links, onOpenPortal = {
+                scope.launch { OfficialLinksUi.open(navigator, context, viewModel.portalTarget()) }
+            })
+        }
         val deadlineTone = deadlineTone(tender.proposalDeadline)
         if (deadlineTone == Tone.DANGER || deadlineTone == Tone.WARNING) {
             item(key = "deadline") {
@@ -484,6 +576,15 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 onAnalyze = viewModel::analyze,
             )
         }
+        if (tender.pncpControlNumber != null) {
+            item(key = "files") {
+                LaunchedEffect(tender.id) { viewModel.loadLinksIfNeeded() }
+                OfficialFilesCard(
+                    links = state.links, loading = state.linksLoading, error = state.linksError,
+                    onRefresh = viewModel::refreshLinks,
+                )
+            }
+        }
         if (tender.status.isParticipation()) {
             item(key = "result") {
                 ResultCard(tender, state, onRegister = { won -> resultDialog = won })
@@ -491,11 +592,15 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
         }
         item(key = "recommendation") {
             if (analysis == null) {
-                val waiting = state.analyzing || tender.status == TenderStatus.EM_ANALISE || (!tender.isManual && tender.status == TenderStatus.INTERESSE)
+                // Só "analisando" quando há análise realmente em andamento (pedida pelo usuário).
+                val waiting = state.analyzing || tender.status == TenderStatus.EM_ANALISE
                 LicitaCard(Modifier.fillMaxWidth(), onClick = { navigator.navigate(Routes.tenderAnalysis(tender.id)) }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (waiting) {
                             PulsingDot(LicitaColors.Blue, size = 10.dp)
+                            Spacer(Modifier.width(10.dp))
+                        } else {
+                            IconBubble(Icons.Outlined.AutoAwesome, LicitaColors.Purple, size = 36.dp)
                             Spacer(Modifier.width(10.dp))
                         }
                         Column(Modifier.weight(1f)) {
@@ -503,14 +608,25 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                                 Text("IA analisando o edital…", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
                                 Text("A recomendação e a faixa de preço aparecem aqui ao final da análise.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
                             } else {
-                                Text("Sem análise", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                                Text("Análise por IA ainda não feita", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
                                 Text(
-                                    if (tender.hasEditalText) "Toque em \"Analisar com IA\" no card Edital." else "Importe o PDF do edital (ou cole o texto) e analise com IA.",
+                                    when {
+                                        tender.hasEditalText -> "O edital está salvo. A IA só analisa quando você pedir."
+                                        tender.pncpControlNumber != null -> "A IA só analisa quando você pedir; o edital oficial do PNCP é baixado antes."
+                                        else -> "Importe o PDF do edital (ou cole o texto) para uma análise com o documento real."
+                                    },
                                     style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                                 )
                             }
                         }
                         Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = LicitaColors.TextMuted)
+                    }
+                    if (!waiting && state.canAnalyze) {
+                        Spacer(Modifier.height(10.dp))
+                        PrimaryButton(
+                            "Analisar com IA", viewModel::analyze, Modifier.fillMaxWidth(),
+                            enabled = !state.importing, icon = Icons.Outlined.AutoAwesome,
+                        )
                     }
                 }
             } else {

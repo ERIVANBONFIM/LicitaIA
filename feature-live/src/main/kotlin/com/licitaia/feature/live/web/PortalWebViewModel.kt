@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -80,9 +81,28 @@ class PortalWebViewModel @Inject constructor(
     val webViews: PortalWebViewHolder,
     /** Robôs do Comprasnet: banner "robô parado/aguardando você" sobre a página e "Mapear esta tela". */
     val robots: com.licitaia.feature.live.automation.PortalRobotEngine,
+    /** Aba retida do Comprasnet (mesma navegação do robô) para "Abrir no portal" levar até a compra. */
+    private val gate: com.licitaia.feature.live.automation.PortalSessionGate,
 ) : ViewModel() {
 
     val portal: Portal? = savedStateHandle.get<String>("portal")?.let { name -> Portal.entries.firstOrNull { it.name == name } }
+
+    /**
+     * "Abrir no portal" com destino: URL oficial da compra (só se for do próprio portal e puder ser aberta por link).
+     * null = abertura normal (login / última página).
+     */
+    val targetUrl: String? = savedStateHandle.get<String>("url")?.takeIf { u ->
+        val p = portal ?: return@takeIf false
+        com.licitaia.domain.model.PortalLinks.belongsTo(p, u) && PortalWebPolicy.isAllowed(p, u) && PortalWebPolicy.canLoadDirectly(p, u)
+    }
+
+    /** Compra do Compras.gov.br a pesquisar e abrir ("Todas as compras" → UASG + número → "Acompanhar compra"). */
+    val comprasTarget: com.licitaia.domain.model.PortalLinks.ComprasTarget? = run {
+        if (portal != Portal.COMPRAS_GOV) return@run null
+        val uasg = savedStateHandle.get<String>("uasg")?.filter(Char::isDigit)?.takeIf { it.isNotEmpty() } ?: return@run null
+        val (n, y) = savedStateHandle.get<String>("numero")?.let { com.licitaia.domain.model.PortalLinks.splitNumber(it) } ?: return@run null
+        com.licitaia.domain.model.PortalLinks.ComprasTarget(uasg.padStart(6, '0'), n, y, savedStateHandle.get<String>("modalidade").orEmpty())
+    }
 
     private val busy = MutableStateFlow(false)
     private val _events = Channel<String>(Channel.BUFFERED)
@@ -104,6 +124,61 @@ class PortalWebViewModel @Inject constructor(
 
     init {
         keepAlive.start()
+    }
+
+    private val _purchaseSearch = MutableStateFlow<String?>(null)
+    /** Faixa "Abrindo a compra UASG … nº …" enquanto o app pesquisa a compra; null = nada em andamento. */
+    val purchaseSearch: StateFlow<String?> = _purchaseSearch
+
+    /**
+     * Reaproveita a navegação do robô: espera a área logada (o usuário pode precisar entrar), abre "Compras eletrônicas"
+     * pelo menu do portal e pesquisa UASG + número em "Todas as compras" → "Acompanhar compra". Só leitura/cliques de
+     * navegação; nada é marcado nem enviado. Para sozinho em 5 min sem login ou ao sair da tela.
+     */
+    private fun openComprasPurchase(t: com.licitaia.domain.model.PortalLinks.ComprasTarget) {
+        viewModelScope.launch {
+            val label = "UASG ${t.uasg} · nº ${t.numberYear}"
+            _purchaseSearch.value = "Abrindo a compra $label… (entre no portal se ele pedir login)"
+            try {
+                val companyId = state.first { it.ready && it.companyId != null }.companyId ?: return@launch
+                val deadline = System.currentTimeMillis() + LOGIN_WAIT_MS
+                var logged = false
+                while (System.currentTimeMillis() < deadline) {
+                    if (runCatching { gate.isLoggedNow(companyId) }.getOrDefault(false)) { logged = true; break }
+                    delay(2_000)
+                }
+                if (!logged) {
+                    _events.send("Entre no Comprasnet e depois procure a compra $label em Compras eletrônicas → Todas as compras.")
+                    return@launch
+                }
+                delay(SETTLE_MS) // deixa a tela concluir o clique automático em "Licitação e Dispensa (novo)"
+                val owner = "abrir a compra"
+                gate.claimTab(owner)?.let { other ->
+                    _events.send("A aba do Comprasnet está em uso ($other). Abra a compra $label manualmente.")
+                    return@launch
+                }
+                try {
+                    when (val r = gate.ensureElectronic(companyId, allowAutoLogin = false)) {
+                        com.licitaia.feature.live.automation.PortalSessionGate.Result.Electronic -> Unit
+                        is com.licitaia.feature.live.automation.PortalSessionGate.Result.NotLogged -> { _events.send(r.reason); return@launch }
+                        is com.licitaia.feature.live.automation.PortalSessionGate.Result.Failed -> { _events.send(r.reason); return@launch }
+                        else -> { _events.send("Não foi possível abrir Compras eletrônicas agora."); return@launch }
+                    }
+                    val nav = com.licitaia.feature.live.automation.SpaNavigator(gate.driver(companyId))
+                    val error = nav.openPurchase(
+                        com.licitaia.feature.live.automation.SpaNavigator.Purchase(t.uasg, t.modality, t.number, t.year),
+                    )
+                    _events.send(
+                        error?.let { "Não consegui abrir a compra $label ($it). Pesquise em Compras eletrônicas → Todas as compras." }
+                            ?: "Compra $label aberta.",
+                    )
+                } finally {
+                    gate.releaseTab(owner)
+                }
+            } finally {
+                _purchaseSearch.value = null
+            }
+        }
     }
 
     val state: StateFlow<PortalWebUiState> = auth.session.flatMapLatest { session ->
@@ -449,10 +524,18 @@ class PortalWebViewModel @Inject constructor(
     private companion object {
         const val OPTIMISTIC_WINDOW_MS = 15_000L
         const val EXPIRE_CONFIRM_MS = 3_000L
+        /** Espera pelo login do usuário antes de desistir de abrir a compra. */
+        const val LOGIN_WAIT_MS = 5L * 60 * 1000
+        const val SETTLE_MS = 4_000L
     }
 
     /** "Mapear esta tela": snapshot estrutural da página atual da aba retida (modo mapear do robô). */
     fun mapScreen(companyId: Long, onDone: (Boolean) -> Unit) {
         viewModelScope.launch { onDone(robots.mapCurrentScreen(companyId)) }
+    }
+
+    // Último inicializador da classe: todos os campos usados pela pesquisa da compra já existem.
+    init {
+        comprasTarget?.let(::openComprasPurchase)
     }
 }

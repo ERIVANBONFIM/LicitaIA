@@ -67,23 +67,33 @@ class PncpResultsSource internal constructor(
         // As mais recentes ainda não têm resultado: a janela termina alguns dias antes de hoje.
         val dataFinal = PncpMapper.queryDate(now - RECENT_GAP_DAYS * DAY_MS)
 
+        val agency = CompetitorRanking.digits(query.agencyCnpj).takeIf { it.length == 14 }
+        // Concorrentes de um órgão: pregões e dispensas DELE (filtro `cnpj` da API), sem filtro de UF.
+        val modalities = if (agency != null) listOf(PncpModalities.PREGAO_ELETRONICO, PncpModalities.DISPENSA) else listOf(PncpModalities.PREGAO_ELETRONICO)
+        val ufFilter = if (agency != null) emptyList() else ufs
         val matches = LinkedHashMap<String, PncpContratacao>()
         var partial = false
         try {
-            var page = 1
-            while (page <= MAX_MARKET_PAGES && matches.size < query.maxContracts) {
-                val result = call {
-                    api.contratacoesPorPublicacao(
-                        dataInicial = dataInicial, dataFinal = dataFinal, codigoModalidade = PncpModalities.PREGAO_ELETRONICO,
-                        uf = ufs.singleOrNull(), pagina = page, tamanhoPagina = PncpApi.MAX_PAGE_SIZE,
-                    )
+            for (modality in modalities) {
+                var page = 1
+                while (page <= MAX_MARKET_PAGES && matches.size < query.maxContracts) {
+                    val result = call {
+                        api.contratacoesPorPublicacao(
+                            dataInicial = dataInicial, dataFinal = dataFinal, codigoModalidade = modality,
+                            uf = ufFilter.singleOrNull(), pagina = page, tamanhoPagina = PncpApi.MAX_PAGE_SIZE, cnpjOrgao = agency,
+                        )
+                    }
+                    result.data
+                        .filter { agency == null || CompetitorRanking.digits(it.orgaoEntidade?.cnpj).ifEmpty { agency } == agency }
+                        .filter { isMarketCandidate(it, keywords, ufFilter) }
+                        .forEach { dto ->
+                            val raw = dto.numeroControlePNCP ?: return@forEach
+                            if (matches.size < query.maxContracts) matches.putIfAbsent(raw, dto)
+                        }
+                    if (result.data.isEmpty() || result.paginasRestantes <= 0) break
+                    page++
                 }
-                result.data.filter { isMarketCandidate(it, keywords, ufs) }.forEach { dto ->
-                    val raw = dto.numeroControlePNCP ?: return@forEach
-                    if (matches.size < query.maxContracts) matches.putIfAbsent(raw, dto)
-                }
-                if (result.data.isEmpty() || result.paginasRestantes <= 0) break
-                page++
+                if (matches.size >= query.maxContracts) break
             }
         } catch (e: RateLimited) {
             partial = true

@@ -96,7 +96,26 @@ class AiSettingsViewModel @Inject constructor(
     private val googleAuth: GoogleAiAuthorizer,
     private val chatGpt: ChatGptAuthorizer,
     private val connectivity: ConnectivityMonitor,
+    private val appSettings: com.licitaia.domain.repository.SettingsRepository,
 ) : ViewModel() {
+
+    /** "Analisar automaticamente ao marcar interesse" (padrão desligado). */
+    val autoAnalyzeOnInterest: kotlinx.coroutines.flow.StateFlow<Boolean> = appSettings.settings.map { it.autoAnalyzeOnInterest }
+        .catch { emit(false) }
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000), false)
+
+    fun setAutoAnalyzeOnInterest(enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { appSettings.update { it.copy(autoAnalyzeOnInterest = enabled) } }
+                .onSuccess {
+                    _events.send(
+                        if (enabled) "Ao marcar interesse, o app baixa o edital e analisa com IA automaticamente."
+                        else "A análise por IA só roda quando você pedir.",
+                    )
+                }
+                .onFailure { _events.send(it.message ?: "Não foi possível salvar a preferência.") }
+        }
+    }
 
     private val local = MutableStateFlow(AiSettingsUiState())
     private val _events = Channel<String>(Channel.BUFFERED)

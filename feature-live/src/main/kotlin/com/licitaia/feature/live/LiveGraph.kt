@@ -24,5 +24,12 @@ fun NavGraphBuilder.liveGraph() {
     // Rota legada (por sessão de pregão): redireciona para o navegador do portal da sessão.
     composable(Routes.WEBVIEW, arguments = sessionArg) { WebViewScreen() }
     // Navegador interno do portal (login manual, cookies persistentes, perfil por empresa).
-    composable(Routes.PORTAL_WEB, arguments = listOf(navArgument("portal") { type = NavType.StringType })) { PortalWebViewScreen() }
+    // Argumentos opcionais (?url=&uasg=&numero=&modalidade=): "Abrir no portal" a partir da licitação/busca.
+    composable(
+        Routes.PORTAL_WEB_TARGET,
+        arguments = listOf(navArgument("portal") { type = NavType.StringType }) +
+            listOf("url", "uasg", "numero", "modalidade").map { name ->
+                navArgument(name) { type = NavType.StringType; nullable = true; defaultValue = null }
+            },
+    ) { PortalWebViewScreen() }
 }

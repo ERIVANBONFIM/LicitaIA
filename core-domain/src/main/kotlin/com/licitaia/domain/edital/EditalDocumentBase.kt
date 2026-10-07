@@ -47,14 +47,42 @@ data class EditalDocumentBaseResult(
  * página e permite listar, a partir do próprio texto salvo, quais documentos estão na base. Puro: testável em JVM.
  */
 object EditalDocumentBase {
-    /** Teto do texto da base (~300 mil tokens; o recorte por pergunta envia só os trechos relevantes). */
-    const val DEFAULT_MAX_CHARS = 1_200_000
+    /** Teto do texto da base (~500 mil tokens; quando não cabe no provedor, o recorte por pergunta envia os trechos). */
+    const val DEFAULT_MAX_CHARS = 2_000_000
 
-    /** Páginas lidas por documento (o restante é ignorado e o documento fica marcado como cortado). */
-    const val MAX_PAGES_PER_DOC = 120
+    /** Páginas lidas por ANEXO (Edital e Termo de Referência são lidos INTEIROS — ver [maxPagesFor]). */
+    const val MAX_PAGES_PER_DOC = 300
 
     /** Documentos baixados por licitação. */
-    const val MAX_DOCUMENTS = 12
+    const val MAX_DOCUMENTS = 20
+
+    /** OCR (lento) por anexo escaneado e no total dos anexos; Edital e TR escaneados têm OCR de TODAS as páginas. */
+    const val OCR_PAGES_PER_ANNEX = 60
+    const val MAX_OCR_PAGES_ANNEXES = 150
+
+    /** Edital e Termo de Referência (e Projeto Básico, que faz as vezes do TR) são sempre lidos por inteiro. */
+    fun isCore(kind: EditalDocKind): Boolean =
+        kind == EditalDocKind.EDITAL || kind == EditalDocKind.TERMO_REFERENCIA || kind == EditalDocKind.PROJETO_BASICO
+
+    /** Páginas a extrair do documento: sem teto para Edital/TR; [MAX_PAGES_PER_DOC] para os demais. */
+    fun maxPagesFor(kind: EditalDocKind): Int = if (isCore(kind)) Int.MAX_VALUE else MAX_PAGES_PER_DOC
+
+    /** Páginas de OCR permitidas para o documento, dado o que os anexos já consumiram. */
+    fun ocrAllowance(kind: EditalDocKind, annexOcrUsed: Int): Int =
+        if (isCore(kind)) Int.MAX_VALUE else minOf(OCR_PAGES_PER_ANNEX, MAX_OCR_PAGES_ANNEXES - annexOcrUsed).coerceAtLeast(0)
+
+    /**
+     * Cobertura para o card de Perguntas: "Edital 56 pág ✓ · Termo de Referência 23 pág ✓ · 3 anexos". ✓ = lido
+     * inteiro; "(parcial)" = cortado por limite.
+     */
+    fun coverage(entries: List<EditalBaseEntry>): String {
+        if (entries.isEmpty()) return ""
+        val core = entries.filter { isCore(it.kind) }.joinToString(" · ") { e ->
+            "${e.kind.label} ${e.pagesIncluded} pág " + if (e.truncated) "(parcial)" else "✓"
+        }
+        val others = entries.count { !isCore(it.kind) }
+        return listOfNotNull(core.takeIf { it.isNotEmpty() }, if (others > 0) "$others ${if (others == 1) "anexo" else "anexos"}" else null).joinToString(" · ")
+    }
 
     /** Sobra mínima para valer a pena incluir uma página cortada. */
     private const val MIN_PARTIAL_PAGE_CHARS = 1_500
@@ -126,8 +154,10 @@ object EditalDocumentBase {
                 continue
             }
             var pagesIncluded = 0
-            var truncated = doc.pages.size > maxPagesPerDoc || doc.totalPages > doc.pages.size
-            for ((index, raw) in doc.pages.take(maxPagesPerDoc).withIndex()) {
+            // Edital/TR: todas as páginas; anexos: até [maxPagesPerDoc].
+            val pageCap = if (isCore(doc.kind)) Int.MAX_VALUE else maxPagesPerDoc
+            var truncated = doc.pages.size > pageCap || doc.totalPages > doc.pages.size
+            for ((index, raw) in doc.pages.take(pageCap).withIndex()) {
                 val pageText = raw.trim()
                 if (pageText.isEmpty() || pageText == EMPTY_OCR_PAGE) continue
                 val header = marker(name, index + 1)

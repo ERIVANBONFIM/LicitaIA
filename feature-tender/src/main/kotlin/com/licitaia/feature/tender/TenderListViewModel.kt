@@ -71,6 +71,12 @@ class TenderListViewModel @Inject constructor(
     val state: StateFlow<TenderListState> = combine(rows, busy) { s, b -> s.copy(busy = b) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderListState())
 
+    /** "Arquivar": some desta lista, dos avisos e robôs; tudo fica guardado em "Licitações arquivadas". */
+    fun archive(tender: Tender) = withBusy(tender.id, "Não foi possível arquivar a licitação.") {
+        tenders.archive(tender.id, true)
+        _messages.tryEmit("${tender.number} arquivada (dados preservados). Veja em \"Licitações arquivadas\".")
+    }
+
     fun removeInterest(tender: Tender) = withBusy(tender.id, "Não foi possível remover a licitação.") {
         tenders.removeInterest(tender.id)
         _messages.tryEmit("${tender.number} removida das licitações de interesse")

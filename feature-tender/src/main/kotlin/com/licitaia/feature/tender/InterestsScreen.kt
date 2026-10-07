@@ -1,5 +1,7 @@
 package com.licitaia.feature.tender
 
+import androidx.compose.material.icons.outlined.Archive
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -94,6 +96,7 @@ fun InterestsScreen(viewModel: TenderListViewModel = hiltViewModel()) {
                             modifier = Modifier.animateItem(),
                             onClick = { navigator.navigate(Routes.tender(row.tender.id)) },
                             onRemove = { toRemove = row.tender },
+                            onArchive = { viewModel.archive(row.tender) },
                         )
                     }
                 }
@@ -115,7 +118,7 @@ fun InterestsScreen(viewModel: TenderListViewModel = hiltViewModel()) {
 }
 
 @Composable
-private fun InterestCard(row: TenderRow, modifier: Modifier, onClick: () -> Unit, onRemove: () -> Unit) {
+private fun InterestCard(row: TenderRow, modifier: Modifier, onClick: () -> Unit, onRemove: () -> Unit, onArchive: () -> Unit) {
     val tender = row.tender
     val analysis = row.analysis
     LicitaCard(modifier.fillMaxWidth(), onClick = onClick, accent = analysis?.recommendation?.tone()?.color()) {
@@ -128,6 +131,9 @@ private fun InterestCard(row: TenderRow, modifier: Modifier, onClick: () -> Unit
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (analysis != null) {
                 StatusBadge(analysis.recommendation.label, analysis.recommendation.tone())
+            } else if (tender.status != com.licitaia.domain.model.TenderStatus.EM_ANALISE) {
+                // Nada é analisado sem pedido: só o selo neutro.
+                StatusBadge("Sem análise por IA", Tone.NEUTRAL)
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     PulsingDot(LicitaColors.Blue, size = 8.dp)
@@ -138,6 +144,9 @@ private fun InterestCard(row: TenderRow, modifier: Modifier, onClick: () -> Unit
             Spacer(Modifier.width(8.dp))
             StatusBadge(deadlineLabel(tender.proposalDeadline), deadlineTone(tender.proposalDeadline))
             Spacer(Modifier.weight(1f))
+            IconButton(onClick = onArchive) {
+                Icon(Icons.Outlined.Archive, contentDescription = "Arquivar licitação", tint = LicitaColors.TextMuted)
+            }
             IconButton(onClick = onRemove) {
                 Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remover interesse", tint = LicitaColors.TextMuted)
             }

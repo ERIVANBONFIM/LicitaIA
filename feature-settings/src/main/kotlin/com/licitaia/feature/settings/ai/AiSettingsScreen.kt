@@ -235,6 +235,22 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
                             onSelect = viewModel::setEditDeviceDefault,
                         )
                     }
+                    val autoAnalyze by viewModel.autoAnalyzeOnInterest.collectAsStateWithLifecycle()
+                    SectionHeader("Quando analisar")
+                    com.licitaia.core.ui.components.LicitaCard(Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Analisar automaticamente ao marcar interesse", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                                Text(
+                                    if (autoAnalyze) "Ligado: o \"Tenho interesse\" baixa o edital oficial e já pede a análise à IA (usa cota do provedor)."
+                                    else "Desligado (padrão): a licitação abre com os dados da fonte; a IA só analisa quando você tocar em \"Analisar com IA\".",
+                                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            androidx.compose.material3.Switch(checked = autoAnalyze, onCheckedChange = viewModel::setAutoAnalyzeOnInterest)
+                        }
+                    }
                     SectionHeader("Provedores")
                     AiProviderType.entries.filter { it != AiProviderType.MOCK }.forEach { provider ->
                         ProviderCard(

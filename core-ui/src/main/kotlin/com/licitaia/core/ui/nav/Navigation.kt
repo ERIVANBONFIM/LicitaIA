@@ -17,6 +17,8 @@ object Routes {
     const val INTERESTS = "interests"
     const val ANALYZE = "analyze"
     const val PARTICIPATIONS = "participations"
+    /** "Licitações arquivadas" (oportunidades e licitações de interesse arquivadas). */
+    const val ARCHIVED = "archived"
     /** Cadastro manual de licitação (edital real obtido fora do app). Rota literal: vence o padrão tender/{tenderId}. */
     const val TENDER_NEW = "tender/new"
     const val TENDER = "tender/{tenderId}"
@@ -80,12 +82,37 @@ object Routes {
     fun liveNew(tenderId: Long? = null) = if (tenderId == null) LIVE_NEW else "$LIVE_NEW?tenderId=$tenderId"
     fun webView(sessionId: String) = "webview/$sessionId"
     fun portalWeb(portal: com.licitaia.domain.model.Portal) = "portal/${portal.name}"
+
+    /**
+     * Navegador interno do portal levando até a compra: [url] (página oficial da compra, portais que abrem por link) ou,
+     * no Compras.gov.br, [uasg] + [numero] ("90012/2026") + [modalidade] para o app pesquisar e abrir "Acompanhar compra".
+     */
+    fun portalWebTarget(
+        portal: com.licitaia.domain.model.Portal,
+        url: String? = null,
+        uasg: String? = null,
+        numero: String? = null,
+        modalidade: String? = null,
+    ): String {
+        fun enc(v: String) = java.net.URLEncoder.encode(v, "UTF-8")
+        val params = listOfNotNull(
+            url?.let { "url=${enc(it)}" }, uasg?.let { "uasg=${enc(it)}" },
+            numero?.let { "numero=${enc(it)}" }, modalidade?.let { "modalidade=${enc(it)}" },
+        )
+        return if (params.isEmpty()) portalWeb(portal) else "portal/${portal.name}?" + params.joinToString("&")
+    }
+
+    /** Padrão registrado no grafo para [portalWebTarget] (argumentos opcionais). */
+    const val PORTAL_WEB_TARGET = "portal/{portal}?url={url}&uasg={uasg}&numero={numero}&modalidade={modalidade}"
+
+    const val TENDER_COMPETITORS = "tender/{tenderId}/competitors"
+    fun tenderCompetitors(tenderId: Long) = "tender/$tenderId/competitors"
     fun robotConfig(sessionId: String) = "robot/$sessionId"
     fun message(messageId: Long) = "messages/$messageId"
 
     /** Destinos de topo (abrem pelo menu lateral; mostram o ícone de menu em vez de "voltar"). */
     val topLevel = setOf(
-        DASHBOARD, SEARCH, RADAR, INTERESTS, ANALYZE, PARTICIPATIONS, LIVE, WARROOM, STRATEGY,
+        DASHBOARD, SEARCH, RADAR, INTERESTS, ANALYZE, PARTICIPATIONS, ARCHIVED, LIVE, WARROOM, STRATEGY,
         MESSAGES, COMPETITION, ROBOT, DOCUMENTS, PORTALS, AUDIT, COMPANIES, SETTINGS, SECURITY,
     )
 }

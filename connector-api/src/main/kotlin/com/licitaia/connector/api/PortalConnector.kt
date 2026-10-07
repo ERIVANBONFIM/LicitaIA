@@ -88,6 +88,17 @@ interface OfficialItemsSource {
 }
 
 /**
+ * TODOS os arquivos públicos de uma contratação (`/arquivos` do PNCP, sem seleção) e o link oficial da compra no
+ * sistema de origem (`linkSistemaOrigem`). Falhas de rede sobem como exceção.
+ */
+interface OfficialFilesSource {
+    suspend fun officialFiles(pncpControlNumber: String): List<com.licitaia.domain.model.OfficialFile>
+
+    /** `linkSistemaOrigem` da contratação (página da compra no portal de origem); null quando não publicado. */
+    suspend fun originUrl(pncpControlNumber: String): String?
+}
+
+/**
  * Situação oficial atual de uma contratação pelo número de controle PNCP (situação + datas), usada na conferência diária
  * das licitações acompanhadas (suspensa, revogada/anulada, adiada, resultado). null = não encontrada.
  */

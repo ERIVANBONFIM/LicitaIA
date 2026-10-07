@@ -131,7 +131,10 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     val lifecycleOwner = LocalLifecycleOwner.current
     // Aba sem estado: Compras.gov.br SEMPRE pela entrada oficial (nunca intro.htm/última URL); demais portais, com sessão
     // aberta, a última página da área logada; senão, a página de login.
-    val startUrl = remember(portal) { PortalWebPolicy.openUrl(portal, state.status, state.lastUrl) }
+    // "Abrir no portal" com a URL oficial da compra (BLL/Licitanet/PCP): ela é a primeira página.
+    val startUrl = remember(portal) { vm.targetUrl ?: PortalWebPolicy.openUrl(portal, state.status, state.lastUrl) }
+    var targetPending by remember { mutableStateOf(vm.targetUrl != null) }
+    val purchaseSearch by vm.purchaseSearch.collectAsStateWithLifecycle()
     val sessionCheck by vm.sessionCheck.collectAsStateWithLifecycle()
     val loginUrl = remember(portal) { PortalWebPolicy.startUrl(portal) }
     val probeScript = remember(portal) { PortalWebPolicy.contentProbeScript(portal) }
@@ -527,6 +530,9 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                 )
             }
 
+            purchaseSearch?.let { text ->
+                AlertBanner("Abrir no portal", text, Tone.INFO, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), pulsing = true)
+            }
             if (portal == Portal.COMPRAS_GOV) RobotAttentionBar(vm, companyId)
 
             Box(Modifier.fillMaxSize()) {
@@ -671,6 +677,11 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 // selo "Verificando sessão…" até a primeira página conclusiva.
                                 val verify = !forced && latestVm.beginSessionCheck(freshTab = true)
                                 if (online) loadUrl(retained.entryGate.firstLoad(first, verify = verify)) else initialLoadPending = true
+                                targetPending = false
+                            } else if (targetPending && online) {
+                                // Aba já existia e o usuário pediu a página de uma compra: vai direto para ela (uma vez).
+                                targetPending = false
+                                vm.targetUrl?.let { loadUrl(it) }
                             } else {
                                 // Voltou para a tela: mantém a página (e o estado da SPA) como estava, sem recarregar.
                                 currentUrl = existing; loading = false; progress = 100

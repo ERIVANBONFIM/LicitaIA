@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Folder
@@ -82,6 +83,7 @@ private val drawerGroups = listOf(
             DrawerItem(Routes.INTERESTS, "Licitações de Interesse", Icons.Outlined.StarOutline),
             DrawerItem(Routes.ANALYZE, "Analisar Edital", Icons.Outlined.Analytics),
             DrawerItem(Routes.PARTICIPATIONS, "Minhas Participações", Icons.Outlined.Inventory2),
+            DrawerItem(Routes.ARCHIVED, "Licitações arquivadas", Icons.Outlined.Archive),
         ),
     ),
     DrawerGroup(

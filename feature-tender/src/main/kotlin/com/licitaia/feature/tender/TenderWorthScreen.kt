@@ -1,6 +1,9 @@
 package com.licitaia.feature.tender
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -52,6 +55,7 @@ import com.licitaia.domain.util.Formatters
 @Composable
 fun TenderWorthScreen(viewModel: TenderAnalysisViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val competitors by viewModel.competitors.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val tender = state.tender
     val analysis = state.analysis
@@ -62,11 +66,14 @@ fun TenderWorthScreen(viewModel: TenderAnalysisViewModel = hiltViewModel()) {
             state.notFound || tender == null -> ErrorState("Esta licitação não existe ou pertence a outra empresa.", Modifier.padding(padding), title = "Licitação não encontrada")
             analysis == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 EmptyState(
-                    title = "Análise ainda não concluída",
-                    message = "O veredito executivo é gerado a partir da análise do edital pela IA.",
+                    title = if (state.analyzing) "IA analisando o edital…" else "Análise por IA ainda não feita",
+                    message = "O veredito executivo é gerado a partir da análise do edital pela IA. Ela só roda quando você pede.",
                     icon = Icons.Outlined.Balance,
-                    actionLabel = "Acompanhar análise",
-                    onAction = { navigator.navigate(Routes.tenderAnalysis(tender.id)) },
+                    actionLabel = if (state.analyzing) "Acompanhar análise" else if (state.canAnalyze) "Analisar com IA" else "Ver análise",
+                    onAction = {
+                        if (!state.analyzing && state.canAnalyze) viewModel.analyze()
+                        navigator.navigate(Routes.tenderAnalysis(tender.id))
+                    },
                 )
             }
             else -> {
@@ -138,9 +145,12 @@ fun TenderWorthScreen(viewModel: TenderAnalysisViewModel = hiltViewModel()) {
                                 investmentTone(fit.investmentNeeded, tender.estimatedValue),
                                 if (fit.investmentNeeded <= 0.0) "Sem investimento prévio" else "${Formatters.percent(fit.investmentNeeded / tender.estimatedValue.coerceAtLeast(1.0) * 100)} do valor estimado",
                             )
+                            // Número da base pública (PNCP) quando houver; senão a estimativa da análise, rotulada. Toque: lista.
+                            val (competitorsN, competitorsOrigin) = TenderCompetitorsSupport.countLabel(competitors, analysis)
                             MetricRow(
-                                Icons.Outlined.Groups, "Concorrência histórica", "${fit.historicalCompetitors} concorrente(s)",
-                                competitorsTone(fit.historicalCompetitors), competitorsHint(fit.historicalCompetitors),
+                                Icons.Outlined.Groups, "Concorrência histórica", "$competitorsN concorrente(s)",
+                                competitorsTone(competitorsN), "${competitorsHint(competitorsN)} · $competitorsOrigin · toque para ver quem são",
+                                onClick = { navigator.navigate(Routes.tenderCompetitors(tender.id)) },
                             )
                             Spacer(Modifier.height(6.dp))
                             InfoRow("Faixa de preço sugerida", "${Formatters.brlCompact(analysis.priceRange.min)} – ${Formatters.brlCompact(analysis.priceRange.max)}")
@@ -237,8 +247,19 @@ private fun competitorsHint(n: Int): String = when {
 }
 
 @Composable
-private fun MetricRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, value: String, tone: Tone, hint: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun MetricRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    value: String,
+    tone: Tone,
+    hint: String,
+    onClick: (() -> Unit)? = null,
+) {
+    val base = Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
+    Row(
+        (if (onClick != null) base.clickable(onClick = onClick) else base).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         IconBubble(icon, tone.color(), size = 36.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -246,5 +267,8 @@ private fun MetricRow(icon: androidx.compose.ui.graphics.vector.ImageVector, lab
             Text(hint, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
         }
         Text(value, style = MaterialTheme.typography.titleSmall, color = tone.color(), fontWeight = FontWeight.Bold)
+        if (onClick != null) {
+            Icon(Icons.Outlined.ChevronRight, contentDescription = "Ver concorrentes", tint = LicitaColors.TextMuted)
+        }
     }
 }

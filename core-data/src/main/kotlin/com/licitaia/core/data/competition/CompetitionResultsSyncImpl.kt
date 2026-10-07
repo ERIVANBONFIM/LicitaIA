@@ -210,6 +210,60 @@ class CompetitionResultsSyncImpl @Inject constructor(
         return report
     }
 
+    override suspend fun fetchCompetitors(companyId: Long, lookup: com.licitaia.domain.competition.CompetitorLookup): Result<com.licitaia.domain.competition.PublicResultsBatch> {
+        if (!mutex.tryLock()) return Result.failure(IllegalStateException("Já há uma consulta de resultados ao PNCP em andamento. Tente em instantes."))
+        _running.value = true
+        return try {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    access.requireCompany(companyId)
+                    val words = (lookup.objectKeywords + lookup.segmentKeywords).map { it.trim() }.filter { it.length >= 3 }.distinct().take(10)
+                    require(words.isNotEmpty()) { "O objeto desta licitação não tem palavras suficientes para achar contratações semelhantes." }
+                    val collected = mutableListOf<PublicAwardResult>()
+                    var partial = false
+                    var checked = 0
+                    var firstError: Exception? = null
+                    // (a) mesmo órgão, objeto semelhante (até 1 ano).
+                    if (lookup.agencyCnpj != null) {
+                        try {
+                            val b = source.recentAwardsLike(
+                                MarketQuery(keywords = words, windowDays = 365, maxContracts = 8, maxItemsPerContract = 3, agencyCnpj = lookup.agencyCnpj),
+                            )
+                            collected += b.results; partial = partial || b.partial; checked += b.checkedContracts
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            firstError = e
+                        }
+                    }
+                    // (b) segmento (UF da licitação), só se o PNCP não limitou as consultas.
+                    if (!partial) {
+                        try {
+                            val b = source.recentAwardsLike(
+                                MarketQuery(keywords = words, ufs = listOfNotNull(lookup.uf?.takeIf { it.length == 2 }), windowDays = 120, maxContracts = 6),
+                            )
+                            collected += b.results; partial = partial || b.partial; checked += b.checkedContracts
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            if (firstError == null) firstError = e
+                        }
+                    }
+                    if (collected.isEmpty() && firstError != null) throw firstError!!
+                    if (collected.isNotEmpty()) {
+                        prefs.edit { p ->
+                            p[marketKey(companyId)] = MarketStore.encode(MarketStore.merge(MarketStore.decode(p[marketKey(companyId)]), collected))
+                        }
+                    }
+                    com.licitaia.domain.competition.PublicResultsBatch(collected.distinctBy { it.key }, partial, checked)
+                }
+            }.onFailure { e -> if (e is CancellationException) throw e }
+        } finally {
+            _running.value = false
+            mutex.unlock()
+        }
+    }
+
     /** Une as fontes (licitações salvas, "minhas licitações"...) por número de controle. */
     private suspend fun collectTracked(companyId: Long): List<TrackedTender> {
         val all = providers.flatMap { provider ->
@@ -322,7 +376,7 @@ object MarketKeywords {
 /** Persistência JSON da base de mercado (DataStore). */
 internal object MarketStore {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
-    const val MAX_RESULTS = 400
+    const val MAX_RESULTS = 800
 
     @Serializable
     data class Row(

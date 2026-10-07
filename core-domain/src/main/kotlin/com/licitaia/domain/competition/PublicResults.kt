@@ -64,6 +64,11 @@ data class MarketQuery(
     /** Máximo de contratações com resultado a detalhar (cada uma custa 1 + itens requisições). */
     val maxContracts: Int = 6,
     val maxItemsPerContract: Int = 3,
+    /**
+     * CNPJ do órgão (14 dígitos): restringe a consulta às contratações DESSE órgão (pregões e dispensas), para listar os
+     * concorrentes de uma licitação. null = mercado em geral (só pregões).
+     */
+    val agencyCnpj: String? = null,
 )
 
 /** Fonte pública de resultados (implementada pelo conector do PNCP). */
@@ -134,6 +139,15 @@ data class CompetitionSyncReport(
         }
 }
 
+/** Pedido de "Buscar concorrentes agora" para uma licitação (ver [TenderCompetitors]). */
+data class CompetitorLookup(
+    /** CNPJ do órgão (14 dígitos); null = licitação sem número de controle PNCP (só o segmento é consultado). */
+    val agencyCnpj: String?,
+    val objectKeywords: List<String>,
+    val segmentKeywords: List<String>,
+    val uf: String? = null,
+)
+
 /** Resultados de mercado guardados para a empresa (ranking de concorrentes e preço médio). */
 data class MarketSnapshot(
     val results: List<PublicAwardResult> = emptyList(),
@@ -157,6 +171,13 @@ interface CompetitionResultsSync {
 
     /** Execução diária (Worker/abertura da tela): só roda se a última foi há mais de [minIntervalMs]. null = não era hora. */
     suspend fun refreshIfDue(companyId: Long, minIntervalMs: Long = DAILY_MS): Result<CompetitionSyncReport>?
+
+    /**
+     * "Buscar concorrentes agora" de uma licitação: consulta no PNCP os resultados homologados (a) do mesmo órgão em
+     * contratações de objeto semelhante e (b) do segmento, respeitando o limite de consultas (429 → parcial), e grava na
+     * base de mercado da empresa. Devolve o lote obtido.
+     */
+    suspend fun fetchCompetitors(companyId: Long, lookup: CompetitorLookup): Result<PublicResultsBatch>
 
     companion object {
         const val DAILY_MS = 24L * 60 * 60 * 1000

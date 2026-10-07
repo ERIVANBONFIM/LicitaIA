@@ -262,6 +262,9 @@ internal fun EditalQuestionsTab(tender: Tender, canAsk: Boolean, viewModel: Edit
                     )
                 }
             }
+            if (tender.pncpControlNumber != null) {
+                item(key = "official-files") { OfficialFilesSection(tender) }
+            }
             if (hasText && tender.editalScanned) {
                 item(key = "ocr") {
                     AlertBanner(
@@ -401,12 +404,25 @@ private fun DocumentBaseCard(
                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
             )
         } else {
+            // Cobertura: "Edital 56 pág ✓ · Termo de Referência 23 pág ✓ · 3 anexos".
+            Text(
+                EditalDocumentBase.coverage(state.documents),
+                style = MaterialTheme.typography.labelLarge, color = LicitaColors.GreenBright,
+            )
+            Spacer(Modifier.height(4.dp))
             state.documents.forEach { doc ->
                 Text(
                     "• ${doc.displayName} · ${doc.pagesIncluded} pág.",
                     style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                 )
             }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (tender.editalChars <= com.licitaia.domain.edital.EditalExcerptSelector.FULL_BASE_MAX_CHARS)
+                    "A IA lê a base INTEIRA a cada pergunta (${tender.editalChars} caracteres)."
+                else "Base grande (${tender.editalChars} caracteres): a IA recebe as seções inteiras que casam com a pergunta e trechos de todos os documentos.",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+            )
         }
         if (state.importing) {
             val progress = state.importProgress

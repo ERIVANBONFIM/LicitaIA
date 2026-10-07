@@ -164,6 +164,7 @@ internal object PncpMapper {
             requiresLocalSupport = false,
             keywords = keywords,
             editalUrl = ref.publicPageUrl,
+            originUrl = originUrl(dto.linkSistemaOrigem),
             noDispute = NoDisputeRule.isNoDispute(
                 modality = modality,
                 modoDisputaId = dto.modoDisputaId?.toInt(),
@@ -171,6 +172,24 @@ internal object PncpMapper {
                 tipoInstrumentoCodigo = dto.tipoInstrumentoConvocatorioCodigo?.toInt(),
                 hasProposalDeadline = deadline > Opportunity.DEADLINE_UNKNOWN,
             ),
+        )
+    }
+
+    /** `linkSistemaOrigem` utilizável (HTTP/HTTPS); null quando vazio ou malformado. */
+    fun originUrl(raw: String?): String? = raw?.trim()?.takeIf {
+        (it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)) && it.length > 10 && ' ' !in it
+    }
+
+    /** Arquivo da contratação para a lista "Arquivos da licitação" (ativos com URL HTTPS). */
+    fun toOfficialFile(doc: PncpDocumento): com.licitaia.domain.model.OfficialFile? {
+        if (doc.statusAtivo == false) return null
+        val url = (doc.url ?: doc.uri)?.trim()?.takeIf { it.startsWith("https://", ignoreCase = true) } ?: return null
+        return com.licitaia.domain.model.OfficialFile(
+            title = doc.titulo?.trim().orEmpty().ifEmpty { doc.tipoDocumentoNome?.trim().orEmpty().ifEmpty { "Documento ${doc.sequencialDocumento ?: ""}".trim() } },
+            typeName = doc.tipoDocumentoNome?.trim()?.takeIf { it.isNotEmpty() },
+            url = url,
+            publishedAt = parseDate(doc.dataPublicacaoPncp),
+            sequence = doc.sequencialDocumento,
         )
     }
 

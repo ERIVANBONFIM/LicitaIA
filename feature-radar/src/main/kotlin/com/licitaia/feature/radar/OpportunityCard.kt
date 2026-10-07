@@ -71,11 +71,16 @@ import com.licitaia.domain.util.Formatters
 @Composable
 internal fun OpportunityEvents(viewModel: OpportunityListViewModel) {
     val navigator = LocalAppNavigator.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             when (event) {
                 is OpportunityEvent.Message -> navigator.showMessage(event.text)
                 is OpportunityEvent.Navigate -> navigator.navigate(event.route)
+                is OpportunityEvent.Open -> com.licitaia.core.ui.components.OfficialLinksUi.open(navigator, context, event.target)
+                is OpportunityEvent.External -> if (!com.licitaia.core.ui.components.OfficialLinksUi.openExternal(context, event.url)) {
+                    navigator.showMessage("Nenhum navegador disponível para abrir o link.")
+                }
             }
         }
     }
@@ -200,7 +205,7 @@ internal fun LazyListScope.markChips(state: OpportunityListState, viewModel: Opp
             }
             if (state.discardedCount > 0 || state.marks.showDiscarded) {
                 item(key = "discarded") {
-                    SelectChip("Descartadas (${state.discardedCount})", state.marks.showDiscarded, { viewModel.setShowDiscarded(!state.marks.showDiscarded) })
+                    SelectChip("Arquivadas (${state.discardedCount})", state.marks.showDiscarded, { viewModel.setShowDiscarded(!state.marks.showDiscarded) })
                 }
             }
         }
@@ -249,14 +254,14 @@ private fun PeriodDialog(current: PeriodFilter, onDismiss: () -> Unit, onApply: 
     )
 }
 
-/** Barra "Descartada · Desfazer" (some sozinha após alguns segundos). */
+/** Barra "Arquivada · Desfazer" (some sozinha após alguns segundos). */
 @Composable
 internal fun UndoDiscardBar(state: OpportunityListState, viewModel: OpportunityListViewModel, modifier: Modifier = Modifier) {
     val item = state.lastDiscarded ?: return
     Surface(color = MaterialTheme.colorScheme.inverseSurface, shape = MaterialTheme.shapes.medium, modifier = modifier.fillMaxWidth().padding(16.dp)) {
         Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "Descartada: ${item.opportunity.number}", color = MaterialTheme.colorScheme.inverseOnSurface,
+                "Arquivada: ${item.opportunity.number}", color = MaterialTheme.colorScheme.inverseOnSurface,
                 style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
             )
             TextButton(onClick = { viewModel.restore(item) }) { Text("Desfazer", color = MaterialTheme.colorScheme.inversePrimary) }
@@ -372,6 +377,8 @@ internal fun LazyListScope.opportunityItems(
                         onRestore = if (state.marks.showDiscarded) ({ viewModel.restore(item) }) else null,
                         onInterest = { viewModel.onInterest(item) },
                         onAnalyze = { viewModel.onAnalyze(item) },
+                        onOpenPortal = { viewModel.openPortal(item) },
+                        onOpenPncp = { viewModel.openPncp(item) },
                         modifier = Modifier.padding(horizontal = 16.dp).animateItem(),
                     )
                 }
@@ -447,8 +454,12 @@ internal fun OpportunityCard(
     isNew: Boolean = false,
     /** "Descartar" (null = sem a ação nesta lista). */
     onDiscard: (() -> Unit)? = null,
-    /** Lista de descartadas: o botão vira "Restaurar". */
+    /** Lista de arquivadas: o botão vira "Desarquivar". */
     onRestore: (() -> Unit)? = null,
+    /** "Abrir no portal" (Comprasnet com pesquisa da compra; demais pela URL oficial). */
+    onOpenPortal: (() -> Unit)? = null,
+    /** "Ver no PNCP". */
+    onOpenPncp: (() -> Unit)? = null,
 ) {
     val op = item.opportunity
     // Formatações (moeda/datas/linha da plataforma) só quando a oportunidade muda.
@@ -561,16 +572,23 @@ internal fun OpportunityCard(
             }
             SecondaryButton("Analisar", onAnalyze, Modifier.weight(0.8f), enabled = !busy && canAnalyze, icon = Icons.Outlined.Analytics)
         }
-        if (onRestore != null) {
-            TextButton(onClick = onRestore, modifier = Modifier.align(Alignment.End)) { Text("Restaurar na lista") }
-        } else if (onDiscard != null) {
-            TextButton(onClick = onDiscard, modifier = Modifier.align(Alignment.End)) {
-                Text("Descartar", color = LicitaColors.TextSecondary)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (onOpenPortal != null) {
+                TextButton(onClick = onOpenPortal) { Text(if (op.portal == Portal.PNCP) "Sistema de origem" else "Abrir no portal", color = LicitaColors.BlueBright) }
+            }
+            if (onOpenPncp != null && op.id.startsWith("${Portal.PNCP.name}:")) {
+                TextButton(onClick = onOpenPncp) { Text("Ver no PNCP", color = LicitaColors.TextSecondary) }
+            }
+            Spacer(Modifier.weight(1f))
+            if (onRestore != null) {
+                TextButton(onClick = onRestore) { Text("Desarquivar") }
+            } else if (onDiscard != null) {
+                TextButton(onClick = onDiscard) { Text("Arquivar", color = LicitaColors.TextSecondary) }
             }
         }
         if (item.interested) {
             Text(
-                "Toque em \"Em interesse ✓\" para abrir a licitação.",
+                "Toque em \"Em interesse ✓\" para abrir a licitação (sem análise automática; analise quando quiser).",
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, modifier = Modifier.padding(top = 6.dp),
             )
         }

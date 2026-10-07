@@ -3,6 +3,9 @@ package com.licitaia.feature.tender
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.domain.competition.CompetitionResultsSync
+import com.licitaia.domain.competition.MarketSnapshot
+import com.licitaia.domain.competition.TenderCompetitorsView
 import com.licitaia.domain.model.AiProviderType
 import com.licitaia.domain.model.CompanyDocument
 import com.licitaia.domain.model.DocumentStatus
@@ -61,6 +64,7 @@ class TenderAnalysisViewModel @Inject constructor(
     private val tenders: TenderRepository,
     documents: DocumentRepository,
     aiConfig: AiConfigRepository,
+    private val competition: CompetitionResultsSync,
 ) : ViewModel() {
 
     private val tenderId: Long = savedStateHandle.longArg("tenderId") ?: -1L
@@ -92,35 +96,30 @@ class TenderAnalysisViewModel @Inject constructor(
 
     private val activeAi = aiConfig.observeEffective().catch { emit(AiProviderType.MOCK) }
 
-    val state: StateFlow<TenderAnalysisState> = combine(remote, flags, activeAi) { s, f, ai -> s.copy(analyzing = f.analyzing, error = f.error, activeAi = ai) }
+    private val repoAnalyzing = tenders.observeAnalyzing(tenderId).catch { emit(false) }
+
+    val state: StateFlow<TenderAnalysisState> = combine(remote, flags, activeAi, repoAnalyzing) { s, f, ai, busy ->
+        s.copy(analyzing = f.analyzing || busy, error = f.error, activeAi = ai)
+    }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderAnalysisState())
 
-    init {
-        // Análise antiga heurística (feita quando não havia provedor) + provedor real disponível agora: reanalisa
-        // automaticamente UMA vez por licitação no processo (sem loop: falha ou nova heurística não repete).
-        viewModelScope.launch {
-            val target = state.first { s -> s.notFound || (!s.loading && s.analysis != null && s.activeAi != AiProviderType.MOCK) }
-            val analysis = target.analysis ?: return@launch
-            if (analysis.heuristicOnly && target.canAnalyze && !target.analyzing && autoReanalyzed.add(tenderId)) analyze()
-        }
-        // A análise é disparada em segundo plano pelo "Tenho Interesse"; se não chegar em alguns
-        // segundos (ex.: app fechado no meio), disparamos aqui mesmo.
-        // Licitações cadastradas manualmente NÃO são analisadas sozinhas: o usuário importa o edital e decide.
-        viewModelScope.launch {
-            val first = state.first { !it.loading }
-            if (first.notFound || first.analysis != null || first.tender?.isManual == true) return@launch
-            delay(AUTO_ANALYZE_DELAY_MS)
-            val current = state.value
-            if (current.analysis == null && !current.analyzing && current.tender != null && !current.tender.isManual) analyze()
-        }
-    }
+    // Nenhuma análise é disparada sozinha nesta tela (nem reanálise de análises heurísticas): só por pedido do usuário
+    // ("Analisar com IA", "Reanalisar") ou pelo "Analisar" do card da busca (que já inicia a análise no repositório).
+
+    /** Concorrentes desta licitação a partir dos resultados públicos do PNCP (base da Concorrência). */
+    val competitors: StateFlow<TenderCompetitorsView?> = auth.session.flatMapLatest { session ->
+        if (session == null || tenderId <= 0) flowOf(null)
+        else combine(tenders.observeTender(tenderId), competition.observeMarket(session.activeCompany.id).catch { emit(MarketSnapshot()) }) { tender, market ->
+            tender?.let { TenderCompetitorsSupport.view(it, market.results, session.activeCompany.cnpj, session.activeCompany.segment) }
+        }.catch { emit(null) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun analyze() {
         if (flags.value.analyzing || tenderId <= 0) return
         flags.update { it.copy(analyzing = true, error = null) }
         viewModelScope.launch {
             val result = try {
-                tenders.analyze(tenderId)
+                tenders.analyzeWithOfficialEdital(state.value.tender, tenderId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -148,9 +147,4 @@ class TenderAnalysisViewModel @Inject constructor(
         DocumentStatus.AUSENTE -> 3
     }
 
-    private companion object {
-        const val AUTO_ANALYZE_DELAY_MS = 8_000L
-        /** Licitações já reanalisadas automaticamente neste processo (evita gastar cota em loop). */
-        val autoReanalyzed: MutableSet<Long> = java.util.Collections.synchronizedSet(HashSet())
-    }
 }

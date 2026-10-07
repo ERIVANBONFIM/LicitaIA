@@ -13,7 +13,18 @@ data class EditalExcerpt(
     val sections: Int,
     /** Tamanho do texto original do edital. */
     val originalChars: Int,
-)
+    /** Seções inteiras incluídas porque o título casa com a pergunta (só no recorte). */
+    val fullSections: Int = 0,
+) {
+    /** Documentos da base presentes no texto enviado (pelos marcadores/rótulos de documento). */
+    val documents: Int
+        get() = (Regex("(?m)^=== DOCUMENTO: (.+?)(?: \\(\\d+\\))? \\(página \\d+\\) ===$").findAll(text).map { it.groupValues[1] } +
+            Regex("\\[Documento: (.+?) · página \\d+]").findAll(text).map { it.groupValues[1] }).toSet().size
+
+    /** Metadado da resposta: "lido: base completa" ou "trechos de N documento(s)". */
+    val coverageLabel: String
+        get() = if (complete) "lido: base completa" else "trechos de ${documents.coerceAtLeast(1)} documento(s)"
+}
 
 /**
  * Seleção de trechos do edital para "Pergunte ao edital". Editais que cabem no limite vão inteiros; os grandes viram
@@ -24,6 +35,16 @@ data class EditalExcerpt(
 object EditalExcerptSelector {
     /** ~20 mil tokens: cobre o cabeçalho e dezenas de trechos sem encarecer cada pergunta. */
     const val DEFAULT_MAX_CHARS = 80_000
+
+    /**
+     * "Pergunte ao edital": até este tamanho (~50 mil tokens, cabe nos provedores atuais) a base INTEIRA (todos os
+     * documentos, Edital e TR primeiro) vai para a IA; acima, recorte por pergunta com as seções inteiras cujo título casa.
+     */
+    const val FULL_BASE_MAX_CHARS = 200_000
+
+    /** Teto de cada seção inteira incluída pelo título e quantas no máximo. */
+    const val MAX_SECTION_CHARS = 15_000
+    const val MAX_FULL_SECTIONS = 4
 
     /** Início do documento (objeto, órgão, datas, valor) sempre enviado. */
     const val HEADER_CHARS = 6_000
@@ -133,8 +154,12 @@ object EditalExcerptSelector {
             .filter { scores[it] > 0 }
             .sortedWith(compareByDescending<Int> { scores[it] + 1.5 * distinct[it].size }.thenBy { it })
 
+        // Seções inteiras cujo TÍTULO casa com os termos digitados (ex.: "10. DA HABILITAÇÃO" para "habilitação").
+        val typed = weighted.filterValues { it >= 2.0 }.keys
+        val sectionRanges = matchingSections(text, folded, typed, headerEnd, limit / 2)
+
         // Sem nenhum termo encontrado: cabeçalho + continuação do documento até o limite.
-        if (ranked.isEmpty()) {
+        if (ranked.isEmpty() && sectionRanges.isEmpty()) {
             val head = text.substring(0, cutBoundary(text, limit - GAP_MARKER.length)).trimEnd()
             return EditalExcerpt(head + GAP_MARKER.trimEnd(), complete = false, terms = termList, sections = 0, originalChars = text.length)
         }
@@ -142,6 +167,12 @@ object EditalExcerptSelector {
         // Escolhe as melhores janelas que cabem no orçamento; depois ordena pela posição e une as contíguas.
         var budget = limit - header.length - GAP_MARKER.length
         val chosen = mutableListOf<IntRange>()
+        for (range in sectionRanges) {
+            val cost = range.last - range.first + 1 + GAP_MARKER.length + LABEL_ALLOWANCE
+            if (cost > budget) continue
+            chosen += range
+            budget -= cost
+        }
         // Início de cada página na base multi-documento: a janela não recua para a página anterior, para que o trecho
         // comece no marcador "=== DOCUMENTO: ... (página N) ===" da página onde está a informação (citação correta).
         val pageStarts = DOC_MARKER.findAll(text).map { it.range.first }.toList()
@@ -173,7 +204,44 @@ object EditalExcerptSelector {
             }
             if (previousEnd < text.length) append(GAP_MARKER.trimEnd())
         }
-        return EditalExcerpt(body.take(limit), complete = false, terms = termList, sections = merged.size, originalChars = text.length)
+        return EditalExcerpt(
+            body.take(limit), complete = false, terms = termList, sections = merged.size, originalChars = text.length,
+            fullSections = sectionRanges.count { s -> chosen.any { it == s } },
+        )
+    }
+
+    /** Título de seção: "10. DA HABILITAÇÃO", "10.2 Qualificação técnica", "CLÁUSULA QUINTA – ...", "ANEXO I – ...". */
+    private val HEADING = Regex("""(?m)^[ \t]*((\d{1,2}(?:\.\d{1,2}){0,3})[.)]?\s+\S[^\n]{1,140}|(?:CL[AÁ]USULA|ANEXO|CAP[IÍ]TULO|SE[CÇ][AÃ]O)\b[^\n]{0,140}|[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9 ,.;:/()–-]{5,120})$""")
+
+    /**
+     * Intervalos das seções cujo título contém algum termo digitado: do título até o próximo título de mesmo nível ou
+     * superior (numerados) ou até o próximo título (demais), cada um até [MAX_SECTION_CHARS], no máximo
+     * [MAX_FULL_SECTIONS] e [budget] caracteres no total.
+     */
+    internal fun matchingSections(text: String, folded: String, terms: Set<String>, from: Int, budget: Int): List<IntRange> {
+        if (terms.isEmpty()) return emptyList()
+        val headings = HEADING.findAll(text).filter { it.range.first >= from }.toList()
+        if (headings.isEmpty()) return emptyList()
+        fun depth(m: MatchResult): Int? = m.groupValues[2].takeIf { it.isNotEmpty() }?.count { it == '.' }?.plus(1)
+        val out = mutableListOf<IntRange>()
+        var used = 0
+        for ((i, h) in headings.withIndex()) {
+            if (out.size >= MAX_FULL_SECTIONS) break
+            val title = folded.substring(h.range.first, h.range.last + 1)
+            if (terms.none { title.contains(it) }) continue
+            val d = depth(h)
+            val next = headings.drop(i + 1).firstOrNull { n ->
+                val nd = depth(n)
+                if (d == null) true else nd != null && nd <= d
+            }
+            val end = minOf(next?.range?.first ?: text.length, h.range.first + MAX_SECTION_CHARS, text.length)
+            if (end - h.range.first < 40) continue
+            if (out.any { h.range.first in it }) continue
+            if (used + (end - h.range.first) > budget) break
+            out += h.range.first until end
+            used += end - h.range.first
+        }
+        return out
     }
 
     /**

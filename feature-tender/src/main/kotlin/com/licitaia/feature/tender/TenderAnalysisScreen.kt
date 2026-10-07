@@ -66,8 +66,11 @@ import com.licitaia.domain.model.DocumentStatus
 import com.licitaia.domain.model.ExtractedEdital
 import com.licitaia.domain.model.RiskLevel
 import com.licitaia.domain.model.Tender
+import com.licitaia.domain.model.pncpControlNumber
 import com.licitaia.domain.util.Formatters
 import kotlinx.coroutines.delay
+
+private fun Tender.pncpControlNumberOrNull(): String? = pncpControlNumber
 
 /** Abas da tela: Análise (padrão), Perguntas ("Pergunte ao edital") e Itens (itens oficiais). */
 private enum class AnalysisTab(val route: String, val label: String, val title: String) {
@@ -137,7 +140,8 @@ private fun AnalysisContent(state: TenderAnalysisState, tender: Tender, viewMode
     val navigator = LocalAppNavigator.current
     val analysis = state.analysis
     when {
-    analysis == null && tender.isManual && !state.analyzing && state.error == null -> IdleManualState(
+    // Sem análise e nada em andamento: nada roda sozinho — card "Análise por IA ainda não feita" com "Analisar com IA".
+    analysis == null && !state.analyzing && state.error == null -> IdleState(
         tender = tender, canAnalyze = state.canAnalyze, onAnalyze = viewModel::analyze,
         onOpenTender = { navigator.navigate(Routes.tender(tender.id)) }, modifier = Modifier,
     )
@@ -289,13 +293,22 @@ private fun AnalysisContent(state: TenderAnalysisState, tender: Tender, viewMode
     }
 }
 
-/** Licitação cadastrada manualmente ainda sem análise: nada roda em segundo plano — o usuário decide. */
+/** Licitação ainda sem análise: nada roda em segundo plano — o usuário decide quando analisar. */
 @Composable
-private fun IdleManualState(tender: Tender, canAnalyze: Boolean, onAnalyze: () -> Unit, onOpenTender: () -> Unit, modifier: Modifier) {
+private fun IdleState(tender: Tender, canAnalyze: Boolean, onAnalyze: () -> Unit, onOpenTender: () -> Unit, modifier: Modifier) {
     Column(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         LicitaCard(Modifier.fillMaxWidth()) { TenderHeadline(tender, null) }
         Spacer(Modifier.height(20.dp))
-        if (tender.hasEditalText) {
+        if (!tender.isManual && !tender.hasEditalText) {
+            EmptyState(
+                title = "Análise por IA ainda não feita",
+                message = "A licitação está salva com os dados da fonte. A IA só analisa quando você pedir" +
+                    (if (tender.pncpControlNumberOrNull() != null) " (o edital oficial do PNCP é baixado antes, para a IA ler o documento real)." else "."),
+                icon = Icons.Outlined.AutoAwesome,
+                actionLabel = if (canAnalyze) "Analisar com IA" else "Abrir licitação",
+                onAction = if (canAnalyze) onAnalyze else onOpenTender,
+            )
+        } else if (tender.hasEditalText) {
             EmptyState(
                 title = "Edital pronto para análise",
                 message = "O texto do edital (${tender.editalChars} caracteres) está salvo. A IA vai ler o edital real para extrair documentos, prazos, garantias, penalidades e riscos.",
@@ -369,7 +382,7 @@ private fun AnalyzingState(
             LinearProgressIndicator(Modifier.fillMaxWidth(0.6f), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
             Spacer(Modifier.height(18.dp))
             Text(
-                if (analyzing) "Isso pode levar alguns segundos." else "Aguardando a análise iniciada em segundo plano…",
+                "Isso pode levar alguns segundos. Você pode sair da tela: a análise continua e você recebe um aviso.",
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
             )
         } else {

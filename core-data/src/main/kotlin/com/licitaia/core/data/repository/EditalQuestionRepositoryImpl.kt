@@ -140,7 +140,9 @@ class EditalQuestionRepositoryImpl @Inject constructor(
             check(!editalText.isNullOrBlank()) {
                 "Esta licitação ainda não tem o texto do edital. Baixe o edital oficial ou importe o PDF e pergunte de novo."
             }
-            val excerpt = EditalExcerptSelector.select(editalText, question.question, EditalExcerptSelector.DEFAULT_MAX_CHARS)
+            // Base inteira (todos os documentos, Edital e TR primeiro) quando cabe no provedor; senão recorte com as seções
+            // inteiras cujo título casa com a pergunta + trechos de todos os documentos.
+            val excerpt = EditalExcerptSelector.select(editalText, question.question, fullBaseChars)
             val official = if (EditalQuestionPrompt.wantsItems(question.question)) officialItems(tender.id) else emptyList()
             val request = EditalQuestionRequest(
                 system = EditalQuestionPrompt.SYSTEM,
@@ -154,7 +156,8 @@ class EditalQuestionRepositoryImpl @Inject constructor(
             val reply = provider.askEdital(request)
             val (body, sources) = EditalQuestionPrompt.splitSources(reply.text)
             val answered = question.copy(
-                answer = body.ifBlank { reply.text.trim() }, provider = providerName, model = reply.model,
+                // Metadado de cobertura junto do provedor (sem coluna nova): "lido: base completa" / "trechos de N documentos".
+                answer = body.ifBlank { reply.text.trim() }, provider = "$providerName · ${excerpt.coverageLabel}", model = reply.model,
                 sources = sources, status = EditalQuestionStatus.OK,
             )
             questionDao.update(answered.toEntity())
@@ -164,7 +167,8 @@ class EditalQuestionRepositoryImpl @Inject constructor(
                     portal = tender.portal, tenderNumber = tender.number,
                     details = "Pergunta ao edital respondida com $providerName" +
                         (if (answered.unsourced) " (sem fonte citada — marcada para conferência)" else "") +
-                        (if (excerpt.complete) " (edital completo)" else " (recorte: ${excerpt.text.length} de ${excerpt.originalChars} caracteres)") +
+                        (if (excerpt.complete) " (base completa: ${excerpt.originalChars} caracteres)"
+                        else " (recorte: ${excerpt.text.length} de ${excerpt.originalChars} caracteres, ${excerpt.documents} documento(s), ${excerpt.fullSections} seção(ões) inteira(s))") +
                         (if (official.isNotEmpty()) "; ${official.size} item(ns) oficiais" else ""),
                 )
             }
@@ -193,6 +197,9 @@ class EditalQuestionRepositoryImpl @Inject constructor(
     /** Itens oficiais (cache da aba "Itens"); falha de consulta não impede a resposta. */
     private suspend fun officialItems(tenderId: Long): List<OfficialTenderItem> =
         items.officialItems(tenderId).getOrNull()?.items.orEmpty()
+
+    /** Até quantos caracteres a base inteira vai para a IA (configurável aqui; padrão [EditalExcerptSelector.FULL_BASE_MAX_CHARS]). */
+    internal var fullBaseChars: Int = EditalExcerptSelector.FULL_BASE_MAX_CHARS
 
     private companion object {
         const val HEURISTIC_PROVIDER_NAME = "Heurística local (sem IA)"

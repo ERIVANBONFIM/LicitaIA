@@ -171,10 +171,31 @@ interface TenderRepository {
     fun observeAnalysis(tenderId: Long): Flow<TenderAnalysis?>
 
     /**
-     * Fluxo "Tenho Interesse": salva a licitação, registra o edital e dispara a análise de IA
-     * em segundo plano. Idempotente por (empresa, oportunidade). Retorna o id da licitação.
+     * Fluxo "Tenho Interesse": salva a licitação (status INTERESSE) com os dados da fonte. NÃO analisa por IA, a menos
+     * que "Analisar automaticamente ao marcar interesse" esteja ligado (Configurações > IA). Idempotente por
+     * (empresa, oportunidade). Retorna o id da licitação.
      */
     suspend fun markInterest(companyId: Long, opportunity: Opportunity): Long
+
+    /**
+     * Pedido explícito de análise sem esperar o resultado (ex.: "Analisar" no card da busca): roda no escopo da camada de
+     * dados (sobrevive à troca de tela) e notifica ao concluir. Falha de permissão sobe na hora.
+     */
+    suspend fun startAnalysis(tenderId: Long) {
+        analyze(tenderId)
+    }
+
+    /**
+     * Arquiva/desarquiva a licitação: sai (ou volta) das listas, avisos de fase e robôs automáticos; nada é apagado.
+     * Usa a mesma marca das oportunidades arquivadas (por empresa e oportunidade).
+     */
+    suspend fun archive(tenderId: Long, archived: Boolean) {}
+
+    /** A licitação está arquivada. */
+    fun observeArchived(tenderId: Long): Flow<Boolean> = kotlinx.coroutines.flow.flowOf(false)
+
+    /** Análise em andamento para a licitação (pedida em qualquer tela). */
+    fun observeAnalyzing(tenderId: Long): Flow<Boolean> = kotlinx.coroutines.flow.flowOf(false)
     suspend fun removeInterest(tenderId: Long)
     suspend fun findByOpportunity(companyId: Long, opportunityId: String): Tender?
 

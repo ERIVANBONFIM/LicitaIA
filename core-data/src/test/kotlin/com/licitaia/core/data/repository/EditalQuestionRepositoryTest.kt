@@ -115,7 +115,8 @@ class EditalQuestionRepositoryTest {
         assertEquals("Quais documentos de habilitação?", saved.question)
         assertEquals("São exigidas certidão federal, FGTS e atestado.", saved.answer)
         assertEquals(listOf("item 8.2 — Da habilitação"), saved.sources)
-        assertEquals("ChatGPT", saved.provider)
+        // Provedor + cobertura da leitura (edital pequeno: a base inteira foi enviada).
+        assertEquals("ChatGPT · lido: base completa", saved.provider)
         assertEquals("gpt-5", saved.model)
         assertEquals(EditalQuestionStatus.OK, saved.status)
         assertEquals(1L, saved.companyId)

@@ -86,12 +86,15 @@ internal class PncpApi(
         uf: String?,
         pagina: Int,
         tamanhoPagina: Int,
+        /** CNPJ do órgão (parâmetro `cnpj` da consulta): só as contratações dele. */
+        cnpjOrgao: String? = null,
     ): PncpPage<PncpContratacao> {
         val url = consulta("v1/contratacoes/publicacao")
             .addQueryParameter("dataInicial", dataInicial)
             .addQueryParameter("dataFinal", dataFinal)
             .addQueryParameter("codigoModalidadeContratacao", codigoModalidade.toString())
             .apply { if (!uf.isNullOrBlank()) addQueryParameter("uf", uf.uppercase()) }
+            .apply { if (!cnpjOrgao.isNullOrBlank()) addQueryParameter("cnpj", cnpjOrgao) }
             .addQueryParameter("pagina", pagina.toString())
             .addQueryParameter("tamanhoPagina", tamanhoPagina.coerceIn(MIN_PAGE_SIZE, MAX_PAGE_SIZE).toString())
             .build()
