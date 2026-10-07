@@ -2,6 +2,11 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.5.5] — 2026-10-07
+
+### Adicionado
+- Robô de lance: "Piso para todos os itens" — informa um percentual abaixo do seu valor e o piso é preenchido em todos os itens selecionados de uma vez.
+
 ## [0.5.4] — 2026-10-07
 
 ### Adicionado

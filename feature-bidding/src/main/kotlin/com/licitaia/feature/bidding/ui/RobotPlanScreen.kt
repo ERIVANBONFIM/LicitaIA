@@ -291,6 +291,7 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
     val items = remember { mutableStateListOf<ItemForm>() }
     var loadedFrom by remember { mutableStateOf<Long?>(null) }
     var sessionText by remember { mutableStateOf("") }
+    var floorPct by remember { mutableStateOf("10") }
     var mode by remember { mutableStateOf(BidRobotMode.MANUAL) }
     var strategy by remember { mutableStateOf(BidStrategy.CONSERVADORA) }
     var reduction by remember { mutableStateOf("1,00") }
@@ -501,6 +502,32 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
 
             // ------------------------------------------------ lance
             SectionHeader("Robô de lance (disputa)")
+            // Piso em massa: com dezenas de itens, preencher o piso item a item é inviável.
+            LicitaCard(Modifier.fillMaxWidth()) {
+                Text("Piso para todos os itens", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                Text(
+                    "Menor valor que o robô pode ofertar em cada item, calculado sobre o seu valor unitário. " +
+                        "Ex.: 10% → item de R$ 209,25 fica com piso R$ 188,33. Depois ajuste item a item, se quiser.",
+                    style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Field("% abaixo do seu valor", floorPct, { floorPct = it }, Modifier.weight(1f), KeyboardType.Decimal)
+                    SecondaryButton("Aplicar a todos", {
+                        val pct = TextNorm.parseMoney(floorPct)
+                        if (pct == null || pct < 0 || pct >= 100) {
+                            navigator.showMessage("Informe um percentual entre 0 e 99.")
+                        } else {
+                            var n = 0
+                            items.filter { it.selected }.forEach { f ->
+                                val price = TextNorm.parseMoney(f.price) ?: return@forEach
+                                f.floor = String.format(java.util.Locale("pt", "BR"), "%.2f", price * (1 - pct / 100.0))
+                                n++
+                            }
+                            navigator.showMessage(if (n == 0) "Nenhum item selecionado com valor unitário." else "Piso aplicado em $n item(ns). Salve o plano.")
+                        }
+                    }, Modifier.weight(1f))
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(BidRobotMode.MANUAL, BidRobotMode.AUTOMATICO).forEach { m ->
                     FilterChip(selected = mode == m, onClick = { mode = m }, label = { Text(m.label) })
