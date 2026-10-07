@@ -204,6 +204,9 @@ internal object ComprasGovMapper {
             dto.amparoLegalNome?.let(::add)
             dto.processo?.takeIf { it.isNotBlank() }?.let { add("processo $it") }
             dto.unidadeOrgaoCodigoUnidade?.takeIf { it.isNotBlank() }?.let { add("UASG $it") }
+            // Situação fora do normal (suspensa, revogada...): guardada também nas palavras-chave (o cache de linhas não tem coluna).
+            dto.situacaoCompraNomePncp?.takeIf { com.licitaia.domain.model.OfficialSituation.fromText(it) != null }
+                ?.let { add(com.licitaia.domain.model.OfficialSituation.KEYWORD_PREFIX + it.trim()) }
             dto.informacaoComplementar?.takeIf { it.isNotBlank() }?.let { add(it.take(200)) }
             pncpRef?.let { add(it.raw) }
         }.distinct()
@@ -211,6 +214,8 @@ internal object ComprasGovMapper {
         return Opportunity(
             id = id,
             portal = Portal.COMPRAS_GOV,
+            uasg = com.licitaia.domain.model.UasgCode.normalize(dto.unidadeOrgaoCodigoUnidade, comprasGov = true),
+            officialSituation = com.licitaia.domain.model.OfficialSituation.fromText(dto.situacaoCompraNomePncp),
             number = dto.numeroCompra?.trim()?.takeIf { it.isNotEmpty() }?.let { n -> dto.anoCompraPncp?.let { "$n/$it" } ?: n }
                 ?: pncpRef?.raw ?: legacyRef!!.raw,
             agency = agency,
@@ -321,6 +326,7 @@ internal object ComprasGovMapper {
         return Opportunity(
             id = ref.opportunityId,
             portal = Portal.COMPRAS_GOV,
+            uasg = ref.uasg.toString().padStart(6, '0'),
             number = "${ref.numero}/${ref.ano}",
             agency = "UASG ${ref.uasg.toString().padStart(6, '0')}",
             objectDescription = objeto.ifEmpty { "Objeto não informado pelo órgão" },
@@ -336,6 +342,7 @@ internal object ComprasGovMapper {
             keywords = keywords,
             // O payload legado não traz URL da compra: aponta-se para a home oficial.
             editalUrl = Portal.COMPRAS_GOV.publicUrl,
+            officialSituation = com.licitaia.domain.model.OfficialSituation.fromText(dto.situacao_aviso),
         )
     }
 

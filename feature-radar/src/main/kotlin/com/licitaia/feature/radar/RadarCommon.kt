@@ -7,7 +7,17 @@ import com.licitaia.core.ui.nav.Routes
 import com.licitaia.domain.model.AiScoreUpdate
 import com.licitaia.domain.model.AiScoringRequest
 import com.licitaia.domain.model.LowAdherence
-import com.licitaia.domain.model.ProposalWindows
+import com.licitaia.domain.model.ListMarks
+import com.licitaia.domain.model.ModalityGroup
+import com.licitaia.domain.model.Novelty
+import com.licitaia.domain.model.OpportunityFlag
+import com.licitaia.domain.model.PeriodFilter
+import com.licitaia.domain.repository.OpportunityFlagsRepository
+import com.licitaia.domain.repository.SettingsRepository
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import com.licitaia.domain.model.ScoredOpportunity
 import com.licitaia.domain.model.SectionedOpportunities
 import com.licitaia.domain.model.SearchOutcome
@@ -132,15 +142,58 @@ data class OpportunityListState(
     val scheduleLine: String? = null,
     /** A lista atual veio só do que está salvo no aparelho (abertura da tela), sem consultar as fontes. */
     val fromSnapshot: Boolean = false,
+    /**
+     * Tudo o que a última consulta devolveu (de hoje em diante + dias anteriores do mês, inclusive os filtrados pela
+     * modalidade/baixa aderência): base de todo reagrupamento local (chips, relógio, notas por IA).
+     */
+    val source: List<ScoredOpportunity> = emptyList(),
+    /** "Mostrar dias anteriores" marcado (persistido no DataStore; padrão desmarcado). */
+    val showPreviousDays: Boolean = false,
+    /** Texto digitado na busca: os dias anteriores entram na lista independentemente do chip. */
+    val previousForced: Boolean = false,
+    /** Itens de dias anteriores do mês que casam com os filtros (exibidos ou ocultos). */
+    val previousCount: Int = 0,
+    /** Chip de modalidade da Busca. */
+    val modalityGroup: ModalityGroup = ModalityGroup.ALL,
+    /** "312 de hoje em diante · 45 de dias anteriores ocultos · 120 dispensas · 8 novas". */
+    val windowSummary: String? = null,
+    /** Descartadas, novas e período (filtros locais, sem nova consulta). */
+    val marks: ListMarks = ListMarks(),
+    /** Descartadas que casam com os filtros (chip "Descartadas (N)"). */
+    val discardedCount: Int = 0,
+    /** Novas visíveis (selo "Nova"). */
+    val newCount: Int = 0,
+    /** Última descartada (barra "Descartada · Desfazer"); null = sem barra. */
+    val lastDiscarded: ScoredOpportunity? = null,
 ) {
     /** Há itens aguardando a nota por IA. */
     val aiPending: Boolean get() = aiTotal > 0 && aiRated < aiTotal && aiFailure == null
 
-    /** Todos os itens (visíveis + baixa aderência ocultos) — base das mesclagens de nota. */
-    val allItems: List<ScoredOpportunity> get() = if (hiddenLow.isEmpty()) items else items + hiddenLow
+    /** Todos os itens da última consulta — base das mesclagens de nota e dos reagrupamentos. */
+    val allItems: List<ScoredOpportunity> get() = source
+
+    /** Dias anteriores na lista agora (chip marcado ou texto digitado). */
+    val previousVisible: Boolean get() = showPreviousDays || previousForced
 }
 
+/** Opções de exibição que reagrupam a lista sem nova consulta. */
+internal data class ListViewOptions(
+    val showLow: Boolean,
+    val showPrevious: Boolean,
+    val modality: ModalityGroup,
+    val marks: ListMarks = ListMarks(),
+)
+
+internal fun OpportunityListState.viewOptions() = ListViewOptions(showLowAdherence, previousVisible, modalityGroup, marks)
+
+internal fun OpportunityListState.withGrouped(source: List<ScoredOpportunity>, g: LowAdherence.Grouped) = copy(
+    source = source, items = g.items, sections = g.sections, hiddenLow = g.hiddenLow,
+    previousCount = g.previousCount, windowSummary = g.windowSummary,
+    discardedCount = g.discardedCount, newCount = g.newCount,
+)
+
 /** Base das telas que listam oportunidades (busca e resultados de radar). */
+@OptIn(ExperimentalCoroutinesApi::class)
 abstract class OpportunityListViewModel(
     protected val auth: AuthRepository,
     private val tenders: TenderRepository,
@@ -183,15 +236,114 @@ abstract class OpportunityListViewModel(
      */
     protected open val lowAdherenceThreshold: Int? get() = null
 
+    /**
+     * Configurações do app (DataStore): persiste "Mostrar dias anteriores". null = escolha só nesta tela.
+     */
+    protected open val viewSettings: SettingsRepository? get() = null
+
+    /** A consulta atual inclui os dias anteriores independentemente do chip (ex.: texto digitado na busca). */
+    protected open val forcePreviousDays: Boolean get() = false
+
+    /** Descartadas/vistas (v14); null = tela sem essas marcas. */
+    protected open val flagsRepository: OpportunityFlagsRepository? get() = null
+
+    /** Marcas da empresa ativa (descartadas/vistas) e 1ª vez no cache dos itens atuais. */
+    private var flags: Map<String, OpportunityFlag> = emptyMap()
+    private var firstSeen: Map<String, Long> = emptyMap()
+
+    /** Abertura anterior da Busca (selo "Nova"); a subclasse informa ao abrir. */
+    protected var previousSearchOpenAt: Long? = null
+
+    /** Recalcula descartadas/novas a partir das marcas, 1ª vez no cache e da última atualização diária. */
+    protected fun recomputeMarks() {
+        val since = Novelty.since(dailyStatus.lastCompletedAt, previousSearchOpenAt)
+        val ids = _list.value.source.map { it.opportunity.id }
+        val discarded = flags.values.filter { it.discardedAt != null }.mapTo(HashSet()) { it.opportunityId }
+        val newIds = Novelty.newIds(ids, firstSeen, flags, since)
+        updateView { it.copy(marks = it.marks.copy(discarded = discarded, newIds = newIds)) }
+    }
+
+    /** Chip "Descartadas (N)": mostra só as descartadas (para restaurar). */
+    fun setShowDiscarded(show: Boolean) {
+        if (_list.value.marks.showDiscarded == show) return
+        updateView { it.copy(marks = it.marks.copy(showDiscarded = show)) }
+    }
+
+    /** Chip "Só novas". */
+    fun setOnlyNew(only: Boolean) {
+        if (_list.value.marks.onlyNew == only) return
+        updateView { it.copy(marks = it.marks.copy(onlyNew = only)) }
+    }
+
+    /** Filtro de período (persistido no DataStore). */
+    fun setPeriod(period: PeriodFilter) {
+        if (_list.value.marks.period != period) updateView { it.copy(marks = it.marks.copy(period = period)) }
+        viewSettings?.let { s -> viewModelScope.launch { runCatching { s.update { it.copy(searchPeriod = period) } } } }
+    }
+
+    /** "Descartar": some da Busca/Radar (e dos avisos) para sempre; a barra oferece "Desfazer". */
+    fun discard(item: ScoredOpportunity) {
+        val repo = flagsRepository ?: return
+        val companyId = auth.session.value?.activeCompany?.id ?: return
+        val id = item.opportunity.id
+        flags = flags + (id to (flags[id] ?: OpportunityFlag(companyId, id)).copy(discardedAt = clock()))
+        _list.update { it.copy(lastDiscarded = item) }
+        recomputeMarks()
+        viewModelScope.launch { runCatching { repo.discard(companyId, id) } }
+        viewModelScope.launch {
+            delay(UNDO_WINDOW_MS)
+            _list.update { if (it.lastDiscarded?.opportunity?.id == id) it.copy(lastDiscarded = null) else it }
+        }
+    }
+
+    /** "Desfazer"/"Restaurar": volta a aparecer na lista. */
+    fun restore(item: ScoredOpportunity) {
+        val repo = flagsRepository ?: return
+        val companyId = auth.session.value?.activeCompany?.id ?: return
+        val id = item.opportunity.id
+        flags[id]?.let { flags = flags + (id to it.copy(discardedAt = null)) }
+        _list.update { if (it.lastDiscarded?.opportunity?.id == id) it.copy(lastDiscarded = null) else it }
+        recomputeMarks()
+        viewModelScope.launch { runCatching { repo.restore(companyId, id) } }
+    }
+
+    fun dismissUndo() = _list.update { it.copy(lastDiscarded = null) }
+
+    /** Abriu o detalhe / "Tenho interesse" / "Analisar": perde o selo "Nova". */
+    private fun markSeen(companyId: Long, opportunityId: String) {
+        val repo = flagsRepository ?: return
+        flags = flags + (opportunityId to (flags[opportunityId] ?: OpportunityFlag(companyId, opportunityId)).copy(seenAt = clock()))
+        recomputeMarks()
+        viewModelScope.launch { runCatching { repo.markSeen(companyId, opportunityId) } }
+    }
+
     /** Liga/desliga "Mostrar baixa aderência" (reagrupa a lista atual, sem nova consulta). */
     fun setShowLowAdherence(show: Boolean) {
         if (_list.value.showLowAdherence == show) return
+        updateView { it.copy(showLowAdherence = show) }
+    }
+
+    /** Liga/desliga "Mostrar dias anteriores" (reagrupa sem nova consulta) e grava a escolha no DataStore. */
+    fun setShowPreviousDays(show: Boolean) {
+        if (_list.value.showPreviousDays != show) updateView { it.copy(showPreviousDays = show) }
+        viewSettings?.let { s -> viewModelScope.launch { runCatching { s.update { it.copy(showPreviousDays = show) } } } }
+    }
+
+    /** Chip de modalidade (Todas · Pregão · Dispensa · Concorrência/Outras), sem nova consulta. */
+    fun setModalityGroup(group: ModalityGroup) {
+        if (_list.value.modalityGroup == group) return
+        updateView { it.copy(modalityGroup = group) }
+    }
+
+    /** Aplica [transform] às opções de exibição e reagrupa [OpportunityListState.source] fora da main thread. */
+    private fun updateView(transform: (OpportunityListState) -> OpportunityListState) {
         viewModelScope.launch {
-            val base = _list.value
-            val g = grouped(base.allItems, show)
+            val base = transform(_list.value)
+            val g = grouped(base.source, base.viewOptions())
             _list.update { state ->
-                val r = if (state.items === base.items && state.hiddenLow === base.hiddenLow) g else group(state.allItems, show)
-                state.copy(showLowAdherence = show, items = r.items, sections = r.sections, hiddenLow = r.hiddenLow)
+                val next = transform(state)
+                val r = if (next.source === base.source && next.viewOptions() == base.viewOptions()) g else group(next.source, next.viewOptions())
+                next.withGrouped(next.source, r)
             }
         }
     }
@@ -208,12 +360,13 @@ abstract class OpportunityListViewModel(
                 aiScores(request).collect { update ->
                     // Mescla/ordena fora da main thread; se a lista mudou nesse meio-tempo, refaz sobre a atual.
                     val base = _list.value
-                    val merged = grouped(AiScoreMerge.merge(base.allItems, update.rated, request.minScore), base.showLowAdherence)
+                    val mergedSource = AiScoreMerge.merge(base.source, update.rated, request.minScore)
+                    val merged = grouped(mergedSource, base.viewOptions())
                     _list.update { state ->
-                        val g = if (state.items === base.items && state.hiddenLow === base.hiddenLow && state.showLowAdherence == base.showLowAdherence) merged
-                        else group(AiScoreMerge.merge(state.allItems, update.rated, request.minScore), state.showLowAdherence)
-                        state.copy(
-                            items = g.items, sections = g.sections, hiddenLow = g.hiddenLow,
+                        val ok = state.source === base.source && state.viewOptions() == base.viewOptions()
+                        val source = if (ok) mergedSource else AiScoreMerge.merge(state.source, update.rated, request.minScore)
+                        val g = if (ok) merged else group(source, state.viewOptions())
+                        state.withGrouped(source, g).copy(
                             aiRated = (state.aiRated + update.rated.size).coerceAtMost(state.aiTotal),
                             aiFailure = update.failure ?: state.aiFailure,
                         )
@@ -232,6 +385,31 @@ abstract class OpportunityListViewModel(
      * recarrega se a última tentativa falhou ou mostrou só o cache.
      */
     protected fun start() {
+        viewSettings?.let { s ->
+            viewModelScope.launch {
+                // Escolha salva de "Mostrar dias anteriores" (padrão desmarcado).
+                s.settings.map { it.showPreviousDays }.distinctUntilChanged().collect { show ->
+                    if (_list.value.showPreviousDays != show) updateView { it.copy(showPreviousDays = show) }
+                }
+            }
+            viewModelScope.launch {
+                // Último filtro de período escolhido.
+                s.settings.map { it.searchPeriod }.distinctUntilChanged().collect { period ->
+                    if (_list.value.marks.period != period) updateView { it.copy(marks = it.marks.copy(period = period)) }
+                }
+            }
+        }
+        flagsRepository?.let { repo ->
+            viewModelScope.launch {
+                // Descartadas/vistas da empresa ativa (troca de empresa troca as marcas).
+                auth.session.map { it?.activeCompany?.id }.distinctUntilChanged().flatMapLatest { id ->
+                    if (id == null) flowOf(emptyMap()) else repo.observeFlags(id).catch { emit(emptyMap()) }
+                }.collect { current ->
+                    flags = current
+                    recomputeMarks()
+                }
+            }
+        }
         viewModelScope.launch {
             // Abrir a tela / trocar de empresa: mostra na hora o que já está salvo (sem baixar tudo de novo).
             auth.session.map { it?.activeCompany?.id }.distinctUntilChanged().collect { load(silent = false, cacheOnly = true) }
@@ -242,7 +420,9 @@ abstract class OpportunityListViewModel(
             viewModelScope.launch {
                 combine(daily.settings, daily.status) { settings, status -> settings to status }.collect { (settings, status) ->
                     dailySettings = settings
+                    val novelty = dailyStatus.lastCompletedAt != status.lastCompletedAt
                     dailyStatus = status
+                    if (novelty && flagsRepository != null) recomputeMarks()
                     _list.update { it.copy(scheduleLine = DailySyncSchedule.sourceLine(status, settings, clock())) }
                     // A atualização diária (ou a de recuperação) terminou com a tela aberta: relê o cache, sem rede.
                     val completed = status.lastCompletedAt
@@ -287,20 +467,27 @@ abstract class OpportunityListViewModel(
 
     /**
      * Enquanto a tela está visível (o chamador cancela ao sair): a cada [CLOCK_REFRESH_MS] re-filtra a lista pelo
-     * relógio, SEM rede — o que encerrou some, "Hoje" acompanha a virada do dia e a linha da atualização diária
-     * ("Atualizado hoje às 05:30…") é refeita. Novas licitações chegam pela atualização diária (ou puxando para atualizar).
+     * relógio, SEM rede — o que encerrou muda de estado, "Hoje" acompanha a virada do dia (as de ontem passam para
+     * "Dias anteriores" e somem se o chip estiver desmarcado) e a linha da atualização diária ("Atualizado hoje às
+     * 05:30…") é refeita. Novas licitações chegam pela atualização diária (ou puxando para atualizar).
      */
     suspend fun clockRefreshLoop() {
+        // Ao voltar para a tela (ex.: abriu no dia seguinte), reagrupa na hora pelo relógio.
+        regroupByClock()
         while (true) {
             delay(CLOCK_REFRESH_MS)
-            val current = _list.value
-            val g = grouped(current.allItems, current.showLowAdherence)
-            _list.update {
-                val line = if (dailySync != null) DailySyncSchedule.sourceLine(dailyStatus, dailySettings, clock()) else it.scheduleLine
-                if (it.items === current.items && it.hiddenLow === current.hiddenLow && it.showLowAdherence == current.showLowAdherence) {
-                    it.copy(items = g.items, sections = g.sections, hiddenLow = g.hiddenLow, scheduleLine = line)
-                } else it.copy(scheduleLine = line)
-            }
+            regroupByClock()
+        }
+    }
+
+    private suspend fun regroupByClock() {
+        val current = _list.value
+        val g = grouped(current.source, current.viewOptions())
+        _list.update {
+            val line = if (dailySync != null) DailySyncSchedule.sourceLine(dailyStatus, dailySettings, clock()) else it.scheduleLine
+            if (it.source === current.source && it.viewOptions() == current.viewOptions()) {
+                it.withGrouped(it.source, g).copy(scheduleLine = line)
+            } else it.copy(scheduleLine = line)
         }
     }
 
@@ -313,7 +500,8 @@ abstract class OpportunityListViewModel(
                 _list.update {
                     it.copy(
                         loading = false, refreshing = false, userRefreshing = false, error = "Sessão encerrada. Entre novamente.",
-                        items = emptyList(), sections = emptyList(), hiddenLow = emptyList(),
+                        items = emptyList(), sections = emptyList(), hiddenLow = emptyList(), source = emptyList(),
+                        previousCount = 0, windowSummary = null,
                     )
                 }
                 return@launch
@@ -337,17 +525,20 @@ abstract class OpportunityListViewModel(
                 Result.failure(e)
             }
             // Dedup e texto de diagnóstico calculados uma vez, fora da main thread.
-            val showLow = _list.value.showLowAdherence
+            val forced = forcePreviousDays
+            val options = _list.value.copy(previousForced = forced).viewOptions()
             val prepared = result.getOrNull()?.let { outcome ->
-                grouped(outcome.items, showLow) to withContext(Dispatchers.Default) { outcome.sourceSummary }
+                val source = if (outcome.previousDays.isEmpty()) outcome.items else outcome.items + outcome.previousDays
+                Triple(source, grouped(source, options), withContext(Dispatchers.Default) { outcome.sourceSummary })
             }
             _list.update { state ->
                 result.fold(
                     onSuccess = {
-                        val g = prepared?.first?.let { g -> if (state.showLowAdherence == showLow) g else group(it.items, state.showLowAdherence) }
-                        state.copy(
-                            loading = false, refreshing = false, userRefreshing = false, items = g?.items.orEmpty(),
-                            sections = g?.sections.orEmpty(), hiddenLow = g?.hiddenLow.orEmpty(), error = null,
+                        val source = prepared?.first.orEmpty()
+                        val forcedState = state.copy(previousForced = forced)
+                        val g = prepared?.second?.takeIf { forcedState.viewOptions() == options } ?: group(source, forcedState.viewOptions())
+                        forcedState.withGrouped(source, g).copy(
+                            loading = false, refreshing = false, userRefreshing = false, error = null,
                             // Só o que está salvo: "atualizado" = fim da última atualização diária (ou o que já se sabia).
                             updatedAt = when {
                                 it.cacheSnapshot -> dailyStatus.lastCompletedAt ?: state.updatedAt
@@ -356,7 +547,7 @@ abstract class OpportunityListViewModel(
                             },
                             fromSnapshot = it.cacheSnapshot,
                             offline = !online,
-                            sourceSummary = prepared?.second,
+                            sourceSummary = prepared?.third,
                             aiTotal = it.aiRequest?.total ?: 0,
                             aiRated = it.aiRequest?.alreadyRated ?: 0,
                             aiFailure = null,
@@ -373,11 +564,18 @@ abstract class OpportunityListViewModel(
                         } else {
                             state.copy(
                                 loading = false, refreshing = false, userRefreshing = false, items = emptyList(), sections = emptyList(),
-                                hiddenLow = emptyList(), error = message, offline = !online,
+                                hiddenLow = emptyList(), source = emptyList(), previousCount = 0, windowSummary = null,
+                                error = message, offline = !online,
                             )
                         }
                     },
                 )
+            }
+            // Selo "Nova": quando cada item entrou no cache.
+            flagsRepository?.let { repo ->
+                val ids = _list.value.source.map { it.opportunity.id }
+                firstSeen = runCatching { repo.firstSeen(ids) }.getOrDefault(emptyMap())
+                recomputeMarks()
             }
             startAiScoring(result.getOrNull()?.aiRequest)
             // Parcial e a sincronização já terminou antes de a lista ser aplicada: refaz logo (sem esperar 2 min).
@@ -396,6 +594,7 @@ abstract class OpportunityListViewModel(
 
     /** "Tenho Interesse" — ou abre a licitação quando já está em interesse. */
     fun onInterest(item: ScoredOpportunity) = withBusy(item) { companyId ->
+        markSeen(companyId, item.opportunity.id)
         if (item.interested) {
             val existing = tenders.findByOpportunity(companyId, item.opportunity.id)
             val id = existing?.id ?: tenders.markInterest(companyId, item.opportunity)
@@ -409,6 +608,7 @@ abstract class OpportunityListViewModel(
 
     /** "Analisar" — marca interesse se preciso e abre a análise do edital. */
     fun onAnalyze(item: ScoredOpportunity) = withBusy(item) { companyId ->
+        markSeen(companyId, item.opportunity.id)
         val id = tenders.findByOpportunity(companyId, item.opportunity.id)?.id
             ?: tenders.markInterest(companyId, item.opportunity)
         markInterested(item.opportunity.id)
@@ -419,20 +619,21 @@ abstract class OpportunityListViewModel(
         fun List<ScoredOpportunity>.mark() = map { if (it.opportunity.id == opportunityId) it.copy(interested = true) else it }
         state.copy(
             items = state.items.mark(), sections = state.sections.map { it.copy(items = it.items.mark()) },
-            hiddenLow = state.hiddenLow.mark(),
+            hiddenLow = state.hiddenLow.mark(), source = state.source.mark(),
         )
     }
 
     /**
-     * Separa a baixa aderência (só com [lowAdherenceThreshold]), agrupa (Hoje / Próximos dias / Vão abrir) e ordena
-     * cada seção por nota e horário; encerradas somem.
+     * Filtra a modalidade, separa os dias anteriores (só com o chip/texto digitado) e a baixa aderência (só com
+     * [lowAdherenceThreshold]), agrupa (Hoje / Próximos dias / Vão abrir / Dias anteriores) e ordena cada seção pelo
+     * relógio atual (America/Sao_Paulo).
      */
-    private fun group(items: List<ScoredOpportunity>, showLow: Boolean): LowAdherence.Grouped =
-        LowAdherence.group(items, clock(), lowAdherenceThreshold, showLow)
+    private fun group(items: List<ScoredOpportunity>, options: ListViewOptions): LowAdherence.Grouped =
+        LowAdherence.group(items, clock(), lowAdherenceThreshold, options.showLow, options.showPrevious, options.modality, options.marks)
 
     /** [group] fora da main thread. */
-    private suspend fun grouped(items: List<ScoredOpportunity>, showLow: Boolean) =
-        withContext(Dispatchers.Default) { group(items, showLow) }
+    private suspend fun grouped(items: List<ScoredOpportunity>, options: ListViewOptions) =
+        withContext(Dispatchers.Default) { group(items, options) }
 
     private fun withBusy(item: ScoredOpportunity, block: suspend (companyId: Long) -> Unit) {
         val key = item.opportunity.id
@@ -459,5 +660,7 @@ abstract class OpportunityListViewModel(
         /** Re-filtro local (sem rede) da lista pelo relógio com a tela aberta. */
         const val CLOCK_REFRESH_MS = 60L * 1000
         const val PARTIAL_RETRY_MS = 5_000L
+        /** Tempo da barra "Descartada · Desfazer". */
+        const val UNDO_WINDOW_MS = 6_000L
     }
 }

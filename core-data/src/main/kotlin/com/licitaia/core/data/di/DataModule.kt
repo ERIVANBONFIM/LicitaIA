@@ -114,6 +114,7 @@ object DataProvidersModule {
     @Provides fun comprasGovCacheDao(db: LicitaDatabase): com.licitaia.core.data.db.ComprasGovCacheDao = db.comprasGovCacheDao()
     @Provides fun portalRobotDao(db: LicitaDatabase): com.licitaia.core.data.db.PortalRobotDao = db.portalRobotDao()
     @Provides fun editalQuestionDao(db: LicitaDatabase): com.licitaia.core.data.db.EditalQuestionDao = db.editalQuestionDao()
+    @Provides fun opportunityFlagDao(db: LicitaDatabase): com.licitaia.core.data.db.OpportunityFlagDao = db.opportunityFlagDao()
 }
 
 @Module
@@ -142,5 +143,7 @@ abstract class DataBindingsModule {
     /** v13: "Pergunte ao edital" (histórico gravado) e aba "Itens" (itens oficiais com cache em memória). */
     @Binds abstract fun editalQuestionRepository(impl: com.licitaia.core.data.repository.EditalQuestionRepositoryImpl): com.licitaia.domain.repository.EditalQuestionRepository
     @Binds abstract fun tenderItemsRepository(impl: com.licitaia.core.data.repository.TenderItemsRepositoryImpl): com.licitaia.domain.repository.TenderItemsRepository
+    /** v14: descartadas/vistas por empresa e selo "Nova". */
+    @Binds abstract fun opportunityFlagsRepository(impl: com.licitaia.core.data.repository.OpportunityFlagsRepositoryImpl): com.licitaia.domain.repository.OpportunityFlagsRepository
     @Binds abstract fun listingRowStore(impl: com.licitaia.core.data.repository.RoomListingRowStore): com.licitaia.connector.api.ListingRowStore
 }

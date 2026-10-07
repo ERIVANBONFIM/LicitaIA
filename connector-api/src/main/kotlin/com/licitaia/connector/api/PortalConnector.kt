@@ -88,6 +88,14 @@ interface OfficialItemsSource {
 }
 
 /**
+ * Situação oficial atual de uma contratação pelo número de controle PNCP (situação + datas), usada na conferência diária
+ * das licitações acompanhadas (suspensa, revogada/anulada, adiada, resultado). null = não encontrada.
+ */
+interface OfficialStatusSource {
+    suspend fun officialStatus(pncpControlNumber: String): com.licitaia.domain.model.OfficialStatus?
+}
+
+/**
  * Triagem local aplicada pela fonte ANTES de etapas caras (ex.: consultar o prazo de cada candidata no PNCP):
  * palavras do radar/busca, UF, valor, modalidade e heurística de relevância. true = candidata.
  */

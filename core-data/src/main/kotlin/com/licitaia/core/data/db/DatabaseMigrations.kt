@@ -237,9 +237,54 @@ object DatabaseMigrations {
         }
     }
 
+    /** DDL das tabelas da v14 exatamente como o Room a gera (schemas/.../14.json). */
+    internal const val CREATE_OPPORTUNITY_FLAGS =
+        "CREATE TABLE IF NOT EXISTS `opportunity_flags` (`companyId` INTEGER NOT NULL, `opportunityId` TEXT NOT NULL, " +
+            "`discardedAt` INTEGER, `seenAt` INTEGER, PRIMARY KEY(`companyId`, `opportunityId`))"
+    internal const val CREATE_OPPORTUNITY_FLAGS_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_opportunity_flags_companyId` ON `opportunity_flags` (`companyId`)"
+    internal const val CREATE_OPPORTUNITY_FIRST_SEEN =
+        "CREATE TABLE IF NOT EXISTS `opportunity_first_seen` (`opportunityId` TEXT NOT NULL, `firstSeenAt` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`opportunityId`))"
+    internal const val CREATE_TENDER_STATUS_WATCH =
+        "CREATE TABLE IF NOT EXISTS `tender_status_watch` (`tenderId` INTEGER NOT NULL, `companyId` INTEGER NOT NULL, " +
+            "`situation` TEXT, `proposalDeadline` INTEGER NOT NULL, `sessionAt` INTEGER NOT NULL, `hasResult` INTEGER NOT NULL, " +
+            "`checkedAt` INTEGER NOT NULL, PRIMARY KEY(`tenderId`))"
+    internal const val CREATE_TENDER_STATUS_WATCH_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_tender_status_watch_companyId` ON `tender_status_watch` (`companyId`)"
+
+    /** Colunas anuláveis da v14 (DEFAULT NULL), por tabela: nome → tipo SQLite. */
+    internal val V14_COLUMNS = mapOf(
+        "opportunities" to listOf("uasg" to "TEXT", "officialSituation" to "TEXT", "previousProposalDeadline" to "INTEGER"),
+        "tenders" to listOf("uasg" to "TEXT", "officialSituation" to "TEXT"),
+    )
+
+    /**
+     * Versão 14: UASG e situação oficial em `opportunities`/`tenders` (TEXT DEFAULT NULL, idempotente) e as tabelas
+     * novas `opportunity_flags` (descartadas/vistas por empresa), `opportunity_first_seen` (selo "Nova") e
+     * `tender_status_watch` (mudança de fase). Nenhuma tabela existente é apagada e nenhum dado é alterado.
+     */
+    val FROM_13_TO_14 = object : Migration(13, 14) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            V14_COLUMNS.forEach { (table, wanted) ->
+                val columns = db.query("PRAGMA table_info($table)").use { cursor ->
+                    buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+                }
+                wanted.filter { it.first !in columns }.forEach { (column, type) ->
+                    db.execSQL("ALTER TABLE $table ADD COLUMN $column $type DEFAULT NULL")
+                }
+            }
+            db.execSQL(CREATE_OPPORTUNITY_FLAGS)
+            db.execSQL(CREATE_OPPORTUNITY_FLAGS_INDEX)
+            db.execSQL(CREATE_OPPORTUNITY_FIRST_SEEN)
+            db.execSQL(CREATE_TENDER_STATUS_WATCH)
+            db.execSQL(CREATE_TENDER_STATUS_WATCH_INDEX)
+        }
+    }
+
     /** Todas as migrações incrementais, na ordem. */
     val ALL: Array<Migration> get() = arrayOf(
         FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6, FROM_6_TO_7, FROM_7_TO_8, FROM_8_TO_9, FROM_9_TO_10,
-        FROM_10_TO_11, FROM_11_TO_12, FROM_12_TO_13,
+        FROM_10_TO_11, FROM_11_TO_12, FROM_12_TO_13, FROM_13_TO_14,
     )
 }

@@ -101,6 +101,14 @@ internal object PncpMapper {
      * Devolve null quando a contratação não pode ser representada (sem número de controle válido
      * ou modalidade fora das suportadas pelo app). Nada é inventado: campos ausentes ficam vazios/0.
      */
+    /** Situação oficial (nome) + datas de proposta da contratação. */
+    fun toOfficialStatus(dto: PncpContratacao): com.licitaia.domain.model.OfficialStatus =
+        com.licitaia.domain.model.OfficialStatus(
+            situation = dto.situacaoCompraNome?.trim()?.takeIf { it.isNotEmpty() },
+            proposalDeadline = parseDate(dto.dataEncerramentoProposta) ?: Opportunity.DEADLINE_UNKNOWN,
+            proposalOpening = parseDate(dto.dataAberturaProposta),
+        )
+
     fun toOpportunity(dto: PncpContratacao): Opportunity? {
         val ref = PncpControlNumber.parse(dto.numeroControlePNCP) ?: return null
         val modality = PncpModalities.modalityOf(dto.modalidadeId) ?: return null
@@ -136,6 +144,10 @@ internal object PncpMapper {
             id = ref.opportunityId,
             portal = platform,
             platformName = PncpPlatforms.displayName(dto.usuarioNome, platform),
+            // Código da unidade do órgão: no Compras.gov.br é a UASG (6 dígitos).
+            // "Divulgada no PNCP" = normal; "Revogada"/"Anulada"/"Suspensa" viram o selo colorido.
+            officialSituation = com.licitaia.domain.model.OfficialSituation.fromText(dto.situacaoCompraNome),
+            uasg = com.licitaia.domain.model.UasgCode.normalize(unidade?.codigoUnidade, comprasGov = platform == com.licitaia.domain.model.Portal.COMPRAS_GOV),
             number = dto.numeroCompra?.trim()?.takeIf { it.isNotEmpty() }?.let { n -> dto.anoCompra?.let { "$n/$it" } ?: n } ?: ref.raw,
             agency = agency,
             objectDescription = objeto.ifEmpty { "Objeto não informado pelo órgão" },

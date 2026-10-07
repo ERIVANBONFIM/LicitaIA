@@ -164,6 +164,21 @@ class ComprasGovMapperTest {
     }
 
     @Test
+    fun `UASG de unidadeOrgaoCodigoUnidade com 6 digitos e situacao oficial nas palavras-chave`() {
+        val page = json.decodeFromString(ComprasGovPage.serializer(ComprasGovContratacao.serializer()), fixture("contratacoes_14133_pregao_mg_p40.json"))
+        val dto = page.resultado.first().copy(unidadeOrgaoCodigoUnidade = "92731", situacaoCompraNomePncp = "Divulgada no PNCP")
+        val opp = ComprasGovMapper.toOpportunity(dto)!!
+        assertEquals("092731", opp.uasg)
+        assertEquals("UASG 092731", com.licitaia.domain.model.UasgCode.label(opp))
+        assertNull(opp.officialSituation)
+        val suspensa = ComprasGovMapper.toOpportunity(dto.copy(situacaoCompraNomePncp = "Suspensa"))!!
+        assertEquals(com.licitaia.domain.model.OfficialSituation.SUSPENSA, suspensa.officialSituation)
+        // O cache de linhas não tem coluna própria: UASG e situação são relidas das palavras-chave.
+        assertEquals("092731", com.licitaia.domain.model.UasgCode.fromKeywords(suspensa.keywords))
+        assertEquals(com.licitaia.domain.model.OfficialSituation.SUSPENSA, com.licitaia.domain.model.OfficialSituation.fromKeywords(suspensa.keywords))
+    }
+
+    @Test
     fun `contratacao excluida ou sem modalidade representada e descartada`() {
         val page = json.decodeFromString(ComprasGovPage.serializer(ComprasGovContratacao.serializer()), fixture("contratacoes_14133_pregao_mg_p40.json"))
         val dto = page.resultado.first()

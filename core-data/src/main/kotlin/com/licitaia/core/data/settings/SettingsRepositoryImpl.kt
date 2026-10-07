@@ -37,6 +37,14 @@ private object Keys {
     val portalKeepAlive = stringSetPreferencesKey("portal_keep_alive")
     // "Entrar automaticamente com certificado digital" (opt-in por empresa+portal).
     val portalAutoCertLogin = stringSetPreferencesKey("portal_auto_cert_login")
+    // "Mostrar dias anteriores" (Busca e Resultados do Radar).
+    val showPreviousDays = booleanPreferencesKey("show_previous_days")
+    // Filtro de período (Busca/Radar) e última abertura da Busca (selo "Nova").
+    val periodPreset = stringPreferencesKey("search_period_preset")
+    val periodField = stringPreferencesKey("search_period_field")
+    val periodFrom = longPreferencesKey("search_period_from")
+    val periodTo = longPreferencesKey("search_period_to")
+    val lastSearchOpenedAt = longPreferencesKey("last_search_opened_at")
 
     val rememberedUser = longPreferencesKey("session_user_id")
     val rememberedCompany = longPreferencesKey("session_company_id")
@@ -65,6 +73,16 @@ private fun Preferences.toSettings(): AppSettings {
             .takeIf { it in AppSettings.PORTAL_KEEP_ALIVE_OPTIONS } ?: defaults.portalKeepAliveMinutes,
         portalKeepAlive = this[Keys.portalKeepAlive] ?: defaults.portalKeepAlive,
         portalAutoCertLogin = this[Keys.portalAutoCertLogin] ?: defaults.portalAutoCertLogin,
+        showPreviousDays = this[Keys.showPreviousDays] ?: defaults.showPreviousDays,
+        searchPeriod = com.licitaia.domain.model.PeriodFilter(
+            preset = this[Keys.periodPreset]?.let { n -> com.licitaia.domain.model.PeriodPreset.entries.firstOrNull { it.name == n } }
+                ?: com.licitaia.domain.model.PeriodPreset.ANY,
+            field = this[Keys.periodField]?.let { n -> com.licitaia.domain.model.PeriodField.entries.firstOrNull { it.name == n } }
+                ?: com.licitaia.domain.model.PeriodField.PROPOSAL,
+            customFrom = this[Keys.periodFrom],
+            customTo = this[Keys.periodTo],
+        ),
+        lastSearchOpenedAt = this[Keys.lastSearchOpenedAt],
     )
 }
 
@@ -96,6 +114,12 @@ class SettingsRepositoryImpl @Inject constructor(
             prefs[Keys.portalKeepAliveMinutes] = next.portalKeepAliveMinutes
             prefs[Keys.portalKeepAlive] = next.portalKeepAlive
             prefs[Keys.portalAutoCertLogin] = next.portalAutoCertLogin
+            prefs[Keys.showPreviousDays] = next.showPreviousDays
+            prefs[Keys.periodPreset] = next.searchPeriod.preset.name
+            prefs[Keys.periodField] = next.searchPeriod.field.name
+            next.searchPeriod.customFrom?.let { prefs[Keys.periodFrom] = it } ?: prefs.remove(Keys.periodFrom)
+            next.searchPeriod.customTo?.let { prefs[Keys.periodTo] = it } ?: prefs.remove(Keys.periodTo)
+            next.lastSearchOpenedAt?.let { prefs[Keys.lastSearchOpenedAt] = it } ?: prefs.remove(Keys.lastSearchOpenedAt)
         }
     }
 }

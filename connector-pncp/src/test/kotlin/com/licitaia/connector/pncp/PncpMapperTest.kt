@@ -58,6 +58,30 @@ class PncpMapperTest {
     }
 
     @Test
+    fun `UASG e situacao oficial vem da unidade e de situacaoCompraNome`() {
+        val base = PncpContratacao(
+            numeroControlePNCP = "18338194000127-1-000123/2026", modalidadeId = 6, objetoCompra = "Serviço de internet",
+            dataPublicacaoPncp = "2026-10-01T10:00:00", dataEncerramentoProposta = "2026-10-10T08:00:00",
+            unidadeOrgao = PncpUnidade(ufSigla = "MG", codigoUnidade = "92731"), usuarioNome = "Compras.gov.br",
+            situacaoCompraNome = "Divulgada no PNCP",
+        )
+        val compras = PncpMapper.toOpportunity(base)!!
+        assertEquals(Portal.COMPRAS_GOV, compras.portal)
+        assertEquals("UASG com 6 dígitos no Compras.gov.br", "092731", compras.uasg)
+        assertEquals("UASG 092731", com.licitaia.domain.model.UasgCode.label(compras))
+        assertNull("Divulgada no PNCP = normal", compras.officialSituation)
+        // Outra plataforma: código da unidade sem completar, rotulado "Cód. unidade".
+        val outra = PncpMapper.toOpportunity(base.copy(usuarioNome = "Licitar Digital", unidadeOrgao = PncpUnidade(codigoUnidade = "1234")))!!
+        assertEquals("1234", outra.uasg)
+        assertEquals("Cód. unidade 1234", com.licitaia.domain.model.UasgCode.label(outra))
+        assertEquals(com.licitaia.domain.model.OfficialSituation.SUSPENSA, PncpMapper.toOpportunity(base.copy(situacaoCompraNome = "Suspensa"))!!.officialSituation)
+        assertEquals(com.licitaia.domain.model.OfficialSituation.REVOGADA, PncpMapper.toOpportunity(base.copy(situacaoCompraNome = "Revogada"))!!.officialSituation)
+        val status = PncpMapper.toOfficialStatus(base.copy(situacaoCompraNome = "Anulada"))
+        assertEquals("Anulada", status.situation)
+        assertEquals(saoPaulo(2026, 10, 10, 8, 0, 0), status.proposalDeadline)
+    }
+
+    @Test
     fun `codigos de modalidade confirmados pela API`() {
         assertEquals(6, PncpModalities.codeOf(Modality.PREGAO_ELETRONICO))
         assertEquals(8, PncpModalities.codeOf(Modality.DISPENSA_ELETRONICA))

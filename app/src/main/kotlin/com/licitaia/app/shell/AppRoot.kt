@@ -173,6 +173,7 @@ private fun MainShell(
 
     val session by viewModel.session.collectAsStateWithLifecycle()
     val updateState by updateViewModel.state.collectAsStateWithLifecycle()
+    val postponedUpdate by updateViewModel.postponed.collectAsStateWithLifecycle()
     val shell by viewModel.shellState.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val companies by viewModel.companies.collectAsStateWithLifecycle()
@@ -372,6 +373,28 @@ private fun MainShell(
                         .padding(bottom = if (showBottomBar) 84.dp else 8.dp),
                 ) { data ->
                     Snackbar(data, containerColor = LicitaColors.SurfaceHigh, contentColor = LicitaColors.TextPrimary, shape = MaterialTheme.shapes.medium)
+                }
+
+                // Atualização adiada em "Depois": faixa fixa acima da barra inferior até instalar.
+                val postponedUpdate = postponedUpdate
+                if (postponedUpdate != null && loggedIn && !locked && !updateState.visible) {
+                    androidx.compose.material3.Surface(
+                        onClick = updateViewModel::resumePostponed,
+                        color = LicitaColors.Blue,
+                        contentColor = androidx.compose.ui.graphics.Color.White,
+                        shape = MaterialTheme.shapes.extraLarge,
+                        shadowElevation = 6.dp,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(bottom = if (showBottomBar) 84.dp else 12.dp, start = 16.dp, end = 16.dp),
+                    ) {
+                        androidx.compose.material3.Text(
+                            "Nova versão ${postponedUpdate.versionName} disponível · Atualizar",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                        )
+                    }
                 }
 
                 InAppAlertHost(

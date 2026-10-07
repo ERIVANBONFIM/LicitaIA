@@ -305,6 +305,7 @@ object OpportunityScorer {
             append(opportunity.number).append(' ')
             append(opportunity.city).append(' ')
             append(opportunity.keywords.joinToString(" "))
+            opportunity.uasg?.let { append(" uasg ").append(it) }
         },
     )
 }
@@ -364,6 +365,9 @@ object OpportunityFilterMatcher {
         if (filter.minValue != null && opportunity.estimatedValue < filter.minValue) return false
         if (filter.maxValue != null && opportunity.estimatedValue > filter.maxValue) return false
         val query = filter.query.trim()
+        // Número de UASG digitado (5–6 dígitos): as contratações daquela unidade compradora.
+        val uasg = com.licitaia.domain.model.UasgCode.fromQuery(query)
+        if (uasg != null && com.licitaia.domain.model.UasgCode.matches(opportunity, uasg)) return true
         if (query.isNotEmpty()) {
             val text = OpportunityScorer.searchableText(opportunity)
             val terms = query.split(Regex("\\s+")).filter { it.isNotBlank() }

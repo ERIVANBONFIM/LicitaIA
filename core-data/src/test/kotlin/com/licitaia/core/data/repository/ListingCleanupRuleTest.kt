@@ -43,12 +43,19 @@ class ListingCleanupRuleTest {
     }
 
     @Test
-    fun `apaga encerradas so quando prazo e sessao ja passaram`() {
-        assertEquals(ListingCleanupRule.Reason.ENDED, reason(opp(2, deadline = brasilia(2026, 10, 6), session = brasilia(2026, 10, 6, 14))))
-        // Sessão não informada: o prazo vencido basta.
-        assertEquals(ListingCleanupRule.Reason.ENDED, reason(opp(3, deadline = brasilia(2026, 10, 6), session = 0L)))
-        // Propostas encerradas mas a sessão de disputa é amanhã: fica.
-        assertNull(reason(opp(4, deadline = brasilia(2026, 10, 6), session = brasilia(2026, 10, 8))))
+    fun `apaga encerradas so antes do mes atual e preserva as encerradas do mes`() {
+        val sept = brasilia(2026, 9, 20)
+        assertEquals(ListingCleanupRule.Reason.ENDED, reason(opp(2, published = sept, deadline = brasilia(2026, 9, 28), session = brasilia(2026, 9, 28, 14))))
+        // Sessão não informada: o prazo antes do mês basta.
+        assertEquals(ListingCleanupRule.Reason.ENDED, reason(opp(3, published = sept, deadline = brasilia(2026, 9, 30, 23, 59), session = 0L)))
+        // Propostas encerradas em setembro mas a sessão de disputa é no mês atual: fica.
+        assertNull(reason(opp(4, published = sept, deadline = brasilia(2026, 9, 29), session = brasilia(2026, 10, 2))))
+        // Encerradas no mês atual (ontem, dia 1º 00:00, publicada em setembro): ficam ("Dias anteriores").
+        assertNull(reason(opp(15, deadline = brasilia(2026, 10, 6), session = brasilia(2026, 10, 6, 14))))
+        assertNull(reason(opp(16, published = sept, deadline = brasilia(2026, 10, 1, 0, 0), session = 0L)))
+        // Encerrada no mês atual mas cancelada: sai.
+        val cancelled = opp(17, deadline = brasilia(2026, 10, 3))
+        assertEquals(ListingCleanupRule.Reason.WITHDRAWN, reason(cancelled, withdrawn = setOf(cancelled.id)))
     }
 
     @Test
@@ -76,7 +83,7 @@ class ListingCleanupRuleTest {
     @Test
     fun `protecao vale para a mesma contratacao vinda do outro conector`() {
         // Interesse marcado no registro do Compras.gov.br; o cache tem o mesmo número de controle pelo PNCP.
-        val pncp = opp(11, deadline = brasilia(2026, 10, 1), session = 0L)
+        val pncp = opp(11, published = brasilia(2026, 9, 1), deadline = brasilia(2026, 9, 25), session = 0L)
         val comprasGovId = pncp.id.replace("PNCP:", "COMPRAS_GOV:")
         assertNull(reason(pncp, protectedIds = listOf(comprasGovId)))
         assertEquals(ListingCleanupRule.Reason.ENDED, reason(pncp, protectedIds = listOf("COMPRAS_GOV:99999999000199-1-000011/2026")))

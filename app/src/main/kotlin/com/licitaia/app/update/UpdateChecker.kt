@@ -27,7 +27,8 @@ import javax.inject.Singleton
  * Consulta a release mais recente do repositório ([BuildConfig.UPDATE_REPO]) na API pública do GitHub,
  * sem token, e decide se é mais nova que a versão instalada.
  *
- * - Automática (ao abrir o app logado): no máximo a cada [AUTO_INTERVAL_MS]; silenciosa em erro/offline;
+ * - Automática (ao abrir/voltar ao app logado e pelo worker periódico): no máximo a cada [AUTO_INTERVAL_MS];
+ *   silenciosa em erro/offline;
  *   respeita a tag adiada em "Depois" por [SKIP_INTERVAL_MS].
  * - Manual (Configurações): sempre consulta e devolve o resultado para a tela.
  *
@@ -43,6 +44,10 @@ class UpdateChecker @Inject constructor(
     /** Atualização aguardando decisão do usuário; observada pelo diálogo global em AppRoot. */
     private val _pending = MutableStateFlow<AppUpdate?>(null)
     val pending: StateFlow<AppUpdate?> = _pending.asStateFlow()
+
+    /** Atualização adiada em "Depois": a faixa no topo do app continua oferecendo enquanto não for instalada. */
+    private val _postponed = MutableStateFlow<AppUpdate?>(null)
+    val postponed: StateFlow<AppUpdate?> = _postponed.asStateFlow()
 
     private val mutex = Mutex()
     @Volatile private var lastAttemptAt = 0L
@@ -64,7 +69,11 @@ class UpdateChecker @Inject constructor(
             is UpdateCheckResult.Available -> {
                 prefs.markChecked(now)
                 val skipped = runCatching { prefs.skipped() }.getOrNull()
-                if (skipped != null && skipped.tag == result.update.tag && skipped.until > now) return@withLock null
+                if (skipped != null && skipped.tag == result.update.tag && skipped.until > now) {
+                    _postponed.value = result.update
+                    return@withLock null
+                }
+                _postponed.value = null
                 _pending.value = result.update
             }
             UpdateCheckResult.UpToDate, is UpdateCheckResult.NoRelease -> prefs.markChecked(now)
@@ -78,6 +87,7 @@ class UpdateChecker @Inject constructor(
         val result = fetchLatest()
         if (result is UpdateCheckResult.Available) {
             runCatching { prefs.clearSkip() }
+            _postponed.value = null
             _pending.value = result.update
         }
         if (result !is UpdateCheckResult.Offline && result !is UpdateCheckResult.Failed) {
@@ -89,7 +99,16 @@ class UpdateChecker @Inject constructor(
     /** "Depois": esconde o diálogo e não oferece a mesma tag por [SKIP_INTERVAL_MS]. */
     suspend fun postpone(update: AppUpdate, now: Long = System.currentTimeMillis()) {
         runCatching { prefs.skip(update.tag, now + SKIP_INTERVAL_MS) }
+        _postponed.value = update
         if (_pending.value?.tag == update.tag) _pending.value = null
+    }
+
+    /** Faixa "Atualizar" tocada: reabre o diálogo da atualização adiada. */
+    suspend fun resumePostponed() {
+        val update = _postponed.value ?: return
+        runCatching { prefs.clearSkip() }
+        _postponed.value = null
+        _pending.value = update
     }
 
     /** Fecha o diálogo sem adiar (ex.: após abrir o instalador). */
@@ -155,8 +174,8 @@ class UpdateChecker @Inject constructor(
     }
 
     companion object {
-        const val AUTO_INTERVAL_MS = 6 * 60 * 60 * 1000L
-        const val SKIP_INTERVAL_MS = 24 * 60 * 60 * 1000L
+        const val AUTO_INTERVAL_MS = 30 * 60 * 1000L
+        const val SKIP_INTERVAL_MS = 12 * 60 * 60 * 1000L
         const val RETRY_BACKOFF_MS = 15 * 60 * 1000L
     }
 }

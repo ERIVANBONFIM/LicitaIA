@@ -424,13 +424,19 @@ private fun OfficialItemDetail(
         OfficialItemFields.formatDateTime(item.updatedAt)?.let { InfoRow("Atualizado em", it) }
 
         DetailSection("Órgão e local")
+        // UASG explícita (trazida da oportunidade) ou o código da unidade da fonte oficial.
+        val unitLabel = com.licitaia.domain.model.UasgCode.label(
+            tender.portal,
+            tender.uasg ?: com.licitaia.domain.model.UasgCode.normalize(buyer?.unitCode, tender.portal == com.licitaia.domain.model.Portal.COMPRAS_GOV),
+        )
         if (buyer == null) {
+            unitLabel?.let { InfoRow("Unidade compradora", it) }
             Text("Dados do órgão indisponíveis.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
         } else {
             buyer.agencyName?.let { InfoRow("Órgão", it) }
             buyer.agencyCnpj?.let { InfoRow("CNPJ", Formatters.cnpj(it)) }
-            if (buyer.unitCode != null || buyer.unitName != null) {
-                InfoRow("Unidade compradora", listOfNotNull(buyer.unitCode?.let { "UASG $it" }, buyer.unitName).joinToString(" — "))
+            if (unitLabel != null || buyer.unitName != null) {
+                InfoRow("Unidade compradora", listOfNotNull(unitLabel, buyer.unitName).joinToString(" — "))
             }
             if (buyer.city != null || buyer.uf != null) InfoRow("Município/UF", listOfNotNull(buyer.city, buyer.uf).joinToString("/"))
             if (!buyer.fromOfficialSource) {

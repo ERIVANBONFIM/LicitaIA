@@ -29,24 +29,26 @@ fun interface ProtectedOpportunitySource {
 /**
  * Regra da limpeza do cache local de licitações (lógica pura, testável). Apaga:
  * - retiradas: canceladas/revogadas/anuladas/desertas/fracassadas/suspensas vistas pelas fontes;
- * - encerradas: prazo de propostas conhecido E sessão (quando informada) já passaram;
- * - antigas: publicadas antes do 1º dia do mês atual que não estão mais abertas (prazo vencido ou nunca confirmado).
+ * - encerradas ANTES do mês atual: prazo de propostas conhecido E sessão (quando informada) anteriores ao 1º dia do mês
+ *   (as encerradas no mês atual ficam: "Dias anteriores" e a pesquisa por texto as mostram);
+ * - antigas: sem prazo de propostas, publicadas antes do 1º dia do mês atual e sem sessão no mês (nunca confirmadas).
  * NUNCA apaga as protegidas (por id ou pelo número de controle PNCP equivalente, ver [OpportunityDeduplicator.keyOfId]).
  */
 internal object ListingCleanupRule {
     enum class Reason { WITHDRAWN, ENDED, OLD }
 
+    @Suppress("UNUSED_PARAMETER")
     fun reason(o: Opportunity, now: Long, monthStart: Long, withdrawn: Set<String>, protectedKeys: Set<String>): Reason? {
         if (o.id in protectedKeys || OpportunityDeduplicator.key(o) in protectedKeys) return null
         if (o.id in withdrawn) return Reason.WITHDRAWN
-        if (isEnded(o, now)) return Reason.ENDED
-        if (o.publishedAt < monthStart && !isOpen(o, now)) return Reason.OLD
+        if (isEnded(o, monthStart)) return Reason.ENDED
+        if (!o.hasProposalDeadline && o.publishedAt < monthStart && o.sessionAt < monthStart) return Reason.OLD
         return null
     }
 
-    /** Prazo de propostas conhecido e vencido, e a sessão (se informada) também já passou. */
-    fun isEnded(o: Opportunity, now: Long): Boolean =
-        o.hasProposalDeadline && o.proposalDeadline < now && (o.sessionAt <= Opportunity.DEADLINE_UNKNOWN || o.sessionAt < now)
+    /** Prazo de propostas conhecido e anterior a [cutoff], e a sessão (se informada) também. */
+    fun isEnded(o: Opportunity, cutoff: Long): Boolean =
+        o.hasProposalDeadline && o.proposalDeadline < cutoff && (o.sessionAt <= Opportunity.DEADLINE_UNKNOWN || o.sessionAt < cutoff)
 
     /** Aberta ou vai abrir: prazo de propostas conhecido e ainda no futuro. */
     fun isOpen(o: Opportunity, now: Long): Boolean = o.hasProposalDeadline && o.proposalDeadline >= now
@@ -112,11 +114,13 @@ class ListingMaintenance @Inject constructor(
             doomed.chunked(MAX_SQL_ARGS).forEach { chunk ->
                 removed += opportunityDao.deleteUnprotected(chunk)
                 runCatching { relevanceDao.deleteForOpportunities(chunk) }
+                // Descartadas não são protegidas: saem normalmente; o registro de 1ª vez no cache vai junto.
+                runCatching { database.opportunityFlagDao().deleteFirstSeen(chunk) }
             }
 
-            // Cache de linhas do Compras.gov.br: encerradas e retiradas (as de prazo desconhecido ficam: são as candidatas
-            // do enriquecimento de prazo no PNCP).
-            var rows = runCatching { comprasGovDao.deleteEnded(now) }.getOrDefault(0)
+            // Cache de linhas do Compras.gov.br: encerradas antes do mês atual e retiradas (as de prazo desconhecido ficam:
+            // são as candidatas do enriquecimento de prazo no PNCP; as encerradas do mês ficam para "Dias anteriores").
+            var rows = runCatching { comprasGovDao.deleteEnded(monthStart) }.getOrDefault(0)
             withdrawn.filter { it !in keys && OpportunityDeduplicator.keyOfId(it) !in keys }.chunked(MAX_SQL_ARGS).forEach { chunk ->
                 rows += runCatching { comprasGovDao.deleteUnprotected(chunk) }.getOrDefault(0)
             }

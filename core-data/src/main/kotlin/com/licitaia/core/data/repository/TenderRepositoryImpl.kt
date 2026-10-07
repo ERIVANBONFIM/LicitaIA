@@ -130,7 +130,11 @@ class TenderRepositoryImpl @Inject constructor(
     override suspend fun markInterest(companyId: Long, opportunity: Opportunity): Long = withContext(Dispatchers.IO) {
         access.requireCompany(companyId)
         val id = interestMutex.withLock {
-            tenderDao.getByOpportunity(companyId, opportunity.id)?.let { return@withLock it.id }
+            tenderDao.getByOpportunity(companyId, opportunity.id)?.let { existing ->
+                // Licitação de antes da v14: recebe a UASG agora.
+                com.licitaia.domain.model.UasgCode.of(opportunity)?.let { u -> runCatching { tenderDao.fillUasg(existing.id, u) } }
+                return@withLock existing.id
+            }
             val now = System.currentTimeMillis()
             opportunityDao.upsertAll(listOf(opportunity.toEntity(now)))
             val newId = tenderDao.upsert(opportunity.toTender(companyId, now, editalRegistered = opportunity.editalUrl != null).toEntity())

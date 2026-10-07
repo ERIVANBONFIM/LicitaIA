@@ -433,6 +433,7 @@ private fun UpcomingCard(u: UpcomingSession, now: Long, onClick: () -> Unit) {
         Text("${u.agency} · sessão ${Formatters.dateTime(u.sessionAt)}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            com.licitaia.core.ui.components.OfficialSituationBadge(u.situation)
             StatusBadge(u.statusLabel, if (u.participating) Tone.SUCCESS else Tone.NEUTRAL)
             if (u.participating) StatusBadge("Participando", Tone.INFO)
         }

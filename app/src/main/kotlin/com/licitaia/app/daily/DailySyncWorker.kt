@@ -45,6 +45,7 @@ class DailySyncWorker @AssistedInject constructor(
     private val prefs: DailySyncPrefs,
     private val controller: DailySyncController,
     private val notifier: AppNotifier,
+    private val phases: com.licitaia.core.data.repository.TenderPhaseWatcher,
 ) : CoroutineWorker(context, parameters) {
 
     override suspend fun doWork(): Result {
@@ -76,6 +77,9 @@ class DailySyncWorker @AssistedInject constructor(
                 true
             } ?: false
             if (!ok) return retryOrFail()
+            // Mudança de fase das licitações acompanhadas (suspensa, revogada/anulada, adiada, resultado): um aviso por
+            // mudança, que abre a licitação. Falha aqui não derruba a atualização.
+            if (!isStopped) runCatching { notifyPhaseChanges(company, session) }
             val now = System.currentTimeMillis()
             prefs.markCompleted(now)
             runCatching { controller.runCleanup(now) }
@@ -100,6 +104,21 @@ class DailySyncWorker @AssistedInject constructor(
             prefs.setRunning(false)
             // Próximo dia agendado sempre (sucesso, falha ou retentativa).
             runCatching { controller.reschedule() }
+        }
+    }
+
+    private suspend fun notifyPhaseChanges(company: Long, session: com.licitaia.domain.model.AuthSession) {
+        for (notice in phases.check(company)) {
+            if (auth.session.value != session) break
+            val (title, body) = com.licitaia.domain.model.TenderPhaseRule.message(notice.number, notice.agency, notice.change)
+            runCatching {
+                notifier.notify(
+                    NotificationCategory.RADAR, title, body,
+                    critical = notice.change.phase != com.licitaia.domain.model.TenderPhase.RESULT,
+                    route = com.licitaia.core.ui.nav.Routes.tender(notice.tenderId),
+                    companyId = company,
+                )
+            }
         }
     }
 

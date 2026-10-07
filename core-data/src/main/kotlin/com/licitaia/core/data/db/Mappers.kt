@@ -70,11 +70,15 @@ fun Radar.toEntity() = RadarEntity(
 fun OpportunityEntity.toDomain() = Opportunity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
     proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, platformName, noDispute, proposalOpening,
+    uasg ?: if (portal == com.licitaia.domain.model.Portal.COMPRAS_GOV) com.licitaia.domain.model.UasgCode.fromKeywords(keywords) else null,
+    com.licitaia.domain.model.OfficialSituation.parse(officialSituation),
+    previousProposalDeadline,
 )
 
 fun Opportunity.toEntity(now: Long) = OpportunityEntity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
-    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now, platformName, noDispute, proposalOpening,
+    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now, platformName, noDispute, proposalOpening, uasg, officialSituation?.name,
+    previousProposalDeadline,
 )
 
 // ---------------------------------------------------------------- licitação / análise
@@ -82,13 +86,14 @@ fun Opportunity.toEntity(now: Long) = OpportunityEntity(
 fun TenderEntity.toDomain() = Tender(
     id, companyId, opportunityId, portal, number, agency, objectDescription, modality, segment, uf, city,
     estimatedValue, proposalDeadline, sessionAt, status, editalRegistered, createdAt, updatedAt,
-    editalPdfPath, editalTextPath, editalChars, editalPages, editalScanned,
+    editalPdfPath, editalTextPath, editalChars, editalPages, editalScanned, uasg,
+    com.licitaia.domain.model.OfficialSituation.parse(officialSituation),
 )
 
 fun Tender.toEntity() = TenderEntity(
     id, companyId, opportunityId, portal, number, agency, objectDescription, modality, segment, uf, city,
     estimatedValue, proposalDeadline, sessionAt, status, editalRegistered, createdAt, updatedAt,
-    editalPdfPath, editalTextPath, editalChars, editalPages, editalScanned,
+    editalPdfPath, editalTextPath, editalChars, editalPages, editalScanned, uasg, officialSituation?.name,
 )
 
 fun Opportunity.toTender(companyId: Long, now: Long, editalRegistered: Boolean) = Tender(
@@ -96,7 +101,18 @@ fun Opportunity.toTender(companyId: Long, now: Long, editalRegistered: Boolean) 
     objectDescription = objectDescription, modality = modality, segment = segment, uf = uf, city = city,
     estimatedValue = estimatedValue, proposalDeadline = proposalDeadline, sessionAt = sessionAt,
     editalRegistered = editalRegistered, createdAt = now, updatedAt = now,
+    // A UASG segue para a licitação (robô de proposta, PDF da proposta, detalhe).
+    uasg = com.licitaia.domain.model.UasgCode.of(this),
+    officialSituation = officialSituation,
 )
+
+fun OpportunityFlagEntity.toDomain() = com.licitaia.domain.model.OpportunityFlag(companyId, opportunityId, discardedAt, seenAt)
+
+fun TenderStatusWatchEntity.toDomain() =
+    com.licitaia.domain.model.TenderStatusSnapshot(tenderId, companyId, situation, proposalDeadline, sessionAt, hasResult, checkedAt)
+
+fun com.licitaia.domain.model.TenderStatusSnapshot.toEntity() =
+    TenderStatusWatchEntity(tenderId, companyId, situation, proposalDeadline, sessionAt, hasResult, checkedAt)
 
 fun ExtractedEdital.toDto() = ExtractedEditalDto(
     objectDescription, agency, portal, number, modality, estimatedValue, proposalDeadline, openingAt, sessionAt,

@@ -2,6 +2,22 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.5.1] — 2026-10-07
+
+### Adicionado
+- Busca do 1º dia do mês atual em diante (licitações, pregões e dispensas, inclusive sem disputa) com filtro
+  Todas · Pregão · Dispensa · Concorrência/Outras. A lista mostra de hoje em diante; os dias anteriores somem
+  sozinhos na virada do dia e voltam com "Mostrar dias anteriores" ou pela barra de pesquisa.
+- Situação oficial no cartão e na licitação: SUSPENSA, CANCELADA/REVOGADA/ANULADA, DESERTA/FRACASSADA e
+  ADIADA (com a data nova e a anterior). Robô não inicia sozinho em compra suspensa/cancelada.
+- UASG em todas as licitações ("48/2026 · UASG 160123"), na tela da licitação, nos itens, no PDF e no robô;
+  pesquisa por número da UASG.
+- Descartar licitação (com desfazer e "Descartadas"), selo "Nova" e filtro "Só novas", filtro de período
+  (Hoje, 7 dias, 30 dias, personalizado).
+- Aviso de mudança de fase nas licitações acompanhadas: suspensa, revogada/anulada, adiada, resultado.
+- Atualização do app: verifica ao abrir/voltar ao app (a cada 30 min); se tocar em "Depois", fica a faixa
+  "Nova versão disponível · Atualizar" até instalar. A verificação manual nas Configurações continua.
+
 ## [0.5.0] — 2026-10-07
 
 ### Adicionado

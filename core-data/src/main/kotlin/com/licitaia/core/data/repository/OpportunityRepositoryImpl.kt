@@ -1,4 +1,4 @@
-﻿package com.licitaia.core.data.repository
+package com.licitaia.core.data.repository
 
 import com.licitaia.connector.api.ConnectorRegistry
 import com.licitaia.connector.api.HttpStatusFailure
@@ -88,7 +88,13 @@ class OpportunityRepositoryImpl @Inject constructor(
     private val access: RepositoryAccess,
     private val connectivity: ConnectivityMonitor,
     private val relevance: AiRelevanceScorer,
+    /** v14: descartadas (fora dos avisos/contagem) e 1ª vez no cache (selo "Nova"). null nos testes antigos. */
+    private val flagDao: com.licitaia.core.data.db.OpportunityFlagDao? = null,
 ) : OpportunityRepository {
+
+    /** Ids descartados pela empresa (nunca avisados nem contados). */
+    private suspend fun discarded(companyId: Long): Set<String> =
+        runCatching { flagDao?.discardedIds(companyId)?.toHashSet() }.getOrNull() ?: emptySet()
 
     private val backoff = SourceBackoff()
     private val radarLocks = ConcurrentHashMap<Long, Mutex>()
@@ -117,8 +123,13 @@ class OpportunityRepositoryImpl @Inject constructor(
             val withNoDispute = filter.copy(showNoDispute = true)
             fetch(portals, withNoDispute, CandidateScreens.forSearch(withNoDispute, company, radars), cacheOnly).map { fetched ->
                 val interested = tenderDao.opportunityIds(companyId).toSet()
-                val split = NoDisputeVisibility.split(fetched.opportunities, filter.showNoDispute) { OpportunityFilterMatcher.matches(withNoDispute, it) }
-                // Só abertas e as que vão abrir; sem prazo confiável ficam ocultas (contadas).
+                // Texto digitado: procura também no cache inteiro (dias anteriores do mês que as fontes não listam mais).
+                val pool = if (filter.query.isNotBlank() && !fetched.fromCache) {
+                    val cached = cachedFor(portals)
+                    withContext(Dispatchers.Default) { OpportunityDeduplicator.dedupe(fetched.opportunities + cached) }
+                } else fetched.opportunities
+                val split = NoDisputeVisibility.split(pool, filter.showNoDispute) { OpportunityFilterMatcher.matches(withNoDispute, it) }
+                // Do 1º dia do mês em diante: hoje em diante em `items`, dias anteriores à parte; sem data ocultas (contadas).
                 val window = ProposalWindows.visible(split.visible, System.currentTimeMillis(), filter.showNoDispute)
                 val (items, aiRequest) = scoreAll(
                     company, radars, radarId = null, minScore = filter.minScore,
@@ -126,9 +137,13 @@ class OpportunityRepositoryImpl @Inject constructor(
                     // IA só na busca focada (texto/segmento); a geral fica na heurística + notas já salvas.
                     interested = interested, allowAi = filter.focused && !fetched.snapshot,
                 )
+                val previous = scoreAll(
+                    company, radars, radarId = null, minScore = filter.minScore,
+                    opportunities = window.previous, interested = interested, allowAi = false,
+                ).first
                 SearchOutcome(
                     items, fetched.sourceCounts, fetched.fromCache, fetched.failedSources, aiRequest, fetched.diagnostics, split.hidden,
-                    hiddenNoDeadline = window.hiddenNoDeadline, cacheSnapshot = fetched.snapshot,
+                    hiddenNoDeadline = window.hiddenNoDeadline, cacheSnapshot = fetched.snapshot, previousDays = previous,
                 )
             }
         }
@@ -154,16 +169,17 @@ class OpportunityRepositoryImpl @Inject constructor(
                 val hidden = NoDisputeVisibility.split(fetched.opportunities, radar.showNoDispute) {
                     RadarMatcher.matches(withNoDispute, it, company.uf)
                 }.hidden
-                // Só abertas e as que vão abrir; sem prazo confiável ficam ocultas (contadas).
+                // Do 1º dia do mês em diante: hoje em diante em `items`, dias anteriores à parte; sem data ocultas (contadas).
                 val window = withContext(Dispatchers.Default) {
                     ProposalWindows.visible(
                         fetched.opportunities.filter { RadarMatcher.matches(radar, it, company.uf) }, System.currentTimeMillis(), radar.showNoDispute,
                     )
                 }
                 val (items, aiRequest) = matchRadar(radar, company, window.items, interested, allowAi = !fetched.snapshot)
+                val previous = matchRadar(radar, company, window.previous, interested, allowAi = false).first
                 SearchOutcome(
                     items, fetched.sourceCounts, fetched.fromCache, fetched.failedSources, aiRequest, fetched.diagnostics, hidden,
-                    hiddenNoDeadline = window.hiddenNoDeadline, cacheSnapshot = fetched.snapshot,
+                    hiddenNoDeadline = window.hiddenNoDeadline, cacheSnapshot = fetched.snapshot, previousDays = previous,
                 )
             }
         }
@@ -178,14 +194,22 @@ class OpportunityRepositoryImpl @Inject constructor(
 
     override suspend fun runRadarWithAi(radarId: Long, aiLimit: Int, skipIds: Set<String>): Result<List<ScoredOpportunity>> {
         val outcome = runRadarWithSources(radarId).getOrElse { return Result.failure(it) }
-        val request = outcome.aiRequest ?: return Result.success(outcome.items)
+        // Alertas em segundo plano: só as que ainda aceitam propostas (as encerradas hoje ficam só na tela) e nunca as
+        // descartadas pela empresa.
+        val companyId = radarDao.getById(radarId)?.companyId
+        val discarded = companyId?.let { discarded(it) }.orEmpty()
+        fun open(list: List<ScoredOpportunity>): List<ScoredOpportunity> {
+            val now = System.currentTimeMillis()
+            return list.filterNot { ProposalWindows.isClosed(it.opportunity, now) || it.opportunity.id in discarded }
+        }
+        val request = outcome.aiRequest ?: return Result.success(open(outcome.items))
         val chosen = request.candidates.filter { it.opportunity.id !in skipIds }.take(aiLimit.coerceAtLeast(0))
-        if (chosen.isEmpty()) return Result.success(outcome.items)
+        if (chosen.isEmpty()) return Result.success(open(outcome.items))
         var current = outcome.items
         scoreWithAi(request.copy(candidates = chosen)).collect { update ->
             current = AiScoreMerge.merge(current, update.rated, request.minScore)
         }
-        return Result.success(current)
+        return Result.success(open(current))
     }
 
     override suspend fun getOpportunity(id: String): Opportunity? = withContext(Dispatchers.IO) {
@@ -221,8 +245,11 @@ class OpportunityRepositoryImpl @Inject constructor(
                 val opportunities = cachedFor(portals)
                 val interested = tenderDao.opportunityIds(companyId).toSet()
                 val now = System.currentTimeMillis()
+                val discarded = discarded(companyId)
                 radars.flatMap { radar ->
+                    // Painel: só as que ainda aceitam propostas (as encerradas hoje e as de dias anteriores não contam).
                     val visible = ProposalWindows.visible(opportunities, now, radar.showNoDispute).items
+                        .filterNot { ProposalWindows.isClosed(it, now) || it.id in discarded }
                     matchRadar(radar, company, visible, interested, allowAi = false).first
                 }
                     .distinctBy { it.opportunity.id }
@@ -316,7 +343,8 @@ class OpportunityRepositoryImpl @Inject constructor(
     private suspend fun cachedFor(portals: Set<Portal>): List<Opportunity> {
         val rows = opportunityDao.getAll()
         return withContext(Dispatchers.Default) {
-            OpportunityDeadlines.dropClosed(
+            // Mês atual em diante (inclusive as encerradas do mês, para "Dias anteriores" e a pesquisa por texto).
+            OpportunityDeadlines.dropBeforeMonth(
                 OpportunityDeduplicator.dedupe(rows.map { it.toDomain() }.filter { it.portal in portals }),
                 System.currentTimeMillis(),
             )
@@ -415,16 +443,31 @@ class OpportunityRepositoryImpl @Inject constructor(
             r.getOrNull()?.let { list -> connector.portal to list.count { it.portal in portals } }
         }.toMap()
         // Dedup ANTES do corte por prazo: o registro do Compras.gov.br sem encerramento herda o prazo do PNCP.
-        val fetched = withContext(Dispatchers.Default) {
-            OpportunityDeadlines.dropClosed(
+        // Corte: data de proposta anterior ao 1º dia do mês atual (as encerradas do mês ficam no cache).
+        val deduped = withContext(Dispatchers.Default) {
+            OpportunityDeadlines.dropBeforeMonth(
                 OpportunityDeduplicator.dedupe(results.mapNotNull { it.getOrNull() }.flatten().filter { it.portal in portals }),
                 System.currentTimeMillis(),
             )
         }
+        // ADIADA: compara a data de propostas com a que estava salva (todas as oportunidades do cache, não só as acompanhadas).
+        val fetched = if (deduped.isEmpty()) deduped else {
+            val saved = runCatching {
+                deduped.map { it.id }.chunked(500).flatMap { opportunityDao.getByIds(it) }.associate { it.id to it.toDomain() }
+            }.getOrDefault(emptyMap())
+            withContext(Dispatchers.Default) { deduped.map { com.licitaia.domain.model.Postponement.merge(saved[it.id], it) } }
+        }
         val allFailed = results.all { it.isFailure }
         if (!allFailed) {
             if (fetched.isNotEmpty()) {
-                opportunityDao.upsertAll(fetched.map { it.toEntity(System.currentTimeMillis()) })
+                val at = System.currentTimeMillis()
+                opportunityDao.upsertAll(fetched.map { it.toEntity(at) })
+                // 1ª vez no cache (selo "Nova"); as já conhecidas mantêm a data original (INSERT OR IGNORE).
+                flagDao?.let { dao ->
+                    runCatching {
+                        fetched.chunked(500).forEach { chunk -> dao.insertFirstSeen(chunk.map { com.licitaia.core.data.db.OpportunityFirstSeenEntity(it.id, at) }) }
+                    }
+                }
                 runCatching { opportunityDao.prune(System.currentTimeMillis() - CACHE_TTL_MS) }
             }
             val failed = sources.zip(results).filter { it.second.isFailure }.map { it.first.portal }.toSet()
@@ -577,6 +620,9 @@ internal object OpportunityDeduplicator {
      * descartada (o PNCP do mesmo número de controle), quando ela tem um.
      */
     private fun fillDeadline(kept: Opportunity, other: Opportunity): Opportunity =
+        fillDeadlineOnly(kept, other).let { if (it.uasg.isNullOrBlank() && !other.uasg.isNullOrBlank()) it.copy(uasg = other.uasg) else it }
+
+    private fun fillDeadlineOnly(kept: Opportunity, other: Opportunity): Opportunity =
         if (!kept.hasProposalDeadline && other.hasProposalDeadline) {
             kept.copy(
                 proposalDeadline = other.proposalDeadline,
@@ -600,6 +646,13 @@ internal object OpportunityDeduplicator {
 internal object OpportunityDeadlines {
     fun dropClosed(opportunities: List<Opportunity>, now: Long): List<Opportunity> =
         opportunities.filterNot { it.isProposalClosed(now) }
+
+    /**
+     * Escopo da busca: descarta só as com data de proposta (ou publicação, nas dispensas sem disputa sem data) anterior
+     * ao 1º dia do mês de [now]; as encerradas do mês atual e as sem data ficam (a exibição decide).
+     */
+    fun dropBeforeMonth(opportunities: List<Opportunity>, now: Long): List<Opportunity> =
+        opportunities.filterNot { ProposalWindows.isBeforeMonth(it, now) }
 
     /** Score desc; depois prazo mais próximo; "prazo não informado" por último. */
     val ORDER: Comparator<ScoredOpportunity> = ScoredOrder.ORDER

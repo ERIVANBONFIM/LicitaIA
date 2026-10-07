@@ -435,6 +435,18 @@ interface CompetitionRepository {
     suspend fun delete(id: Long)
 }
 
+/**
+ * Marcas da empresa sobre as oportunidades (versão 14): "Descartar" (some da Busca/Radar e dos avisos, com desfazer),
+ * vista (perde o selo "Nova") e quando cada uma entrou no cache.
+ */
+interface OpportunityFlagsRepository {
+    fun observeFlags(companyId: Long): Flow<Map<String, com.licitaia.domain.model.OpportunityFlag>>
+    suspend fun firstSeen(ids: Collection<String>): Map<String, Long>
+    suspend fun discard(companyId: Long, opportunityId: String)
+    suspend fun restore(companyId: Long, opportunityId: String)
+    suspend fun markSeen(companyId: Long, opportunityId: String)
+}
+
 interface SettingsRepository {
     val settings: Flow<AppSettings>
     suspend fun update(transform: (AppSettings) -> AppSettings)

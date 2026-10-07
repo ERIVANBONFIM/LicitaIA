@@ -80,9 +80,11 @@ class RobotProposalEntryViewModel @Inject constructor(
             val t = runCatching { tenders.observeTender(tenderId).firstOrNull() }.getOrNull() ?: return@launch
             val opp = runCatching { opportunities.getOpportunity(t.opportunityId) }.getOrNull()
             val r = PortalTenderMatching.refOf(t.opportunityId, t.number, t.agency)
-            // Compras.gov.br (Lei 14.133) guarda a UASG nas palavras-chave da oportunidade ("UASG 927312").
-            val uasgKw = opp?.keywords.orEmpty().firstNotNullOfOrNull { Regex("""(?i)uasg\D{0,3}(\d{5,6})""").find(it)?.groupValues?.get(1) }
-            _ref.value = EntryRef(t, r.uasg ?: uasgKw?.padStart(6, '0'), r.number, r.year, opp?.id ?: t.opportunityId)
+            // 1º a UASG explícita da licitação (trazida no "Tenho interesse"); depois a da oportunidade (campo ou
+            // palavras-chave "UASG 927312"); por fim a deduzida do id legado/órgão.
+            val explicit = t.uasg?.filter(Char::isDigit)?.takeIf { it.length in 5..6 }?.padStart(6, '0')
+            val fromOpp = opp?.let { com.licitaia.domain.model.UasgCode.of(it) }?.takeIf { it.length in 5..6 }?.padStart(6, '0')
+            _ref.value = EntryRef(t, explicit ?: fromOpp ?: r.uasg, r.number, r.year, opp?.id ?: t.opportunityId)
         }
     }
 

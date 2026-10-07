@@ -12,8 +12,9 @@ import androidx.room.TypeConverters
         AuditEventEntity::class, AiConfigEntity::class, MessageEntity::class, CompetitionEntity::class,
         RelevanceScoreEntity::class, ComprasGovRowEntity::class, ComprasGovSyncEntity::class,
         PortalMyTenderEntity::class, PortalRobotPlanEntity::class, EditalQuestionEntity::class,
+        OpportunityFlagEntity::class, OpportunityFirstSeenEntity::class, TenderStatusWatchEntity::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = true,
 )
 @TypeConverters(RoomConverters::class)
@@ -38,6 +39,7 @@ abstract class LicitaDatabase : RoomDatabase() {
     abstract fun comprasGovCacheDao(): ComprasGovCacheDao
     abstract fun portalRobotDao(): PortalRobotDao
     abstract fun editalQuestionDao(): EditalQuestionDao
+    abstract fun opportunityFlagDao(): OpportunityFlagDao
 
     companion object {
         const val NAME = "licitaia.db"

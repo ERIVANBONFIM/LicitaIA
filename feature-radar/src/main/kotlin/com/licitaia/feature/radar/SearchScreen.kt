@@ -1,4 +1,4 @@
-﻿package com.licitaia.feature.radar
+package com.licitaia.feature.radar
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -37,6 +37,7 @@ import com.licitaia.core.ui.components.color
 import com.licitaia.core.ui.theme.LicitaColors
 import com.licitaia.domain.model.LowAdherence
 import com.licitaia.domain.model.Modality
+import com.licitaia.domain.model.ModalityGroup
 import com.licitaia.domain.model.OpportunityFilter
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.ScoredOpportunity
@@ -44,6 +45,11 @@ import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.model.Segment
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.OpportunityRepository
+import com.licitaia.domain.repository.OpportunityFlagsRepository
+import com.licitaia.domain.repository.SettingsRepository
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import com.licitaia.domain.repository.TenderRepository
 import com.licitaia.domain.sync.DailySyncRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -62,13 +68,11 @@ data class SearchFilters(
     val minValue: String = "",
     val maxValue: String = "",
     val minScore: Int = 0,
-    /** Mostrar dispensas sem disputa (contratação direta). Padrão: ocultas. */
-    val showNoDispute: Boolean = false,
     val valueError: String? = null,
 ) {
     /** Quantidade de filtros avançados ativos (exclui texto e portal, sempre visíveis). */
     val advancedCount: Int
-        get() = listOf(ufs.isNotEmpty(), segment != null, modality != null, minValue.isNotBlank(), maxValue.isNotBlank(), minScore > 0, showNoDispute).count { it }
+        get() = listOf(ufs.isNotEmpty(), segment != null, modality != null, minValue.isNotBlank(), maxValue.isNotBlank(), minScore > 0).count { it }
 }
 
 @HiltViewModel
@@ -78,15 +82,32 @@ class SearchViewModel @Inject constructor(
     private val opportunities: OpportunityRepository,
     connectivity: ConnectivityMonitor,
     private val daily: DailySyncRepository,
+    private val settings: SettingsRepository,
+    private val flags: OpportunityFlagsRepository,
 ) : OpportunityListViewModel(auth, tenders, connectivity) {
 
     override val dailySync: DailySyncRepository get() = daily
+
+    override val viewSettings: SettingsRepository get() = settings
+
+    override val flagsRepository: OpportunityFlagsRepository get() = flags
+
+    /** Texto digitado: a pesquisa procura também nos dias anteriores do mês, independentemente do chip. */
+    override val forcePreviousDays: Boolean get() = _filters.value.query.isNotBlank()
 
     private val _filters = MutableStateFlow(SearchFilters())
     val filters: StateFlow<SearchFilters> = _filters.asStateFlow()
 
     init {
         start()
+        viewModelScope.launch {
+            // Selo "Nova": o que entrou no cache desde a abertura ANTERIOR da Busca; grava esta abertura.
+            runCatching {
+                previousSearchOpenAt = settings.settings.first().lastSearchOpenedAt
+                settings.update { it.copy(lastSearchOpenedAt = System.currentTimeMillis()) }
+            }
+            recomputeMarks()
+        }
     }
 
     override fun aiScores(request: com.licitaia.domain.model.AiScoringRequest) = opportunities.scoreWithAi(request)
@@ -107,7 +128,8 @@ class SearchViewModel @Inject constructor(
                 minValue = parseMoney(f.minValue)?.takeIf { !it.isNaN() },
                 maxValue = parseMoney(f.maxValue)?.takeIf { !it.isNaN() },
                 minScore = f.minScore,
-                showNoDispute = f.showNoDispute,
+                // Dispensas (inclusive sem disputa) sempre entram; o chip de modalidade filtra na tela.
+                showNoDispute = true,
         )
         // Texto digitado consulta as fontes (o salvo no aparelho já passou pela triagem de relevância); filtros de
         // portal/UF/modalidade/valor ao abrir ou trocar usam só o que está salvo — rápido, sem baixar tudo de novo.
@@ -210,7 +232,7 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
             item(key = "source-note") {
                 Column(Modifier.padding(horizontal = 16.dp)) {
                     Text(
-                        "Fontes: PNCP e Compras.gov.br (consulta pública, propostas em aberto). Licitanet, BLL e PCP aparecem pelas publicações dessas plataformas no PNCP. Puxe para atualizar.",
+                        "Fontes: PNCP e Compras.gov.br (consulta pública): licitações, pregões e dispensas com propostas do mês atual em diante; a lista mostra de hoje em diante. Licitanet, BLL e PCP aparecem pelas publicações dessas plataformas no PNCP. Puxe para atualizar.",
                         style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                     )
                     // "Atualizado hoje às 05:30 · Próxima atualização automática: amanhã 05:30".
@@ -229,6 +251,21 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
                     )
                 }
             }
+            // Modalidade (Todas · Pregão · Dispensa · Concorrência/Outras) e dias anteriores: sem nova consulta.
+            if (!list.loading && list.error == null) {
+                item(key = "modality") {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(ModalityGroup.entries, key = { it.name }) { g ->
+                            SelectChip(g.label, list.modalityGroup == g, { viewModel.setModalityGroup(g) })
+                        }
+                    }
+                }
+            }
+            previousDaysChip(list, viewModel)
+            markChips(list, viewModel)
             // Baixa aderência (nota < 30) oculta por padrão; o chip mostra/oculta sem nova consulta.
             val lowCount = list.hiddenLow.size
             if (!list.loading && list.error == null && (lowCount > 0 || list.showLowAdherence)) {
@@ -246,12 +283,17 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
                 state = list,
                 viewModel = viewModel,
                 emptyTitle = "Nenhuma licitação encontrada",
-                emptyMessage = if (lowCount > 0) "Só há resultados de baixa aderência (nota abaixo de ${LowAdherence.THRESHOLD}). Toque em \"Mostrar baixa aderência\" para vê-los."
-                else "Ajuste a busca ou os filtros. Você também pode criar um Radar para ser avisado de novas oportunidades.",
+                emptyMessage = when {
+                    !list.previousVisible && list.previousCount > 0 ->
+                        "Nada de hoje em diante com estes filtros. Há ${list.previousCount} de dias anteriores do mês: toque em \"Mostrar dias anteriores\"."
+                    lowCount > 0 -> "Só há resultados de baixa aderência (nota abaixo de ${LowAdherence.THRESHOLD}). Toque em \"Mostrar baixa aderência\" para vê-los."
+                    else -> "Ajuste a busca ou os filtros. Você também pode criar um Radar para ser avisado de novas oportunidades."
+                },
                 showScheduleInHeader = false,
             )
         }
         }
+        UndoDiscardBar(list, viewModel)
         }
     }
 }
@@ -308,14 +350,6 @@ private fun FiltersPanel(
             onValueChange = { v -> onEdit { it.copy(minScore = (v / 5).toInt() * 5) } },
             valueRange = 0f..100f,
         )
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Mostrar dispensas sem disputa (contratação direta)", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
-                Text("Contratações diretas sem recebimento de propostas; ocultas por padrão", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-            }
-            Spacer(Modifier.width(8.dp))
-            Switch(checked = filters.showNoDispute, onCheckedChange = { v -> onEdit { it.copy(showNoDispute = v) } })
-        }
         Spacer(Modifier.height(4.dp))
         ButtonRow {
             SecondaryButton("Limpar", onClear, Modifier.weight(1f), tone = Tone.NEUTRAL)

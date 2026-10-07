@@ -46,6 +46,17 @@ import com.licitaia.core.ui.components.PortalChip
 import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.ScoreRing
 import com.licitaia.core.ui.components.SecondaryButton
+import com.licitaia.core.ui.components.SelectChip
+import com.licitaia.core.ui.components.OfficialSituationBadge
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.rememberDateRangePickerState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.licitaia.domain.model.PeriodField
+import com.licitaia.domain.model.PeriodFilter
+import com.licitaia.domain.model.PeriodPreset
 import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
@@ -143,6 +154,116 @@ private fun UpdatedAgoText(updatedAt: Long?, offline: Boolean) {
     Text(label, style = MaterialTheme.typography.labelSmall, color = if (offline) LicitaColors.Yellow else LicitaColors.TextMuted)
 }
 
+/**
+ * Chip "Mostrar dias anteriores (N)": marcado, a lista inclui a seção "Dias anteriores" (do mês atual, da mais recente
+ * para a mais antiga). Com texto digitado na busca os anteriores já entram (o chip só informa).
+ */
+internal fun LazyListScope.previousDaysChip(state: OpportunityListState, viewModel: OpportunityListViewModel) {
+    if (state.loading || state.error != null) return
+    if (state.previousCount <= 0 && !state.showPreviousDays) return
+    item(key = "previous-days", contentType = "chip") {
+        Row(Modifier.padding(horizontal = 16.dp)) {
+            SelectChip(
+                when {
+                    state.previousForced && !state.showPreviousDays -> "Pesquisa inclui dias anteriores (${state.previousCount})"
+                    else -> "Mostrar dias anteriores (${state.previousCount})"
+                },
+                state.showPreviousDays,
+                { viewModel.setShowPreviousDays(!state.showPreviousDays) },
+            )
+        }
+    }
+}
+
+/**
+ * Chips de marcas: "Só novas", "Descartadas (N)" e o filtro de período (Hoje · Próximos 7 dias · Próximos 30 dias ·
+ * Personalizado), todos sem nova consulta. Combinam com o padrão "de hoje em diante" e "Mostrar dias anteriores".
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun LazyListScope.markChips(state: OpportunityListState, viewModel: OpportunityListViewModel) {
+    if (state.loading || state.error != null) return
+    item(key = "mark-chips", contentType = "chip") {
+        var periodOpen by remember { mutableStateOf(false) }
+        val period = state.marks.period
+        androidx.compose.foundation.lazy.LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item(key = "period") {
+                SelectChip(if (period.active) "Período: ${period.label()}" else "Período", period.active, { periodOpen = true })
+            }
+            item(key = "new") {
+                SelectChip(
+                    if (state.marks.onlyNew) "Só novas" else "Só novas (${state.marks.newIds.size})",
+                    state.marks.onlyNew, { viewModel.setOnlyNew(!state.marks.onlyNew) },
+                )
+            }
+            if (state.discardedCount > 0 || state.marks.showDiscarded) {
+                item(key = "discarded") {
+                    SelectChip("Descartadas (${state.discardedCount})", state.marks.showDiscarded, { viewModel.setShowDiscarded(!state.marks.showDiscarded) })
+                }
+            }
+        }
+        if (periodOpen) PeriodDialog(period, onDismiss = { periodOpen = false }) { viewModel.setPeriod(it); periodOpen = false }
+    }
+}
+
+/** Escolha do período: presets, data comparada (proposta/publicação) e intervalo personalizado (DateRangePicker). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PeriodDialog(current: PeriodFilter, onDismiss: () -> Unit, onApply: (PeriodFilter) -> Unit) {
+    var preset by remember { mutableStateOf(current.preset) }
+    var field by remember { mutableStateOf(current.field) }
+    val range = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = current.customFrom?.let(::localToUtcMidnight),
+        initialSelectedEndDateMillis = current.customTo?.let(::localToUtcMidnight),
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Filtrar por período") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(PeriodPreset.entries, key = { it.name }) { p -> SelectChip(p.label, preset == p, { preset = p }) }
+                }
+                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(PeriodField.entries, key = { it.name }) { f -> SelectChip("Data: ${f.label}", field == f, { field = f }) }
+                }
+                if (preset == PeriodPreset.CUSTOM) {
+                    DateRangePicker(state = range, modifier = Modifier.height(420.dp), showModeToggle = true)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onApply(
+                    PeriodFilter(
+                        preset = preset, field = field,
+                        customFrom = if (preset == PeriodPreset.CUSTOM) range.selectedStartDateMillis?.let(::utcToLocalMidnight) else null,
+                        customTo = if (preset == PeriodPreset.CUSTOM) (range.selectedEndDateMillis ?: range.selectedStartDateMillis)?.let(::utcToLocalMidnight) else null,
+                    ),
+                )
+            }) { Text("Aplicar") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+/** Barra "Descartada · Desfazer" (some sozinha após alguns segundos). */
+@Composable
+internal fun UndoDiscardBar(state: OpportunityListState, viewModel: OpportunityListViewModel, modifier: Modifier = Modifier) {
+    val item = state.lastDiscarded ?: return
+    Surface(color = MaterialTheme.colorScheme.inverseSurface, shape = MaterialTheme.shapes.medium, modifier = modifier.fillMaxWidth().padding(16.dp)) {
+        Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Descartada: ${item.opportunity.number}", color = MaterialTheme.colorScheme.inverseOnSurface,
+                style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { viewModel.restore(item) }) { Text("Desfazer", color = MaterialTheme.colorScheme.inversePrimary) }
+        }
+    }
+}
+
 /** Itens de lista (loading / erro / vazio / cards) compartilhados por busca e resultados de radar. */
 @OptIn(ExperimentalFoundationApi::class)
 internal fun LazyListScope.opportunityItems(
@@ -184,9 +305,11 @@ internal fun LazyListScope.opportunityItems(
                 item(key = "sources-empty", contentType = "note") {
                     val reason = state.emptyReason
                     val low = LowAdherence.hiddenLabel(state.hiddenLow.size)
+                    val window = state.windowSummary?.takeIf { state.previousCount > 0 }
                     Text(
-                        remember(summary, reason, low) {
-                            "Obtidos das fontes: $summary" + (low?.let { " · $it" } ?: "") + (reason?.takeIf { low == null }?.let { " — $it" } ?: "")
+                        remember(summary, reason, low, window) {
+                            "Obtidos das fontes: $summary" + (window?.let { " · $it" } ?: "") + (low?.let { " · $it" } ?: "") +
+                                (reason?.takeIf { low == null }?.let { " — $it" } ?: "")
                         },
                         style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                         modifier = Modifier.padding(horizontal = 16.dp),
@@ -210,6 +333,10 @@ internal fun LazyListScope.opportunityItems(
                         countText,
                         style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary,
                     )
+                    // "312 de hoje em diante · 45 de dias anteriores ocultos · 120 dispensas".
+                    state.windowSummary?.let { line ->
+                        Text(line, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary)
+                    }
                     Text(
                         sourcesText,
                         style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
@@ -240,6 +367,9 @@ internal fun LazyListScope.opportunityItems(
                         busy = item.opportunity.id in state.busy,
                         canAnalyze = state.canAnalyze,
                         aiActive = state.aiTotal > 0,
+                        isNew = item.opportunity.id in state.marks.newIds,
+                        onDiscard = { viewModel.discard(item) },
+                        onRestore = if (state.marks.showDiscarded) ({ viewModel.restore(item) }) else null,
                         onInterest = { viewModel.onInterest(item) },
                         onAnalyze = { viewModel.onAnalyze(item) },
                         modifier = Modifier.padding(horizontal = 16.dp).animateItem(),
@@ -313,6 +443,12 @@ internal fun OpportunityCard(
     modifier: Modifier = Modifier,
     /** A lista usa nota por IA: notas heurísticas aparecem marcadas como tal. */
     aiActive: Boolean = false,
+    /** Selo "Nova" (entrou no cache na última atualização / desde a última abertura e nunca foi aberta). */
+    isNew: Boolean = false,
+    /** "Descartar" (null = sem a ação nesta lista). */
+    onDiscard: (() -> Unit)? = null,
+    /** Lista de descartadas: o botão vira "Restaurar". */
+    onRestore: (() -> Unit)? = null,
 ) {
     val op = item.opportunity
     // Formatações (moeda/datas/linha da plataforma) só quando a oportunidade muda.
@@ -333,6 +469,10 @@ internal fun OpportunityCard(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     PortalChip(op.portal)
                     StatusBadge(op.modality.label, Tone.NEUTRAL)
+                    // Situação oficial à vista (vermelho/âmbar/cinza) ou ADIADA; depois o selo "Nova".
+                    if (op.officialSituation != null) OfficialSituationBadge(op.officialSituation)
+                    else if (texts.postponed != null) StatusBadge("ADIADA", Tone.WARNING)
+                    if (isNew) StatusBadge("Nova", Tone.INFO)
                 }
                 texts.platform?.let { line ->
                     Text(
@@ -341,7 +481,8 @@ internal fun OpportunityCard(
                     )
                 }
                 Spacer(Modifier.height(6.dp))
-                Text(op.number, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // "48/2026 · UASG 160123" ("Cód. unidade" fora do Compras.gov.br).
+                Text(texts.numberLine, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(op.agency, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -369,14 +510,37 @@ internal fun OpportunityCard(
             DateCell("Propostas até", texts.deadline, Modifier.weight(1.3f))
             DateCell("Sessão", texts.session, Modifier.weight(1.3f))
         }
-        if (texts.status != null || texts.today) {
+        if (op.officialSituation != null || texts.postponed != null) {
+            // Situação oficial/adiamento no lugar do "Aberta · encerra em…" (não induz a enviar proposta).
+            Spacer(Modifier.height(6.dp))
+            Text(
+                op.officialSituation?.let { "Situação oficial: ${it.label}" } ?: texts.postponed.orEmpty(),
+                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+                color = when (op.officialSituation?.severity) {
+                    com.licitaia.domain.model.SituationSeverity.RED -> LicitaColors.Red
+                    com.licitaia.domain.model.SituationSeverity.GRAY -> LicitaColors.TextMuted
+                    else -> LicitaColors.Yellow
+                },
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            texts.postponedBefore?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+        } else if (texts.status != null || texts.today || texts.closed || texts.previousDay) {
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (texts.today) StatusBadge("HOJE", Tone.WARNING)
+                when {
+                    texts.closed -> StatusBadge("ENCERRADA", Tone.NEUTRAL)
+                    texts.previousDay -> StatusBadge("DIA ANTERIOR", Tone.NEUTRAL)
+                    texts.today -> StatusBadge("HOJE", Tone.WARNING)
+                }
                 texts.status?.let { status ->
                     Text(
                         status, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
-                        color = if (texts.upcoming) LicitaColors.TextSecondary else LicitaColors.GreenBright, maxLines = 1,
+                        color = when {
+                            texts.closed || texts.previousDay -> LicitaColors.TextMuted
+                            texts.upcoming -> LicitaColors.TextSecondary
+                            else -> LicitaColors.GreenBright
+                        },
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -396,6 +560,13 @@ internal fun OpportunityCard(
                 PrimaryButton("Tenho Interesse", onInterest, Modifier.weight(1f), loading = busy, icon = Icons.Outlined.StarOutline)
             }
             SecondaryButton("Analisar", onAnalyze, Modifier.weight(0.8f), enabled = !busy && canAnalyze, icon = Icons.Outlined.Analytics)
+        }
+        if (onRestore != null) {
+            TextButton(onClick = onRestore, modifier = Modifier.align(Alignment.End)) { Text("Restaurar na lista") }
+        } else if (onDiscard != null) {
+            TextButton(onClick = onDiscard, modifier = Modifier.align(Alignment.End)) {
+                Text("Descartar", color = LicitaColors.TextSecondary)
+            }
         }
         if (item.interested) {
             Text(
@@ -425,12 +596,27 @@ internal class CardTexts(
     val upcoming: Boolean = false,
     /** Encerramento/sessão hoje (destaque "HOJE"). */
     val today: Boolean = false,
+    /** Prazo de propostas já passou (estado "encerrada"). */
+    val closed: Boolean = false,
+    /** Data de proposta em dia anterior do mês atual ("Dias anteriores"). */
+    val previousDay: Boolean = false,
+    /** "48/2026 · UASG 160123". */
+    val numberLine: String = "",
+    /** "ADIADA para 15/10 09:00" (null quando não foi adiada). */
+    val postponed: String? = null,
+    /** "antes: 08/10 10:00". */
+    val postponedBefore: String? = null,
 ) {
     companion object {
         fun of(op: Opportunity, now: Long) = CardTexts(
+            numberLine = listOfNotNull(op.number, com.licitaia.domain.model.UasgCode.label(op)).joinToString(" · "),
+            postponed = com.licitaia.domain.model.Postponement.label(op),
+            postponedBefore = com.licitaia.domain.model.Postponement.beforeLabel(op),
             status = ProposalWindows.statusLabel(op, now),
             upcoming = ProposalWindows.classify(op, now) == ProposalWindow.UPCOMING,
             today = ProposalWindows.endsToday(op, now),
+            closed = ProposalWindows.isClosed(op, now),
+            previousDay = ProposalWindows.isPreviousDay(op, now),
             platform = platformLine(op.portal, op.platformName, op.id),
             value = Formatters.brl(op.estimatedValue),
             place = "${op.city}/${op.uf}",

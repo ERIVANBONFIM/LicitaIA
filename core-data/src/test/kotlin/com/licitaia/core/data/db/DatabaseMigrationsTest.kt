@@ -412,10 +412,82 @@ class DatabaseMigrationsTest {
         ).forEach { assertTrue("13.json sem: $it", text.contains(it)) }
     }
 
+    @Test fun version14AddsNullableColumnsAndCreatesFlagTables() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val opportunities = mockk<Cursor>(relaxed = true)
+        val tenders = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(opportunities)") } returns opportunities
+        every { db.query("PRAGMA table_info(tenders)") } returns tenders
+        every { opportunities.moveToNext() } returnsMany listOf(true, true, false)
+        every { opportunities.getColumnIndexOrThrow("name") } returns 0
+        every { opportunities.getString(0) } returnsMany listOf("id", "proposalOpening")
+        every { tenders.moveToNext() } returnsMany listOf(true, false)
+        every { tenders.getColumnIndexOrThrow("name") } returns 0
+        every { tenders.getString(0) } returnsMany listOf("id")
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_13_TO_14.migrate(db)
+        assertEquals(13, DatabaseMigrations.FROM_13_TO_14.startVersion)
+        assertEquals(14, DatabaseMigrations.FROM_13_TO_14.endVersion)
+        assertEquals(
+            listOf(
+                "ALTER TABLE opportunities ADD COLUMN uasg TEXT DEFAULT NULL",
+                "ALTER TABLE opportunities ADD COLUMN officialSituation TEXT DEFAULT NULL",
+                "ALTER TABLE opportunities ADD COLUMN previousProposalDeadline INTEGER DEFAULT NULL",
+                "ALTER TABLE tenders ADD COLUMN uasg TEXT DEFAULT NULL",
+                "ALTER TABLE tenders ADD COLUMN officialSituation TEXT DEFAULT NULL",
+            ),
+            sql.take(5),
+        )
+        assertEquals(
+            listOf(
+                DatabaseMigrations.CREATE_OPPORTUNITY_FLAGS, DatabaseMigrations.CREATE_OPPORTUNITY_FLAGS_INDEX,
+                DatabaseMigrations.CREATE_OPPORTUNITY_FIRST_SEEN, DatabaseMigrations.CREATE_TENDER_STATUS_WATCH,
+                DatabaseMigrations.CREATE_TENDER_STATUS_WATCH_INDEX,
+            ),
+            sql.drop(5),
+        )
+        // Incremental e não destrutiva: só ALTER ... ADD COLUMN e CREATE ... IF NOT EXISTS.
+        assertTrue(sql.none { s -> listOf("DROP", "DELETE", "UPDATE", "INSERT").any { Regex("\\b$it\\b", RegexOption.IGNORE_CASE).containsMatchIn(s) } })
+    }
+
+    @Test fun version14IsIdempotent() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        listOf("opportunities", "tenders").forEach { table ->
+            val cursor = mockk<Cursor>(relaxed = true)
+            val names = DatabaseMigrations.V14_COLUMNS.getValue(table).map { it.first }
+            every { db.query("PRAGMA table_info($table)") } returns cursor
+            every { cursor.moveToNext() } returnsMany List(names.size) { true } + false
+            every { cursor.getColumnIndexOrThrow("name") } returns 0
+            every { cursor.getString(0) } returnsMany names
+        }
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_13_TO_14.migrate(db)
+        assertTrue(sql.none { it.startsWith("ALTER") })
+        assertTrue(sql.all { it.contains("IF NOT EXISTS") })
+    }
+
+    /** A DDL da v14 precisa ser idêntica à exportada pelo Room. */
+    @Test fun version14DdlMatchesExportedSchema() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/14.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/14.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val text = schema.readText()
+        assertTrue(text.contains("\"version\": 14"))
+        listOf(
+            DatabaseMigrations.CREATE_OPPORTUNITY_FLAGS.replace("`opportunity_flags`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_OPPORTUNITY_FLAGS_INDEX.replace("`opportunity_flags`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_OPPORTUNITY_FIRST_SEEN.replace("`opportunity_first_seen`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_TENDER_STATUS_WATCH.replace("`tender_status_watch`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_TENDER_STATUS_WATCH_INDEX.replace("`tender_status_watch`", "`\${TABLE_NAME}`"),
+            "`uasg` TEXT DEFAULT NULL", "`officialSituation` TEXT DEFAULT NULL", "`previousProposalDeadline` INTEGER DEFAULT NULL",
+        ).forEach { assertTrue("14.json sem: $it", text.contains(it)) }
+    }
+
     @Test fun allMigrationsAreOrderedAndContiguous() {
         val all = DatabaseMigrations.ALL.toList()
         assertEquals(1, all.first().startVersion)
-        assertEquals(13, all.last().endVersion)
+        assertEquals(14, all.last().endVersion)
         all.zipWithNext().forEach { (a, b) -> assertEquals(a.endVersion, b.startVersion) }
     }
 }

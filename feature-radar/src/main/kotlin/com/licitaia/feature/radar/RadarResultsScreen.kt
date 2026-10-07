@@ -1,8 +1,9 @@
-﻿package com.licitaia.feature.radar
+package com.licitaia.feature.radar
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
@@ -29,6 +30,7 @@ import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.OpportunityRepository
 import com.licitaia.domain.repository.RadarRepository
+import com.licitaia.domain.repository.SettingsRepository
 import com.licitaia.domain.repository.TenderRepository
 import com.licitaia.domain.sync.DailySyncRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -46,9 +48,15 @@ class RadarResultsViewModel @Inject constructor(
     private val opportunities: OpportunityRepository,
     connectivity: ConnectivityMonitor,
     private val daily: DailySyncRepository,
+    private val settings: SettingsRepository,
+    private val flags: com.licitaia.domain.repository.OpportunityFlagsRepository,
 ) : OpportunityListViewModel(auth, tenders, connectivity) {
 
     override val dailySync: DailySyncRepository get() = daily
+
+    override val viewSettings: SettingsRepository get() = settings
+
+    override val flagsRepository: com.licitaia.domain.repository.OpportunityFlagsRepository get() = flags
 
     val radarId: Long = savedStateHandle.longArg("radarId") ?: -1L
 
@@ -94,7 +102,8 @@ fun RadarResultsScreen(viewModel: RadarResultsViewModel = hiltViewModel()) {
             }
         },
     ) { padding ->
-        OpportunityRefreshBox(list, viewModel, Modifier.fillMaxSize().padding(padding)) {
+        androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().padding(padding)) {
+        OpportunityRefreshBox(list, viewModel, Modifier.fillMaxWidth().weight(1f)) {
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
@@ -110,6 +119,8 @@ fun RadarResultsScreen(viewModel: RadarResultsViewModel = hiltViewModel()) {
                     )
                 }
             }
+            previousDaysChip(list, viewModel)
+            markChips(list, viewModel)
             opportunityItems(
                 state = list,
                 viewModel = viewModel,
@@ -118,6 +129,8 @@ fun RadarResultsScreen(viewModel: RadarResultsViewModel = hiltViewModel()) {
                 emptyIcon = Icons.Outlined.Radar,
             )
         }
+        }
+        UndoDiscardBar(list, viewModel)
         }
     }
 }

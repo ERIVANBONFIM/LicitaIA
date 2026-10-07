@@ -20,6 +20,8 @@ data class UpcomingSession(
     val statusLabel: String,
     /** A empresa já cadastrou proposta/está participando. */
     val participating: Boolean,
+    /** Situação oficial (suspensa, revogada...) para o selo colorido; null = normal. */
+    val situation: com.licitaia.domain.model.OfficialSituation? = null,
 )
 
 enum class DeadlineKind(val label: String) {
@@ -57,7 +59,7 @@ object WarRoomAgenda {
                 UpcomingSession(
                     key = "t-${t.id}", tenderId = t.id, portal = t.portal, number = t.number, agency = t.agency,
                     objectDescription = t.objectDescription, sessionAt = at, statusLabel = t.status.label,
-                    participating = t.status in PARTICIPATING,
+                    participating = t.status in PARTICIPATING, situation = t.officialSituation,
                 )
             }
         val linked = fromTenders.mapNotNull { it.tenderId }.toSet()
@@ -69,6 +71,7 @@ object WarRoomAgenda {
                     key = "m-${m.tenderKey}", tenderId = m.matchedTenderId, portal = m.portal, number = "${m.number}/${m.year}",
                     agency = "UASG ${m.uasg}", objectDescription = m.objectDescription, sessionAt = at,
                     statusLabel = m.situation.ifBlank { "Minhas licitações" }, participating = m.hasProposal,
+                    situation = com.licitaia.domain.model.OfficialSituation.fromText(m.situation),
                 )
             }
         return (fromTenders + fromPortal).sortedBy { it.sessionAt }

@@ -1,4 +1,4 @@
-﻿package com.licitaia.core.data.backup
+package com.licitaia.core.data.backup
 
 import android.content.ContentValues
 import android.content.Context
@@ -34,7 +34,7 @@ class CompanyBackupRepository @Inject constructor(
     private val room: LicitaDatabase,
     private val holder: SessionHolder,
 ) : BackupRepository {
-    private val companyTables = listOf("radars", "tenders", "documents", "proposals", "competition_records", "audit_events", "edital_questions")
+    private val companyTables = listOf("radars", "tenders", "documents", "proposals", "competition_records", "audit_events", "edital_questions", "opportunity_flags", "tender_status_watch")
     private val limit = 64 * 1024 * 1024
 
     private companion object {
@@ -50,11 +50,15 @@ class CompanyBackupRepository @Inject constructor(
          * entra no backup (o cadastro da empresa fica no aparelho de destino); backups 2..11 continuam aceitos.
          * v13 acrescentou `edital_questions` (histórico do "Pergunte ao edital"), que ENTRA no backup e é restaurada com o
          * novo id da licitação; backups 2..12 não têm a tabela e são restaurados sem ela.
+         * v14 acrescentou `opportunities.uasg`/`officialSituation`, `tenders.uasg`/`officialSituation` (backups antigos
+         * recebem NULL) e as tabelas por empresa `opportunity_flags` (descartadas/vistas; restauradas sem sobrescrever as
+         * locais) e `tender_status_watch` (último estado oficial, com o novo id da licitação), que ENTRAM no backup;
+         * `opportunity_first_seen` é global e NÃO entra. Backups 2..13 continuam aceitos.
          */
-        const val BACKUP_SCHEMA = 13
+        const val BACKUP_SCHEMA = 14
 
         /** Tabelas que podem faltar em backups de versões anteriores. */
-        val OPTIONAL_TABLES = setOf("edital_questions")
+        val OPTIONAL_TABLES = setOf("edital_questions", "opportunity_flags", "tender_status_watch")
     }
 
     private fun session() = requireNotNull(holder.current) { "Entre em sua conta." }.also {
@@ -129,7 +133,7 @@ class CompanyBackupRepository @Inject constructor(
             db.beginTransaction()
             try {
                 val order = listOf(
-                    "opportunities", "radars", "tenders", "tender_analyses", "edital_questions", "documents", "proposals", "competition_records", "audit_events",
+                    "opportunities", "radars", "tenders", "tender_analyses", "tender_status_watch", "edital_questions", "opportunity_flags", "documents", "proposals", "competition_records", "audit_events",
                 )
                 order.forEach { table ->
                     val columns = db.query("PRAGMA table_info($table)").use { c -> buildSet { while (c.moveToNext()) add(c.getString(c.getColumnIndexOrThrow("name"))) } }
@@ -167,7 +171,9 @@ class CompanyBackupRepository @Inject constructor(
                             continue
                         }
                         val values = values(row)
-                        val newId = db.insert(table, SQLiteDatabase.CONFLICT_ABORT, values)
+                        // Marcas de oportunidade: não sobrescreve as do aparelho (restauração por adição).
+                        val conflict = if (table == "opportunity_flags") SQLiteDatabase.CONFLICT_IGNORE else SQLiteDatabase.CONFLICT_ABORT
+                        val newId = db.insert(table, conflict, values)
                         if (table == "tenders") tenderIds[oldId] = newId
                         count++
                     }

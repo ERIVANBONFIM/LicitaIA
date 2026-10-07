@@ -50,7 +50,7 @@ class PncpConnector internal constructor(
     private val pageDelayMs: Long = DEFAULT_PAGE_DELAY_MS,
     /** Esperas entre retentativas após HTTP 429 sem `Retry-After` (testes usam 0). */
     private val retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS,
-) : PortalConnector, OfficialDocumentSource, OfficialItemsSource, WithdrawnListingSource {
+) : PortalConnector, OfficialDocumentSource, OfficialItemsSource, WithdrawnListingSource, com.licitaia.connector.api.OfficialStatusSource {
 
     constructor(
         client: OkHttpClient,
@@ -268,6 +268,13 @@ class PncpConnector internal constructor(
         val ref = PncpControlNumber.parse(pncpControlNumber) ?: return null
         val compra = withRateLimitRetry { api.contratacao(ref) } ?: return null
         return PncpMapper.toBuyer(compra)
+    }
+
+    /** Situação oficial e datas (`/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}`), para a conferência diária. */
+    override suspend fun officialStatus(pncpControlNumber: String): com.licitaia.domain.model.OfficialStatus? {
+        val ref = PncpControlNumber.parse(pncpControlNumber) ?: return null
+        val compra = withRateLimitRetry { api.contratacao(ref) } ?: return null
+        return PncpMapper.toOfficialStatus(compra)
     }
 
     // ------------------------------------------------------------ não suportado (consulta pública)

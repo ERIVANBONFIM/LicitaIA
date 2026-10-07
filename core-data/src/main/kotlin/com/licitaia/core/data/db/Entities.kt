@@ -129,6 +129,46 @@ data class OpportunityEntity(
     @androidx.room.ColumnInfo(defaultValue = "0") val noDispute: Boolean = false,
     /** Início do recebimento de propostas ("vai abrir"). Versão 10. */
     @androidx.room.ColumnInfo(defaultValue = "NULL") val proposalOpening: Long? = null,
+    /** UASG / código da unidade compradora. Versão 14. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val uasg: String? = null,
+    /** Situação oficial (nome de OfficialSituation; null = normal). Versão 14. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val officialSituation: String? = null,
+    /** Prazo de propostas anterior quando a data mudou (ADIADA). Versão 14. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val previousProposalDeadline: Long? = null,
+)
+
+/**
+ * Versão 14: marcas da empresa sobre oportunidades do cache — descartada ("Descartar") e vista (perde o selo "Nova").
+ * Por empresa; ENTRA no backup. Não tem FK para `opportunities` (a limpeza diária apaga as linhas do cache normalmente).
+ */
+@Entity(tableName = "opportunity_flags", primaryKeys = ["companyId", "opportunityId"], indices = [Index("companyId")])
+data class OpportunityFlagEntity(
+    val companyId: Long,
+    val opportunityId: String,
+    val discardedAt: Long?,
+    val seenAt: Long?,
+)
+
+/** Versão 14: quando cada oportunidade entrou no cache pela 1ª vez (selo "Nova"). Global; NÃO entra no backup. */
+@Entity(tableName = "opportunity_first_seen")
+data class OpportunityFirstSeenEntity(
+    @PrimaryKey val opportunityId: String,
+    val firstSeenAt: Long,
+)
+
+/**
+ * Versão 14: último estado oficial conhecido das licitações acompanhadas (situação/datas), para avisar uma vez por
+ * mudança de fase (suspensa, revogada/anulada, adiada, resultado). Por empresa; ENTRA no backup.
+ */
+@Entity(tableName = "tender_status_watch", indices = [Index("companyId")])
+data class TenderStatusWatchEntity(
+    @PrimaryKey val tenderId: Long,
+    val companyId: Long,
+    val situation: String?,
+    val proposalDeadline: Long,
+    val sessionAt: Long,
+    val hasResult: Boolean,
+    val checkedAt: Long,
 )
 
 /**
@@ -201,6 +241,10 @@ data class TenderEntity(
     @ColumnInfo(defaultValue = "0") val editalChars: Int = 0,
     @ColumnInfo(defaultValue = "NULL") val editalPages: Int? = null,
     @ColumnInfo(defaultValue = "0") val editalScanned: Boolean = false,
+    /** Versão 14: UASG / código da unidade compradora trazido da oportunidade. */
+    @ColumnInfo(defaultValue = "NULL") val uasg: String? = null,
+    /** Versão 14: situação oficial (nome de OfficialSituation; null = normal), atualizada pela atualização diária. */
+    @ColumnInfo(defaultValue = "NULL") val officialSituation: String? = null,
 )
 
 /**

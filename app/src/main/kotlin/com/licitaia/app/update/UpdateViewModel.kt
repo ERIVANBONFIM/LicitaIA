@@ -59,7 +59,11 @@ class UpdateViewModel @Inject constructor(
     private val _state = MutableStateFlow(UpdateUiState())
     val state: StateFlow<UpdateUiState> = _state.asStateFlow()
 
+    /** Atualização adiada: alimenta a faixa "Nova versão disponível · Atualizar" no topo do app. */
+    val postponed: StateFlow<AppUpdate?> = checker.postponed
+
     private var downloadJob: Job? = null
+    private var loggedIn = false
 
     init {
         // Diálogo global segue a atualização pendente publicada pelo checker (automática ou manual).
@@ -77,8 +81,9 @@ class UpdateViewModel @Inject constructor(
         }
         // Checagem automática silenciosa quando há sessão (login ou sessão restaurada).
         viewModelScope.launch {
-            authRepository.session.map { it != null }.distinctUntilChanged().collect { loggedIn ->
-                if (loggedIn) runCatching { checker.checkAutomatically() }
+            authRepository.session.map { it != null }.distinctUntilChanged().collect { logged ->
+                loggedIn = logged
+                if (logged) runCatching { checker.checkAutomatically() }
             }
         }
     }
@@ -102,6 +107,8 @@ class UpdateViewModel @Inject constructor(
 
     /** Ao voltar ao app (ex.: das Configurações do sistema), retoma o fluxo se a permissão foi concedida. */
     fun onResume(context: Context) {
+        // Toda volta ao app consulta de novo (o checker limita a uma consulta a cada 30 min).
+        if (loggedIn) viewModelScope.launch { runCatching { checker.checkAutomatically() } }
         val s = _state.value
         if (s.phase == UpdatePhase.PERMISSION && installer.canInstall()) {
             val update = s.update ?: return
@@ -110,7 +117,12 @@ class UpdateViewModel @Inject constructor(
         }
     }
 
-    /** "Depois": esconde por 24 h. */
+    /** Faixa "Atualizar" no topo: reabre o diálogo da versão adiada. */
+    fun resumePostponed() {
+        viewModelScope.launch { checker.resumePostponed() }
+    }
+
+    /** "Depois": fecha o diálogo; a faixa no topo continua até atualizar (o diálogo volta em 12 h). */
     fun later() {
         val update = _state.value.update ?: return
         cancelDownload()

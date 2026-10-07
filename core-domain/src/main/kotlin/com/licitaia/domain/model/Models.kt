@@ -114,7 +114,22 @@ data class Opportunity(
     val noDispute: Boolean = false,
     /** Início do recebimento de propostas (`dataAberturaProposta`); null = não informado. Futuro = "vai abrir". */
     val proposalOpening: Long? = null,
+    /**
+     * Código da unidade compradora: UASG (6 dígitos) no Compras.gov.br; nas demais plataformas do PNCP, o código da
+     * unidade do órgão. null = a fonte não informou (ver [UasgCode.of], que também lê "UASG 123456" das palavras-chave).
+     */
+    val uasg: String? = null,
+    /** Situação oficial que interrompe/encerra a contratação (suspensa, revogada...); null = normal. Versão 14. */
+    val officialSituation: OfficialSituation? = null,
+    /**
+     * Prazo de propostas anterior quando a fonte mudou a data (licitação ADIADA/remarcada), detectado na atualização
+     * comparando com o cache; null = nunca mudou. Versão 14.
+     */
+    val previousProposalDeadline: Long? = null,
 ) {
+    /** ADIADA: o prazo mudou em relação ao que estava salvo, ou a fonte publicou "adiada"/"remarcada". */
+    val postponed: Boolean get() = Postponement.isPostponed(this)
+
     /**
      * A fonte informou o fim do recebimento de propostas. false = "prazo não informado"
      * ([proposalDeadline] = [DEADLINE_UNKNOWN]); a data de publicação NUNCA é usada como prazo.
@@ -196,6 +211,11 @@ data class SearchOutcome(
      * atualização diária já baixou as novas. Diferente de [fromCache] por falha/sem internet.
      */
     val cacheSnapshot: Boolean = false,
+    /**
+     * Itens com data de proposta em dias anteriores do mês atual (já com nota), fora de [items]: a tela os mostra na
+     * seção "Dias anteriores" com "Mostrar dias anteriores" ou quando há texto digitado na busca.
+     */
+    val previousDays: List<ScoredOpportunity> = emptyList(),
 ) {
     /**
      * Ex.: "PNCP 120 · Compras.gov.br 8000 lidas · 34 candidatas · 12 abertas · 5 dispensas sem disputa ocultas" ou
@@ -236,6 +256,8 @@ data class SearchOutcome(
             return when {
                 syncing -> "sincronização do Compras.gov.br em andamento — resultado parcial; a lista será atualizada ao terminar"
                 failure != null -> "a leitura completa do Compras.gov.br não terminou ($failure) — resultado parcial; nova tentativa na próxima atualização"
+                previousDays.isNotEmpty() ->
+                    "nenhuma de hoje em diante; ${previousDays.size} de dias anteriores do mês (marque \"Mostrar dias anteriores\")"
                 cacheSnapshot -> "nada salvo no aparelho casou com a busca; puxe para atualizar"
                 fromCache -> "fontes não consultadas; só o cache local"
                 candidates == 0 -> "nenhuma licitação aberta das fontes casou com as palavras/filtros"
@@ -317,8 +339,11 @@ data class OpportunityFilter(
     val minValue: Double? = null,
     val maxValue: Double? = null,
     val minScore: Int = 0,
-    /** Inclui dispensas sem disputa ([Opportunity.noDispute]). Padrão: ocultas. */
-    val showNoDispute: Boolean = false,
+    /**
+     * Inclui dispensas sem disputa ([Opportunity.noDispute]). Padrão: mostradas (a Busca filtra por modalidade com o chip
+     * "Todas · Pregão · Dispensa · Concorrência/Outras").
+     */
+    val showNoDispute: Boolean = true,
 ) {
     /**
      * Busca focada (texto digitado ou segmento escolhido): só então a Busca pede notas por IA. A busca geral sem
@@ -358,6 +383,10 @@ data class Tender(
     val editalPages: Int? = null,
     /** PDF sem camada de texto (escaneado). Com [hasEditalText] = true, o texto veio do OCR local (conferir trechos). */
     val editalScanned: Boolean = false,
+    /** UASG / código da unidade compradora trazido da oportunidade ao marcar interesse (versão 14). */
+    val uasg: String? = null,
+    /** Situação oficial (suspensa, revogada, anulada...) atualizada pela atualização diária; null = normal. Versão 14. */
+    val officialSituation: OfficialSituation? = null,
 ) {
     /** Há texto real do edital para enviar à IA. */
     val hasEditalText: Boolean get() = editalTextPath != null && editalChars > 0
@@ -894,6 +923,12 @@ data class AppSettings(
      * [portalKeepAliveKey]. Padrão vazio = desligado.
      */
     val portalAutoCertLogin: Set<String> = emptySet(),
+    /** "Mostrar dias anteriores" na Busca e nos Resultados do Radar (padrão desmarcado). */
+    val showPreviousDays: Boolean = false,
+    /** Último filtro de período escolhido na Busca/Radar (padrão: qualquer data). */
+    val searchPeriod: PeriodFilter = PeriodFilter(),
+    /** Última abertura da Busca (selo "Nova": o que entrou no cache depois dela). */
+    val lastSearchOpenedAt: Long? = null,
 ) {
     fun isPortalKeepAliveOn(companyId: Long, portal: Portal): Boolean = portalKeepAliveKey(companyId, portal) in portalKeepAlive
 

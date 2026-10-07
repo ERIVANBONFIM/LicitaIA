@@ -325,9 +325,21 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
                 Spacer(Modifier.height(6.dp))
                 Text(listOf(tender.modality, tender.situation).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    com.licitaia.core.ui.components.OfficialSituationBadge(tender.situation)
+                    if (com.licitaia.domain.model.OfficialSituation.fromText(tender.situation) != null) Spacer(Modifier.width(8.dp))
                     StatusBadge(if (tender.hasProposal) "Proposta no portal" else "Sem proposta no portal", if (tender.hasProposal) Tone.SUCCESS else Tone.NEUTRAL)
                     Spacer(Modifier.width(8.dp))
                     state.plan?.proposalStatus?.let { StatusBadge(it.label, proposalTone(it)) }
+                }
+                com.licitaia.domain.model.OfficialSituation.fromText(tender.situation)?.let { s ->
+                    // Robô armado/agendado para compra suspensa/cancelada: avisa e não inicia sozinho (PortalRobotEngine).
+                    Spacer(Modifier.height(8.dp))
+                    AlertBanner(
+                        "Compra ${s.label.lowercase()}",
+                        "O portal indica que esta compra está ${s.label.lowercase()}. O robô não inicia automaticamente; " +
+                            "confira no portal antes de executar qualquer ação.",
+                        if (s.severity == com.licitaia.domain.model.SituationSeverity.AMBER) Tone.WARNING else Tone.DANGER,
+                    )
                 }
                 Spacer(Modifier.height(8.dp))
                 SecondaryButton("Ver no portal", { navigator.navigate(Routes.portalWeb(Portal.COMPRAS_GOV)) }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Language, tone = Tone.NEUTRAL)

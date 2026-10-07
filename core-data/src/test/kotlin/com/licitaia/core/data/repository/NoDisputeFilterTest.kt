@@ -41,7 +41,8 @@ class NoDisputeFilterTest {
     private fun opp(id: String, noDispute: Boolean, deadline: Long = if (noDispute) Opportunity.DEADLINE_UNKNOWN else future) = Opportunity(
         id = id, portal = Portal.COMPRAS_GOV, number = "1/2026", agency = "Órgão", objectDescription = "Link de internet",
         modality = Modality.DISPENSA_ELETRONICA, segment = Segment.TELECOM_ISP, uf = "MG", city = "BH",
-        estimatedValue = 1000.0, publishedAt = 0, proposalDeadline = deadline, sessionAt = deadline, noDispute = noDispute,
+        // Dispensa sem disputa não tem data de proposta: o "dia" dela é a publicação (hoje → de hoje em diante).
+        estimatedValue = 1000.0, publishedAt = System.currentTimeMillis(), proposalDeadline = deadline, sessionAt = deadline, noDispute = noDispute,
     )
 
     private val direct = opp("COMPRAS_GOV:11111111000111-1-000001/2026", noDispute = true)
@@ -50,12 +51,12 @@ class NoDisputeFilterTest {
     private val radar = Radar(id = 7, companyId = 1, name = "Internet", segment = Segment.TELECOM_ISP, keywords = listOf("internet"))
 
     @Test
-    fun `filtro e radar escondem dispensas sem disputa por padrao`() {
-        assertFalse(OpportunityFilter().showNoDispute)
+    fun `busca mostra dispensas sem disputa por padrao e o radar respeita a propria opcao`() {
+        assertTrue(OpportunityFilter().showNoDispute)
         assertFalse(radar.showNoDispute)
-        assertFalse(OpportunityFilterMatcher.matches(OpportunityFilter(), direct))
+        assertTrue(OpportunityFilterMatcher.matches(OpportunityFilter(), direct))
         assertTrue(OpportunityFilterMatcher.matches(OpportunityFilter(), disputed))
-        assertTrue(OpportunityFilterMatcher.matches(OpportunityFilter(showNoDispute = true), direct))
+        assertFalse(OpportunityFilterMatcher.matches(OpportunityFilter(showNoDispute = false), direct))
         assertFalse(RadarMatcher.matches(radar, direct, "MG"))
         assertTrue(RadarMatcher.matches(radar, disputed, "MG"))
         assertTrue(RadarMatcher.matches(radar.copy(showNoDispute = true), direct, "MG"))
@@ -141,18 +142,18 @@ class NoDisputeFilterTest {
     }
 
     @Test
-    fun `busca padrao oculta e conta, e o switch mostra`() = runBlocking {
+    fun `busca padrao mostra as dispensas sem disputa e o filtro desligado oculta e conta`() = runBlocking {
         val repo = repository(radar)
-        val hidden = repo.searchWithSources(1, OpportunityFilter()).getOrThrow()
+        val shown = repo.searchWithSources(1, OpportunityFilter()).getOrThrow()
+        assertEquals(setOf(direct.id, disputed.id), shown.items.map { it.opportunity.id }.toSet())
+        assertEquals(0, shown.hiddenNoDispute)
+
+        val hidden = repo.searchWithSources(1, OpportunityFilter(showNoDispute = false)).getOrThrow()
         assertEquals(listOf(disputed.id), hidden.items.map { it.opportunity.id })
         assertEquals(1, hidden.hiddenNoDispute)
         assertTrue(hidden.sourceSummary!!.endsWith("1 dispensa sem disputa oculta"))
         // A fonte recebe o pedido com as dispensas incluídas (para contar); o filtro do usuário é aplicado depois.
         assertTrue(received.captured.showNoDispute)
-
-        val shown = repo.searchWithSources(1, OpportunityFilter(showNoDispute = true)).getOrThrow()
-        assertEquals(setOf(direct.id, disputed.id), shown.items.map { it.opportunity.id }.toSet())
-        assertEquals(0, shown.hiddenNoDispute)
     }
 
     @Test

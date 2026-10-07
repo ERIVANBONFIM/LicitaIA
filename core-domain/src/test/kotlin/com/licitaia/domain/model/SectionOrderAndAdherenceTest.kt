@@ -81,26 +81,72 @@ class SectionOrderAndAdherenceTest {
     }
 
     @Test
-    fun `group aplica o corte, ordena e ignora encerradas e duplicadas na contagem`() {
+    fun `group aplica o corte, ordena, mantem as encerradas de hoje e ignora duplicadas e as de antes do mes`() {
         val items = listOf(
             scored(opp("hoje-ia-0", at(6, 11)), 0, ai = true),
             scored(opp("hoje-60", at(6, 16)), 60),
             scored(opp("hoje-60", at(6, 16)), 60),
             scored(opp("encerrada-baixa", at(6, 9)), 10),
             scored(opp("prox-40", at(8, 9)), 40),
+            scored(opp("setembro", at(1, 9) - 2L * 24 * 60 * 60 * 1000), 90),
         )
         val g = LowAdherence.group(items, now, LowAdherence.THRESHOLD, show = false)
         assertEquals(listOf("hoje-60", "prox-40"), g.items.map { it.opportunity.id })
-        assertEquals("encerrada não conta como oculta", listOf("hoje-ia-0"), g.hiddenLow.map { it.opportunity.id })
+        assertEquals(listOf("hoje-ia-0", "encerrada-baixa"), g.hiddenLow.map { it.opportunity.id })
 
         val all = LowAdherence.group(items, now, LowAdherence.THRESHOLD, show = true)
-        assertEquals(listOf("hoje-60", "hoje-ia-0", "prox-40"), all.items.map { it.opportunity.id })
+        assertEquals(listOf("hoje-60", "hoje-ia-0", "encerrada-baixa", "prox-40"), all.items.map { it.opportunity.id })
         assertTrue(all.hiddenLow.isEmpty())
 
         // Radar: sem corte de baixa aderência (usa o próprio score mínimo no repositório).
         val radar = LowAdherence.group(items, now, threshold = null, show = false)
-        assertEquals(3, radar.items.size)
+        assertEquals(4, radar.items.size)
         assertTrue(radar.hiddenLow.isEmpty())
+    }
+
+    private fun oppOf(id: String, deadline: Long, modality: Modality, noDispute: Boolean = false) =
+        opp(id, deadline).copy(modality = modality, noDispute = noDispute)
+
+    @Test
+    fun `dias anteriores ficam ocultos por padrao e aparecem com o chip, contados com a baixa aderencia`() {
+        val items = listOf(
+            scored(opp("hoje", at(6, 15)), 70),
+            scored(opp("ontem-80", at(5, 9)), 80),
+            scored(opp("dia3-10", at(3, 9)), 10),
+            scored(opp("dia2-50", at(2, 9)), 50),
+        )
+        val hidden = LowAdherence.group(items, now, LowAdherence.THRESHOLD, show = false)
+        assertEquals(listOf("hoje"), hidden.items.map { it.opportunity.id })
+        assertEquals("a de baixa aderência não entra na contagem", 2, hidden.previousCount)
+        assertFalse(hidden.previousShown)
+        assertEquals("1 de hoje em diante · 2 de dias anteriores ocultos", hidden.windowSummary)
+
+        val shown = LowAdherence.group(items, now, LowAdherence.THRESHOLD, show = false, showPrevious = true)
+        assertEquals(listOf(OpportunitySection.TODAY, OpportunitySection.PREVIOUS_DAYS), shown.sections.map { it.section })
+        assertEquals(listOf("ontem-80", "dia2-50"), shown.sections[1].items.map { it.opportunity.id })
+        assertEquals(listOf("dia3-10"), shown.hiddenLow.map { it.opportunity.id })
+        assertEquals(1, shown.currentCount)
+        assertEquals("1 de hoje em diante · 2 de dias anteriores", shown.windowSummary)
+    }
+
+    @Test
+    fun `chip de modalidade filtra pregao, dispensa (inclusive sem disputa) e concorrencia ou outras`() {
+        val items = listOf(
+            scored(oppOf("pregao", at(7, 9), Modality.PREGAO_ELETRONICO), 60),
+            scored(oppOf("dispensa", at(7, 10), Modality.DISPENSA_ELETRONICA), 60),
+            scored(oppOf("sem-disputa", Opportunity.DEADLINE_UNKNOWN, Modality.DISPENSA_ELETRONICA, noDispute = true).copy(publishedAt = at(6, 8)), 60),
+            scored(oppOf("concorrencia", at(8, 9), Modality.CONCORRENCIA), 60),
+            scored(oppOf("credenciamento", at(9, 9), Modality.CREDENCIAMENTO), 60),
+        )
+        fun ids(g: ModalityGroup) = LowAdherence.group(items, now, LowAdherence.THRESHOLD, show = false, modality = g).items.map { it.opportunity.id }.toSet()
+        assertEquals(5, ids(ModalityGroup.ALL).size)
+        assertEquals(setOf("pregao"), ids(ModalityGroup.PREGAO))
+        assertEquals(setOf("dispensa", "sem-disputa"), ids(ModalityGroup.DISPENSA))
+        assertEquals(setOf("concorrencia", "credenciamento"), ids(ModalityGroup.OTHERS))
+        val all = LowAdherence.group(items, now, LowAdherence.THRESHOLD, show = false)
+        assertEquals(2, all.dispensas)
+        assertEquals("5 de hoje em diante · 2 dispensas", all.windowSummary)
+        assertEquals("3 de hoje em diante · 1 de dia anterior oculto · 1 dispensa", DayWindowSummary.of(3, 1, false, 1))
     }
 
     @Test

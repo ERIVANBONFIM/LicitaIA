@@ -95,6 +95,17 @@ class RobotSessionWorker(appContext: Context, params: WorkerParameters) : Corout
         if (!plan.bidArmed) return Result.success()
         val tender = runCatching { deps.robotRepository().getMyTenders(companyId) }.getOrNull()?.firstOrNull { it.tenderKey == key } ?: return Result.success()
         val notifier = deps.notifier()
+        // Compra suspensa/cancelada/revogada/anulada/deserta/fracassada: o robô NÃO inicia sozinho; só avisa.
+        com.licitaia.domain.model.OfficialSituation.fromText(tender.situation)?.let { s ->
+            if (phase == RobotScheduler.PHASE_START) runCatching {
+                notifier.notify(
+                    NotificationCategory.LANCES, "Robô não iniciado: compra ${s.label.lowercase()}",
+                    "${tender.label}: o portal indica compra ${s.label.lowercase()}. Confira no portal; o robô não inicia automaticamente.",
+                    critical = true, route = RobotRoutes.plan(key), companyId = companyId,
+                )
+            }
+            return Result.success()
+        }
         when (phase) {
             RobotScheduler.PHASE_PREPARE -> {
                 runCatching { deps.keepAlive().setEnabled(companyId, Portal.COMPRAS_GOV, true) }

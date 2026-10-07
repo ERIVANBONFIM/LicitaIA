@@ -92,6 +92,10 @@ interface OpportunityDao {
     @Query("SELECT * FROM opportunities WHERE id = :id")
     suspend fun getById(id: String): OpportunityEntity?
 
+    /** Linhas salvas de [ids] (comparação de datas: ADIADA). */
+    @Query("SELECT * FROM opportunities WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<String>): List<OpportunityEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entities: List<OpportunityEntity>)
 
@@ -105,6 +109,40 @@ interface OpportunityDao {
     /** Limpeza diária: apaga [ids], nunca as vinculadas a uma licitação salva (interesse, análise, proposta, sessão). */
     @Query("DELETE FROM opportunities WHERE id IN (:ids) AND id NOT IN (SELECT opportunityId FROM tenders)")
     suspend fun deleteUnprotected(ids: List<String>): Int
+}
+
+/** Versão 14: descartadas/vistas por empresa, 1ª vez no cache (selo "Nova") e estado oficial das acompanhadas. */
+@Dao
+interface OpportunityFlagDao {
+    @Query("SELECT * FROM opportunity_flags WHERE companyId = :companyId")
+    fun observe(companyId: Long): kotlinx.coroutines.flow.Flow<List<OpportunityFlagEntity>>
+
+    @Query("SELECT * FROM opportunity_flags WHERE companyId = :companyId")
+    suspend fun forCompany(companyId: Long): List<OpportunityFlagEntity>
+
+    @Query("SELECT opportunityId FROM opportunity_flags WHERE companyId = :companyId AND discardedAt IS NOT NULL")
+    suspend fun discardedIds(companyId: Long): List<String>
+
+    @Query("SELECT * FROM opportunity_flags WHERE companyId = :companyId AND opportunityId = :opportunityId")
+    suspend fun get(companyId: Long, opportunityId: String): OpportunityFlagEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(flag: OpportunityFlagEntity)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertFirstSeen(rows: List<OpportunityFirstSeenEntity>)
+
+    @Query("SELECT * FROM opportunity_first_seen WHERE opportunityId IN (:ids)")
+    suspend fun firstSeen(ids: List<String>): List<OpportunityFirstSeenEntity>
+
+    @Query("DELETE FROM opportunity_first_seen WHERE opportunityId IN (:ids)")
+    suspend fun deleteFirstSeen(ids: List<String>)
+
+    @Query("SELECT * FROM tender_status_watch WHERE tenderId = :tenderId")
+    suspend fun watch(tenderId: Long): TenderStatusWatchEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveWatch(row: TenderStatusWatchEntity)
 }
 
 /** Cache persistente do Compras.gov.br (versão 10). Leitura filtrada no SQL e em blocos (keyset por id). */
@@ -212,6 +250,17 @@ interface TenderDao {
 
     @Query("DELETE FROM tenders WHERE id = :id")
     suspend fun delete(id: Long)
+
+    /** v14: situação oficial e datas conferidas na atualização diária (mudança de fase). */
+    @Query(
+        "UPDATE tenders SET officialSituation = :situation, proposalDeadline = :deadline, sessionAt = :sessionAt, updatedAt = :now " +
+            "WHERE id = :id",
+    )
+    suspend fun updateOfficialStatus(id: Long, situation: String?, deadline: Long, sessionAt: Long, now: Long)
+
+    /** v14: UASG preenchida depois (ex.: licitação antiga sem a coluna). */
+    @Query("UPDATE tenders SET uasg = :uasg WHERE id = :id AND (uasg IS NULL OR uasg = '')")
+    suspend fun fillUasg(id: Long, uasg: String)
 }
 
 @Dao

@@ -217,9 +217,11 @@ class AndroidProposalPdfGenerator @Inject constructor(
 
         private fun drawAddressee() {
             sectionTitle("Destinatário")
-            val uasg = runCatching { PortalTenderMatching.refOf(tender.opportunityId, tender.number, tender.agency).uasg }.getOrNull()
+            // UASG explícita da licitação (v14); senão a deduzida do id legado / texto do órgão.
+            val uasg = tender.uasg?.takeIf { it.isNotBlank() }
+                ?: runCatching { PortalTenderMatching.refOf(tender.opportunityId, tender.number, tender.agency).uasg }.getOrNull()
             keyValue("Órgão", tender.agency.ifBlank { "—" })
-            uasg?.takeIf { it.isNotBlank() }?.let { keyValue("UASG", it) }
+            uasg?.takeIf { it.isNotBlank() }?.let { keyValue(if (tender.portal == com.licitaia.domain.model.Portal.COMPRAS_GOV) "UASG" else "Cód. unidade", it) }
             listOf(tender.city, tender.uf).filter { it.isNotBlank() }.joinToString("/").takeIf { it.isNotEmpty() }?.let { keyValue("Local", it) }
             keyValue("A/C", "Agente de contratação / Pregoeiro(a) e equipe de apoio")
             y += 6f

@@ -59,4 +59,7 @@ internal fun ComprasGovRowEntity.toDomain() = Opportunity(
     modality = modality, segment = segment, uf = uf, city = city, estimatedValue = estimatedValue, publishedAt = publishedAt,
     proposalDeadline = proposalDeadline, sessionAt = sessionAt, keywords = keywords, editalUrl = editalUrl, noDispute = noDispute,
     proposalOpening = proposalOpening,
+    // A UASG fica nas palavras-chave da linha ("UASG 927312"): a tabela do Compras.gov.br não tem coluna própria.
+    uasg = com.licitaia.domain.model.UasgCode.fromKeywords(keywords),
+    officialSituation = com.licitaia.domain.model.OfficialSituation.fromKeywords(keywords),
 )

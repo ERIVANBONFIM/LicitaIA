@@ -215,7 +215,10 @@ fun MyTenderCard(t: PortalMyTender, plan: PortalRobotPlan?, runs: List<RobotRun>
                     style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                 )
             }
+            val situation = com.licitaia.domain.model.OfficialSituation.fromText(t.situation)
             when {
+                // Compra suspensa/cancelada/revogada/anulada/deserta/fracassada: selo colorido em destaque.
+                situation != null && active == null -> com.licitaia.core.ui.components.OfficialSituationBadge(situation)
                 active != null -> StatusBadge(active.status.label, if (active.needsUser) Tone.WARNING else Tone.INFO, pulsing = !active.needsUser)
                 plan?.bidArmed == true -> StatusBadge("Lance armado", Tone.SUCCESS)
                 t.hasProposal -> StatusBadge("Proposta enviada", Tone.SUCCESS)

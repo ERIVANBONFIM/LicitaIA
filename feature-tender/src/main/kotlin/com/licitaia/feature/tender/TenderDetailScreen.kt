@@ -448,6 +448,15 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
         item(key = "header") {
             GradientCard(Modifier.fillMaxWidth()) {
                 TenderHeadline(tender, analysis)
+                // Situação oficial (suspensa/revogada...) e UASG à vista no cabeçalho.
+                val unit = com.licitaia.domain.model.UasgCode.label(tender.portal, tender.uasg)
+                if (tender.officialSituation != null || unit != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        com.licitaia.core.ui.components.OfficialSituationBadge(tender.officialSituation)
+                        unit?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary) }
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 Text(tender.objectDescription, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
                 Spacer(Modifier.height(14.dp))
@@ -544,6 +553,10 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 InfoRow("Portal", tender.portal.displayName)
                 InfoRow("Número", tender.number)
                 InfoRow("Órgão", tender.agency)
+                com.licitaia.domain.model.UasgCode.label(tender.portal, tender.uasg)?.let { label ->
+                    InfoRow(if (tender.portal == com.licitaia.domain.model.Portal.COMPRAS_GOV) "UASG" else "Cód. unidade", label.substringAfterLast(' '))
+                }
+                tender.officialSituation?.let { InfoRow("Situação oficial", it.label, valueColor = LicitaColors.Red) }
                 InfoRow("Modalidade", tender.modality.label)
                 InfoRow("Segmento", tender.segment.label)
                 InfoRow("Local", "${tender.city}/${tender.uf}")

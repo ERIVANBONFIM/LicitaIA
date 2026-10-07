@@ -258,14 +258,16 @@ class ComprasGovConnector internal constructor(
         val legacy = filter.modality?.let(ComprasGovModalities::legacyCodeOf)?.let { legacyOpen(it, dataInicial, dataFinal, now) }.orEmpty()
 
         // 2) Leitura do cache por modalidade/UF/janela (SQL) e triagem local fora da main thread, em blocos.
+        // Escopo: data de proposta do 1º dia do mês atual em diante (as encerradas do mês também: "Dias anteriores").
+        val keepFrom = com.licitaia.domain.model.ProposalWindows.monthStart(now)
         val (scanned, candidates) = withContext(Dispatchers.Default) {
             var count = 0
             val pool = LinkedHashMap<String, Opportunity>()
             fun consider(o: Opportunity) {
-                if (!o.isProposalClosed(now) && OpportunityFilterMatcher.matches(filter, o) && screen.accept(o)) pool.putIfAbsent(o.id, o)
+                if (!o.isProposalClosed(keepFrom) && OpportunityFilterMatcher.matches(filter, o) && screen.accept(o)) pool.putIfAbsent(o.id, o)
             }
             for (code in codes) {
-                val query = ListingRowQuery(code, ufFilter, windowStart, now)
+                val query = ListingRowQuery(code, ufFilter, windowStart, keepFrom)
                 var after = ""
                 while (true) {
                     ensureActive()
@@ -292,7 +294,7 @@ class ComprasGovConnector internal constructor(
             diagnostics = SourceDiagnostics(
                 read = scanned,
                 candidates = candidates.size,
-                open = open.size,
+                open = open.count { !it.isProposalClosed(now) },
                 unknownDeadline = open.count { !it.hasProposalDeadline },
                 truncated = combos.isNotEmpty() && truncated(combos, now),
                 syncing = sync.inProgress,
@@ -446,7 +448,8 @@ class ComprasGovConnector internal constructor(
                     failure = e
                 }
             }
-            if (pacer.requests > 0) runCatching { store.prune(windowStart, now) }
+            // Mantém as encerradas do mês atual (só as de antes do 1º dia do mês saem).
+            if (pacer.requests > 0) runCatching { store.prune(windowStart, com.licitaia.domain.model.ProposalWindows.monthStart(now)) }
         } finally {
             if (full.isNotEmpty()) progress.value = null
         }
@@ -697,7 +700,8 @@ class ComprasGovConnector internal constructor(
     private fun isDropped(s: PncpCompraStatus, now: Long): Boolean {
         if (WithdrawnSituation.isWithdrawn(s.situacaoCompraId, s.situacaoCompraNome)) return true
         val deadline = ComprasGovMapper.parseDate(s.dataEncerramentoProposta) ?: return false
-        return deadline < now
+        // Encerradas no mês atual ficam ("Dias anteriores"); só as de antes do 1º dia do mês são descartadas.
+        return deadline < com.licitaia.domain.model.ProposalWindows.monthStart(now)
     }
 
     /** Aplica o prazo real do PNCP (já sabido que não foi descartada por [isDropped]). */
