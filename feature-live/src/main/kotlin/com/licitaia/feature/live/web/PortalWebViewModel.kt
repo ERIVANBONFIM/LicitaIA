@@ -135,15 +135,22 @@ class PortalWebViewModel @Inject constructor(
      * pelo menu do portal e pesquisa UASG + número em "Todas as compras" → "Acompanhar compra". Só leitura/cliques de
      * navegação; nada é marcado nem enviado. Para sozinho em 5 min sem login ou ao sair da tela.
      */
+    private var purchaseJob: kotlinx.coroutines.Job? = null
+
     private fun openComprasPurchase(t: com.licitaia.domain.model.PortalLinks.ComprasTarget) {
-        viewModelScope.launch {
+        // O pedido mais novo vence: cancela a navegação anterior (desta tela e de outras telas do portal).
+        val token = PURCHASE_REQUESTS.incrementAndGet()
+        purchaseJob?.cancel()
+        purchaseJob = viewModelScope.launch {
             val label = "UASG ${t.uasg} · nº ${t.numberYear}"
+            fun latest() = PURCHASE_REQUESTS.get() == token
             _purchaseSearch.value = "Abrindo a compra $label… (entre no portal se ele pedir login)"
             try {
                 val companyId = state.first { it.ready && it.companyId != null }.companyId ?: return@launch
                 val deadline = System.currentTimeMillis() + LOGIN_WAIT_MS
                 var logged = false
                 while (System.currentTimeMillis() < deadline) {
+                    if (!latest()) return@launch
                     if (runCatching { gate.isLoggedNow(companyId) }.getOrDefault(false)) { logged = true; break }
                     delay(2_000)
                 }
@@ -152,8 +159,13 @@ class PortalWebViewModel @Inject constructor(
                     return@launch
                 }
                 delay(SETTLE_MS) // deixa a tela concluir o clique automático em "Licitação e Dispensa (novo)"
-                val owner = "abrir a compra"
-                gate.claimTab(owner)?.let { other ->
+                if (!latest()) return@launch
+                val owner = "abrir a compra #$token"
+                // Uma navegação anterior ("abrir a compra #n") termina sozinha ao ver o pedido novo: espera ela soltar a aba.
+                var other = gate.claimTab(owner)
+                var waited = 0
+                while (other != null && other.startsWith("abrir a compra") && waited < 30) { delay(500); waited++; other = gate.claimTab(owner) }
+                if (other != null) {
                     _events.send("A aba do Comprasnet está em uso ($other). Abra a compra $label manualmente.")
                     return@launch
                 }
@@ -164,10 +176,20 @@ class PortalWebViewModel @Inject constructor(
                         is com.licitaia.feature.live.automation.PortalSessionGate.Result.Failed -> { _events.send(r.reason); return@launch }
                         else -> { _events.send("Não foi possível abrir Compras eletrônicas agora."); return@launch }
                     }
-                    val nav = com.licitaia.feature.live.automation.SpaNavigator(gate.driver(companyId))
+                    val nav = com.licitaia.feature.live.automation.SpaNavigator(
+                        gate.driver(companyId),
+                        sleep = { ms ->
+                            if (!latest()) throw kotlinx.coroutines.CancellationException("outra compra foi pedida")
+                            delay(ms)
+                        },
+                    )
+                    // Sempre navega até a compra PEDIDA (se a aba está em outra compra, volta a Compras eletrônicas e
+                    // pesquisa); aceita a página "Acompanhar Contratação" da compra certa.
                     val error = nav.openPurchase(
                         com.licitaia.feature.live.automation.SpaNavigator.Purchase(t.uasg, t.modality, t.number, t.year),
+                        requireProposalPage = false,
                     )
+                    if (!latest()) return@launch
                     _events.send(
                         error?.let { "Não consegui abrir a compra $label ($it). Pesquise em Compras eletrônicas → Todas as compras." }
                             ?: "Compra $label aberta.",
@@ -176,7 +198,7 @@ class PortalWebViewModel @Inject constructor(
                     gate.releaseTab(owner)
                 }
             } finally {
-                _purchaseSearch.value = null
+                if (latest()) _purchaseSearch.value = null
             }
         }
     }
@@ -522,6 +544,8 @@ class PortalWebViewModel @Inject constructor(
     }
 
     private companion object {
+        /** Pedidos de "Abrir no portal" (processo inteiro): o mais novo vence, os anteriores param sozinhos. */
+        val PURCHASE_REQUESTS = java.util.concurrent.atomic.AtomicLong(0)
         const val OPTIMISTIC_WINDOW_MS = 15_000L
         const val EXPIRE_CONFIRM_MS = 3_000L
         /** Espera pelo login do usuário antes de desistir de abrir a compra. */

@@ -33,7 +33,43 @@ data class Company(
     val bankName: String = "",
     val bankAgency: String = "",
     val bankAccount: String = "",
+    /** Versão 15: respostas padrão das declarações do cadastro de proposta do Compras.gov.br (null = não informada). */
+    val portalDeclarations: PortalDeclarations = PortalDeclarations(),
 )
+
+/**
+ * "Declarações padrão do Compras.gov": declarações LEGAIS da empresa pedidas no cadastro de proposta (Lei 14.133/2021).
+ * O robô só as aplica com a autorização explícita do usuário na confirmação. null = não informada.
+ */
+data class PortalDeclarations(
+    /** "Declaração para fornecedores ME/EPP e equiparados" (LC 123/2006): Sim = enquadrada como ME/EPP. */
+    val meEpp: Boolean? = null,
+    /** "Equidade entre mulheres e homens" (art. 60, III). */
+    val genderEquity: Boolean? = null,
+    /** "Programa de integridade" (art. 60, IV). */
+    val integrity: Boolean? = null,
+) {
+    val complete: Boolean get() = meEpp != null && genderEquity != null && integrity != null
+
+    /** Pares (rótulo, resposta) na ordem do portal. */
+    fun entries(): List<Pair<String, Boolean?>> = listOf(
+        LABEL_ME_EPP to meEpp, LABEL_EQUITY to genderEquity, LABEL_INTEGRITY to integrity,
+    )
+
+    /** "ME/EPP: Sim · Equidade de gênero: Não · Programa de integridade: Sim" (auditoria/log). */
+    fun summary(): String = entries().joinToString(" · ") { (l, v) -> "$l: ${answer(v)}" }
+
+    companion object {
+        const val LABEL_ME_EPP = "ME/EPP"
+        const val LABEL_EQUITY = "Equidade de gênero"
+        const val LABEL_INTEGRITY = "Programa de integridade"
+        fun answer(v: Boolean?): String = when (v) { true -> "Sim"; false -> "Não"; null -> "não informada" }
+
+        /** Persistência: "SIM" / "NAO" / "" (não informada). */
+        fun encode(v: Boolean?): String = when (v) { true -> "SIM"; false -> "NAO"; null -> "" }
+        fun decode(s: String?): Boolean? = when (s?.trim()?.uppercase()) { "SIM" -> true; "NAO" -> false; else -> null }
+    }
+}
 
 data class UserProfile(
     val id: Long = 0,

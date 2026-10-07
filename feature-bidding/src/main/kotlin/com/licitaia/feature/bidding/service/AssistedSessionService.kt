@@ -103,10 +103,11 @@ class AssistedSessionService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        fun buildNotification(context: Context, count: Int, robots: Int = 0): Notification {
+        fun buildNotification(context: Context, count: Int, robots: Int = 0, progress: String? = null): Notification {
             ensureChannel(context)
             val title = if (robots > 0) "Robô do Comprasnet em operação: $robots" else "Pregão em acompanhamento: $count sessão(ões)"
-            val body = if (robots > 0) "O robô está operando na sua sessão do Comprasnet. Toque em PARAR para interromper todos."
+            val body = if (robots > 0 && !progress.isNullOrBlank()) "$progress. Toque em PARAR para interromper todos."
+            else if (robots > 0) "O robô está operando na sua sessão do Comprasnet. Toque em PARAR para interromper todos."
             else "Cronômetro e alertas das sessões assistidas continuam ativos em segundo plano."
             val open = openIntent(context)
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)

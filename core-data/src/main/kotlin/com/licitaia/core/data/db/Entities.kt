@@ -56,6 +56,10 @@ data class CompanyEntity(
     @ColumnInfo(defaultValue = "") val bankName: String = "",
     @ColumnInfo(defaultValue = "") val bankAgency: String = "",
     @ColumnInfo(defaultValue = "") val bankAccount: String = "",
+    // Versão 15: declarações padrão do Compras.gov ("SIM"/"NAO"/"" = não informada). Defaults casam com FROM_14_TO_15.
+    @ColumnInfo(defaultValue = "") val declMeEpp: String = "",
+    @ColumnInfo(defaultValue = "") val declGenderEquity: String = "",
+    @ColumnInfo(defaultValue = "") val declIntegrity: String = "",
 )
 
 @Entity(tableName = "users", indices = [Index(value = ["email"], unique = true)])

@@ -16,6 +16,7 @@ import com.licitaia.domain.portal.BidRobotMode
 import com.licitaia.domain.portal.PortalMyTender
 import com.licitaia.domain.portal.PortalRobotPlan
 import com.licitaia.domain.portal.PortalRobotRepository
+import com.licitaia.domain.portal.ProposalAuthorization
 import com.licitaia.domain.portal.ProposalItemPlan
 import com.licitaia.domain.portal.RobotProposalStatus
 import com.licitaia.domain.repository.AppNotifier
@@ -52,6 +53,9 @@ import javax.inject.Singleton
 /** Mantém o processo vivo (serviço em primeiro plano) enquanto houver robô rodando. Implementado em feature-bidding. */
 interface PortalRobotForeground {
     fun updateRobots(active: Int)
+
+    /** Progresso na notificação persistente (ex.: "Item 12 de 77 · UASG …"); null = texto padrão. */
+    fun updateProgress(text: String?) = Unit
 
     object None : PortalRobotForeground { override fun updateRobots(active: Int) = Unit }
 }
@@ -102,9 +106,12 @@ data class RobotRun(
 /**
  * Robôs do Compras.gov.br na aba RETIDA e logada do usuário (DOM, como o usuário faria):
  * - PROPOSTA: abre Compras eletrônicas pelo menu, procura a compra ("Minhas participações" ou "Todas as compras" com
- *   UASG + número DIGITADOS), abre o cadastro de proposta (`cadastro-propostas?compra=<código>` conferido), verifica o
- *   termo/declarações (NUNCA marca: se faltar, para e mostra o portal ao usuário) e preenche/salva item a item
- *   ([SpaNavigator]), conferindo o aviso de sucesso e o "Meu valor (unitário)" do cartão. Nunca clica na lixeira.
+ *   UASG + número DIGITADOS), abre o cadastro de proposta e CONFERE a compra (URL `compra=<código>` + cabeçalho
+ *   "UASG"/"N° n/aaaa"; até 3 tentativas), confere a disponibilidade (prazo futuro, sem aviso de suspensa), aceita o
+ *   termo e aplica as declarações da empresa SÓ com a autorização do usuário (sem ela, para e pede), abre grupos/lotes,
+ *   carrega todos os itens e preenche/salva os itens SELECIONADOS ([SpaNavigator]) — por item ou pelo "Salvar" do
+ *   grupo — conferindo o "Meu valor (unitário)". Item não encontrado não para tudo: entra na lista final. Nunca clica
+ *   na lixeira.
  * - LANCE: lê a sala de disputa, decide com [AutoBidDecider] (estratégias e configuração da tela Estratégias, piso, 20 s/3 s, teto) e,
  *   no modo AUTOMÁTICO armado pelo usuário, preenche e envia; no MANUAL só sugere (o usuário toca Enviar). Lê o chat do
  *   pregoeiro e grava em "Mensagens do Pregoeiro". Registra lances no histórico de Pregões ao Vivo/Sala de Guerra.
@@ -153,14 +160,29 @@ class PortalRobotEngine @Inject constructor(
 
     // ------------------------------------------------------------------ comandos (UI / agenda / notificação)
 
-    /** "Soltar robô — cadastrar proposta" (a UI já mostrou a confirmação explícita). */
-    suspend fun startProposal(companyId: Long, tenderKey: String): Result<String> = runCatching {
+    /**
+     * "Soltar robô — cadastrar proposta" (a UI já mostrou a confirmação explícita). Com [authorization] (checkbox
+     * "Autorizo o aceite do Termo…" marcado na confirmação) o robô aceita o termo e aplica as declarações da empresa;
+     * sem ela, para e pede o usuário no termo (comportamento anterior). A autorização vai para a auditoria.
+     */
+    suspend fun startProposal(companyId: Long, tenderKey: String, authorization: ProposalAuthorization? = null): Result<String> = runCatching {
         requireOperator(companyId)
         activeRun(companyId, tenderKey, RobotKind.PROPOSTA)?.let { error("O robô de proposta já está rodando para esta licitação.") }
         val tender = myTender(companyId, tenderKey)
         val plan = repo.getPlan(companyId, tenderKey) ?: error("Configure os itens da proposta antes.")
         RobotPlanRules.proposalErrors(plan.items).firstOrNull()?.let { error(it) }
-        launchRun(companyId, tender, RobotKind.PROPOSTA) { ctrl, id -> proposalRun(ctrl, id, companyId, tender, plan) }
+        val auth = authorization?.takeIf { it.acceptTerms }
+        if (auth != null) {
+            check(auth.declarations.complete) { "Responda as declarações da empresa antes de autorizar o termo." }
+            safely {
+                audit.record(
+                    AuditAction.CONFIGURACAO, origin = AuditOrigin.USUARIO, portal = Portal.COMPRAS_GOV,
+                    tenderNumber = "${tender.number}/${tender.year}", newValue = auth.declarations.summary(),
+                    details = RobotPlanRules.authorizationAudit(tender, auth, plan.items),
+                )
+            }
+        }
+        launchRun(companyId, tender, RobotKind.PROPOSTA) { ctrl, id -> proposalRun(ctrl, id, companyId, tender, plan, auth) }
     }
 
     /** Inicia o robô de lance (agenda ou "Entrar na disputa agora"). Exige o plano ARMADO pelo usuário. */
@@ -366,21 +388,248 @@ class PortalRobotEngine @Inject constructor(
 
     // ================================================================== robô de PROPOSTA
 
-    private suspend fun proposalRun(ctrl: Control, runId: String, companyId: Long, t: PortalMyTender, plan: PortalRobotPlan) {
+    /** Resultado de UM item no cadastro de proposta. */
+    private sealed interface ItemOutcome {
+        data object Saved : ItemOutcome
+        data object AlreadySaved : ItemOutcome
+        /** O item não está nesta compra (segue com os demais e lista no fim). */
+        data class NotFound(val reason: String) : ItemOutcome
+        /** Falha no preenchimento/salvamento do item (segue; 3 seguidas → para e pede o usuário). */
+        data class Failed(val reason: String) : ItemOutcome
+        /** Sessão/app/página errada: para e pede o usuário (nunca preenche fora da compra certa). */
+        data class PageLost(val reason: String) : ItemOutcome
+    }
+
+    private suspend fun proposalRun(ctrl: Control, runId: String, companyId: Long, t: PortalMyTender, plan: PortalRobotPlan, auth: ProposalAuthorization?) {
         val lines = mutableListOf<String>()
         fun record(line: String) { lines += line; log(runId, line) }
         val nav = SpaNavigator(gate.driver(companyId), log = { log(runId, it) })
         val purchase = purchaseOf(t)
-        record("Robô de proposta solto por ${userName()}: ${plan.items.size} item(ns), total ${Formatters.brl(plan.items.sumOf { it.totalPrice })}.")
+        val items = plan.items.filter { it.selected }.sortedBy { it.itemNumber }
+        val total = items.size
+        record("Robô de proposta solto por ${userName()}: $total de ${plan.items.size} item(ns) selecionados, total ${Formatters.brl(items.sumOf { it.totalPrice })}.")
+        auth?.let { record("Termo/declarações autorizados por ${it.authorizedBy} em ${Formatters.dateTime(it.authorizedAt)}: ${it.declarations.summary()}.") }
         savePlan(companyId, t.tenderKey) { it.copy(proposalStatus = RobotProposalStatus.EXECUTANDO) }
-        safely { audit.record(AuditAction.ROBO_ATIVADO, origin = AuditOrigin.USUARIO, portal = Portal.COMPRAS_GOV, tenderNumber = "${t.number}/${t.year}", details = "Robô de proposta: ${plan.items.size} item(ns)") }
+        safely { audit.record(AuditAction.ROBO_ATIVADO, origin = AuditOrigin.USUARIO, portal = Portal.COMPRAS_GOV, tenderNumber = "${t.number}/${t.year}", details = "Robô de proposta: $total item(ns)") }
 
-        var okCount = 0
+        val saved = LinkedHashSet<Int>()
+        val failures = LinkedHashMap<Int, String>()
+        var consecutiveFails = 0
+        var position = 0
+        var snapshotTaken = false
+
         val finish: suspend (RobotProposalStatus, String) -> Unit = { status, msg ->
             record(msg)
             savePlan(companyId, t.tenderKey) { it.copy(proposalStatus = status, proposalLog = lines.toList()) }
             safely { notifier.notify(NotificationCategory.SESSOES, "Robô de proposta: ${status.label}", "${t.label}: $msg", route = null, companyId = companyId) }
         }
+
+        /** Primeira falha estrutural (item/grupo): grava a tela no "Mapear telas" para ajustar o robô. */
+        suspend fun snapshotOnce(why: String) {
+            if (snapshotTaken) return
+            snapshotTaken = true
+            if (runCatching { mapCurrentScreen(companyId) }.getOrDefault(false)) record("Tela do portal mapeada automaticamente ($why) para ajuste do robô.")
+        }
+
+        fun progress(text: String) {
+            setStep(runId, "Item $position de $total · $text")
+            runCatching { foreground.updateProgress("Item $position de $total · ${t.label}") }
+        }
+
+        /**
+         * Um item no modo "Salvar por item". false = parar tudo (usuário parou). Dentro de um grupo ([group] = "Grupo 1:
+         * 9/24"), item não encontrado PARA no grupo (o portal considera o grupo incompleto): pede o usuário e tenta de novo.
+         */
+        suspend fun runItem(item: ProposalItemPlan, group: (() -> String)? = null): Boolean {
+            val n = item.itemNumber
+            while (!ctrl.stop) {
+                progress(listOfNotNull(group?.invoke(), "item $n: preenchendo").joinToString(" · "))
+                when (val r = proposalItem(companyId, nav, purchase, item)) {
+                    ItemOutcome.Saved -> {
+                        saved += n; consecutiveFails = 0
+                        record("Item $n: OK — ${Formatters.brl(item.unitPrice)} (unitário) salvo; o portal confirmou e o cartão mostra “Meu valor (unitário)” igual.")
+                        return true
+                    }
+                    ItemOutcome.AlreadySaved -> {
+                        saved += n; consecutiveFails = 0
+                        record("Item $n: já estava com ${Formatters.brl(item.unitPrice)} no portal — nada a alterar.")
+                        return true
+                    }
+                    is ItemOutcome.NotFound -> {
+                        snapshotOnce("item $n não encontrado")
+                        if (group == null) {
+                            failures[n] = r.reason
+                            record("Item $n: NÃO ENCONTRADO — ${r.reason}. Seguindo com os demais.")
+                            return true
+                        }
+                        record("Item $n: NÃO ENCONTRADO no grupo (abri o grupo, rolei e paginei) — ${r.reason}.")
+                        val ok = awaitUser(
+                            ctrl, runId,
+                            "${group()}: o item $n não apareceu mesmo abrindo o grupo, rolando e paginando. O portal considera o grupo " +
+                                "incompleto, então o robô NÃO segue para outro grupo. Abra o item no portal e toque em Tentar de novo (ou Continuar manualmente).",
+                            showPortal = true,
+                        )
+                        if (!ok) { failures[n] = r.reason; return false }
+                    }
+                    is ItemOutcome.Failed -> {
+                        record("Item $n: FALHOU — ${r.reason}.")
+                        if (++consecutiveFails < 3) { failures[n] = r.reason; return true }
+                        val ok = awaitUser(
+                            ctrl, runId,
+                            "3 itens seguidos falharam (último: item $n — ${r.reason}). Confira no portal e toque em Tentar de novo (ou Continuar manualmente).",
+                            showPortal = true,
+                        )
+                        if (!ok) { failures[n] = r.reason; return false }
+                        consecutiveFails = 0
+                    }
+                    is ItemOutcome.PageLost -> {
+                        record("Item $n: PARADO — ${r.reason}.")
+                        if (!awaitUser(ctrl, runId, "Item $n: ${r.reason}. Confira no portal e toque em Tentar de novo (ou Continuar manualmente).", showPortal = true)) return false
+                    }
+                }
+            }
+            return false
+        }
+
+        /** Grupo com UM "Salvar" para todos: digita e confere cada item, salva o grupo uma vez e relê cada item. */
+        suspend fun runGroupBatch(g: GroupStructure, button: String, groupItems: List<ProposalItemPlan>): Boolean {
+            val values = mutableListOf<Pair<Int, Double>>()
+            for (item in groupItems) {
+                if (ctrl.stop) return false
+                val n = item.itemNumber
+                position++
+                progress("${g.label.take(30)} · item $n: digitando")
+                var outcome: ItemOutcome? = null
+                while (!ctrl.stop) {
+                    outcome = fillOnly(companyId, nav, purchase, item)
+                    if (outcome !is ItemOutcome.PageLost) break
+                    record("Item $n: PARADO — ${outcome.reason}.")
+                    if (!awaitUser(ctrl, runId, "Item $n: ${outcome.reason}. Confira no portal e toque em Tentar de novo.", showPortal = true)) return false
+                }
+                when (outcome) {
+                    null -> { values += n to item.unitPrice }
+                    ItemOutcome.AlreadySaved -> { saved += n; record("Item $n: já estava com ${Formatters.brl(item.unitPrice)} no portal.") }
+                    is ItemOutcome.NotFound -> { failures[n] = outcome.reason; record("Item $n: NÃO ENCONTRADO — ${outcome.reason}."); snapshotOnce("item $n não encontrado no grupo") }
+                    is ItemOutcome.Failed -> { failures[n] = outcome.reason; record("Item $n: FALHOU — ${outcome.reason}.") }
+                    else -> Unit
+                }
+            }
+            if (values.isEmpty()) return true
+            if (ctrl.stop) return false
+            setStep(runId, "Item $position de $total · salvando ${g.label.take(30)} (${values.size} item(ns))")
+            record("${g.label}: ${values.size} valor(es) digitado(s) e conferido(s); tocando uma vez em “$button” do grupo.")
+            val res = nav.saveGroup(g, values)
+            res.forEach { (n, err) ->
+                if (err == null) {
+                    saved += n
+                    record("Item $n: OK — ${Formatters.brl(values.first { it.first == n }.second)} salvo pelo grupo e relido em “Meu valor (unitário)”.")
+                } else {
+                    failures[n] = err
+                    record("Item $n: FALHOU no salvar do grupo — $err.")
+                }
+            }
+            if (res.values.any { it != null }) snapshotOnce("salvar do ${g.label}")
+            return true
+        }
+
+        /**
+         * Um GRUPO/LOTE inteiro: todos os itens selecionados dele (relocalizando o grupo/itens depois de cada Salvar, pois
+         * o portal redesenha e fecha o grupo) e, no fim, o cartão do grupo não pode continuar "Proposta incompleta" —
+         * só então o robô passa para o próximo grupo. false = parar tudo.
+         */
+        suspend fun runGroup(g: GroupStructure, inGroup: List<ProposalItemPlan>): Boolean {
+            val card0 = GroupCard.parse(g.text)
+            val key = card0?.key ?: g.label.take(30)
+            fun groupProgress(): String {
+                val done = g.items.count { it in saved }
+                return card0?.progress(done) ?: "${g.label.take(30)}: $done/${g.items.size}"
+            }
+            record("$key: ${inGroup.size} item(ns) selecionado(s) de ${card0?.itemCount ?: g.items.size}" + if (card0?.incomplete == true) " · portal mostra “Proposta incompleta”." else ".")
+            when (val s = GroupPlanner.decide(g)) {
+                is GroupStrategy.GroupSave -> if (!runGroupBatch(g, s.button, inGroup)) return false
+                is GroupStrategy.Stop -> {
+                    record("${g.label}: ${s.reason}. O robô não preenche este grupo.")
+                    snapshotOnce("estrutura do ${g.label}")
+                    inGroup.forEach { failures[it.itemNumber] = "grupo não preenchido pelo robô (${s.reason})" }
+                    position += inGroup.size
+                    // Grupo incompleto: não segue para outro grupo sem o usuário.
+                    return awaitUser(
+                        ctrl, runId,
+                        "${g.label}: ${s.reason}. Preencha este grupo no portal e toque em Tentar de novo para seguir (ou Continuar manualmente).",
+                        showPortal = true,
+                    )
+                }
+                GroupStrategy.PerItem -> {
+                    // Página por página do paginador DO GRUPO: preenche todos os selecionados visíveis, vai para a próxima.
+                    val wanted = inGroup.associateBy { it.itemNumber }
+                    val seen = HashSet<Int>()
+                    var page = 1
+                    var pages = 1
+                    var finished = false
+                    var guard = 0
+                    while (!ctrl.stop && !finished && guard++ < 60) {
+                        val err = nav.ensureGroupPage(key, page)
+                        if (err != null) {
+                            record("$key: $err.")
+                            if (!awaitUser(ctrl, runId, "$key: $err. Abra a página $page do grupo no portal e toque em Tentar de novo.", showPortal = true)) return false
+                            continue
+                        }
+                        val visible = nav.groupItems(key)
+                        seen += visible
+                        if (page == 1) pages = GroupTraversal.expectedPages(card0?.itemCount, visible.size, nav.groupPager(key))
+                        val todo = visible.mapNotNull { wanted[it] }.filter { it.itemNumber !in saved && it.itemNumber !in failures }
+                        if (visible.isNotEmpty()) record("$key · página $page/$pages: itens ${visible.first()}–${visible.last()} (${todo.size} a preencher).")
+                        val currentPage = page
+                        val label = { GroupTraversal.progress(key, currentPage, pages, g.items.count { it in saved }, card0?.itemCount) }
+                        for (item in todo) {
+                            if (ctrl.stop) return false
+                            // Depois de salvar o portal pode fechar o grupo / voltar para a página 1.
+                            nav.ensureGroupPage(key, page)
+                            position++
+                            if (!runItem(item, label)) return false
+                        }
+                        nav.ensureGroupPage(key, page)
+                        val pg = nav.groupPager(key)
+                        if (pg?.hasNext == true) {
+                            page++
+                            pages = maxOf(pages, page, pg.lastKnownPage)
+                        } else {
+                            finished = true
+                        }
+                    }
+                    // Selecionados que não apareceram em nenhuma página do grupo: o grupo fica incompleto → para nele.
+                    for (item in inGroup.filter { it.itemNumber !in seen && it.itemNumber !in saved && it.itemNumber !in failures }) {
+                        position++
+                        if (!runItem(item, ::groupProgress)) return false
+                    }
+                }
+            }
+            // "Proposta incompleta" ainda no cartão do grupo? Não passa para o próximo grupo sem o usuário.
+            var checks = 0
+            while (!ctrl.stop && checks < 2) {
+                checks++
+                nav.prepareGroups()
+                val card = nav.groupCard(key) ?: run { record("$key: não consegui reler o cartão do grupo."); return true }
+                if (!card.incomplete && !card.notRegistered) {
+                    record("$key completo: ${groupProgress()}${card.myTotal?.let { " · Meu valor (total) R$ ${it.toPlainString().replace('.', ',')}" }.orEmpty()}.")
+                    nav.collapseGroup(key)
+                    return true
+                }
+                val pending = inGroup.filter { it.itemNumber !in saved }.map { it.itemNumber }
+                val why = if (pending.isNotEmpty()) "itens selecionados ainda sem valor: ${pending.joinToString()}"
+                else "o portal pede TODOS os ${card.itemCount ?: "?"} itens do grupo e o plano tem ${inGroup.size} selecionado(s)"
+                record("$key continua “Proposta incompleta” (${groupProgress()}): $why.")
+                if (checks >= 2) { record("$key segue incompleto; seguindo por decisão sua."); return true }
+                if (!awaitUser(
+                        ctrl, runId,
+                        "$key continua “Proposta incompleta” ($why). O robô não passa para outro grupo: complete no portal e toque em Tentar de novo (ou Continuar manualmente).",
+                        showPortal = true,
+                    )
+                ) return false
+            }
+            return !ctrl.stop
+        }
+
         val owner = "o robô de proposta"
         gate.claimTab(owner)?.let { other ->
             finish(RobotProposalStatus.AGUARDANDO_USUARIO, "A aba do Comprasnet está em uso ($other). Tente de novo quando terminar.")
@@ -391,65 +640,124 @@ class PortalRobotEngine @Inject constructor(
             if (!step(ctrl, runId, "Abrir Compras eletrônicas pelo menu") { gateOutcome(gate.ensureElectronic(companyId), "Compras eletrônicas") }) {
                 finish(RobotProposalStatus.AGUARDANDO_USUARIO, "Parado antes de abrir Compras eletrônicas."); return
             }
-            if (!step(ctrl, runId, "Abrir a compra ${t.label}") { openPurchase(companyId, nav, t) }) {
+            if (!step(ctrl, runId, "Localizar e abrir a compra ${t.label}") { openPurchase(companyId, nav, t) }) {
                 finish(RobotProposalStatus.AGUARDANDO_USUARIO, "Parado ao abrir a compra."); return
             }
-            record("Cadastro de proposta aberto (compra=${CompraCode.of(t.uasg, t.modality, t.number, t.year) ?: "${t.uasg}…${t.number}/${t.year}"}).")
-            if (!checkDeclarations(ctrl, runId, nav, ::record)) {
+            record("Cadastro de proposta da compra certa aberto e conferido (compra=${CompraCode.of(t.uasg, t.modality, t.number, t.year) ?: "${t.uasg}…${t.number}/${t.year}"}; cabeçalho com UASG ${purchase.uasgShown} e N° ${purchase.numberYear}).")
+            val av = nav.availability()
+            if (av != null && !av.ok) {
+                finish(RobotProposalStatus.FALHOU, "Compra indisponível: ${av.describe()}. Nada foi preenchido.")
+                setStatus(runId, RunStatus.FALHOU, lines.lastOrNull())
+                return
+            }
+            record("Disponibilidade: ${av?.describe() ?: "não consegui ler o prazo na página"}.")
+            if (!handleDeclarations(ctrl, runId, companyId, nav, t, auth, ::record)) {
                 finish(RobotProposalStatus.AGUARDANDO_USUARIO, "Parado aguardando o termo/declarações."); return
             }
-            for (item in plan.items.sortedBy { it.itemNumber }) {
+            setStep(runId, "Abrindo grupos/lotes e carregando os itens")
+            val groups = nav.prepareGroups()
+            if (groups.isNotEmpty()) {
+                record("Compra com ${groups.size} grupo(s)/lote(s): " + groups.joinToString { "${it.label.take(40)} (${it.items.size} item(ns))" } + ".")
+            }
+            val handled = HashSet<Int>()
+            for (item in items) {
                 if (ctrl.stop) break
-                var done = false
-                while (!done && !ctrl.stop) {
-                    setStep(runId, "Item ${item.itemNumber}: preenchendo")
-                    val result = proposalItem(companyId, nav, purchase, item)
-                    when {
-                        result == null -> {
-                            okCount++
-                            record("Item ${item.itemNumber}: OK — ${Formatters.brl(item.unitPrice)} (unitário) salvo; o portal confirmou e o cartão mostra “Meu valor (unitário)” igual.")
-                            done = true
-                        }
-                        result.startsWith(ALREADY_SAVED) -> {
-                            okCount++
-                            record("Item ${item.itemNumber}: já estava com ${Formatters.brl(item.unitPrice)} no portal — nada a alterar.")
-                            done = true
-                        }
-                        else -> {
-                            record("Item ${item.itemNumber}: PARADO — $result.")
-                            if (!awaitUser(ctrl, runId, "Item ${item.itemNumber}: $result. Confira no portal e toque em Tentar de novo (ou Continuar manualmente).", showPortal = true)) break
-                        }
-                    }
+                if (item.itemNumber in handled) continue
+                val g = groups.firstOrNull { item.itemNumber in it.items }
+                if (g != null) {
+                    val inGroup = items.filter { it.itemNumber in g.items && it.itemNumber !in handled }
+                    handled += inGroup.map { it.itemNumber }
+                    if (!runGroup(g, inGroup)) break
+                    continue
                 }
-                if (!done) break
+                handled += item.itemNumber
+                position++
+                if (!runItem(item)) break
             }
         } finally {
             gate.releaseTab(owner)
+            runCatching { foreground.updateProgress(null) }
         }
-        val total = plan.items.size
+        val savedValue = items.filter { it.itemNumber in saved }.sumOf { it.totalPrice }
+        val failText = failures.entries.take(12).joinToString("; ") { (n, why) -> "item $n: ${why.take(90)}" } +
+            if (failures.size > 12) "; +${failures.size - 12}" else ""
         when {
-            okCount == total -> {
-                finish(RobotProposalStatus.CADASTRADA, "Proposta cadastrada: $okCount de $total item(ns) salvos e conferidos. Confira no portal antes do prazo.")
+            saved.size == total -> {
+                finish(RobotProposalStatus.CADASTRADA, "Proposta cadastrada: ${saved.size} de $total itens salvos · total ${Formatters.brl(savedValue)}. Confira no portal antes do prazo.")
                 safely { repo.upsertMyTenders(companyId, listOf(t.copy(hasProposal = true, updatedAt = System.currentTimeMillis()))) }
             }
-            okCount > 0 -> finish(RobotProposalStatus.PARCIAL, "Proposta em parte: $okCount de $total item(ns) salvos.")
-            else -> finish(RobotProposalStatus.FALHOU, "Nenhum item foi salvo.")
+            saved.isNotEmpty() -> finish(
+                RobotProposalStatus.PARCIAL,
+                "Proposta em parte: ${saved.size} de $total itens salvos · total ${Formatters.brl(savedValue)}." + if (failText.isNotBlank()) " Faltam: $failText." else "",
+            )
+            else -> finish(RobotProposalStatus.FALHOU, "Nenhum item foi salvo." + if (failText.isNotBlank()) " $failText." else "")
         }
         safely {
             audit.record(
-                AuditAction.ENVIO, if (okCount == total) AuditResult.SUCESSO else AuditResult.FALHA, AuditOrigin.ROBO, portal = Portal.COMPRAS_GOV,
-                tenderNumber = "${t.number}/${t.year}", details = "Robô de proposta: $okCount/$total item(ns) salvos",
+                AuditAction.ENVIO, if (saved.size == total) AuditResult.SUCESSO else AuditResult.FALHA, AuditOrigin.ROBO, portal = Portal.COMPRAS_GOV,
+                tenderNumber = "${t.number}/${t.year}", details = "Robô de proposta: ${saved.size}/$total item(ns) salvos" + if (failures.isNotEmpty()) "; falhas: ${failures.keys.joinToString()}" else "",
             )
         }
-        setStatus(runId, if (okCount == total) RunStatus.CONCLUIDO else if (ctrl.stop) RunStatus.PARADO else RunStatus.FALHOU, lines.lastOrNull())
+        setStatus(runId, if (saved.size == total) RunStatus.CONCLUIDO else if (ctrl.stop) RunStatus.PARADO else RunStatus.FALHOU, lines.lastOrNull())
     }
 
     /**
-     * Termo/declarações (LEGAIS): o robô só LÊ. Faltando algo, para, abre a tela do portal com a faixa "Marque o termo
-     * e as declarações e toque em Continuar" e confere de novo depois do toque. false = parado pelo usuário.
+     * Termo/declarações. COM autorização do usuário: aceita o Termo (Marcar todas, confere uma a uma, Confirmar) e
+     * aplica as respostas da empresa nos rádios; qualquer pendência → para sem confirmar e mostra o portal. SEM
+     * autorização: só lê; faltando algo, para e pede o usuário ([checkDeclarations]).
+     */
+    private suspend fun handleDeclarations(
+        ctrl: Control, runId: String, companyId: Long, nav: SpaNavigator, t: PortalMyTender, auth: ProposalAuthorization?, record: (String) -> Unit,
+    ): Boolean {
+        if (auth == null) return checkDeclarations(ctrl, runId, nav, record)
+        setStep(runId, "Termo e declarações (autorizado por ${auth.authorizedBy})")
+        while (!ctrl.stop) {
+            if (!gate.ensureLive(companyId)) {
+                if (!awaitUser(ctrl, runId, PortalSessionGate.OPEN_APP_MESSAGE + " Depois toque em Tentar de novo.", attention = RobotAttention.OPEN_APP)) return false
+                continue
+            }
+            val before = nav.declarations()
+            if (before != null && !before.section) {
+                record("A página não mostra o bloco Termo/declarações; seguindo.")
+                return true
+            }
+            val already = before != null && DeclarationsCheck.missing(before).isEmpty() && DeclarationRadios.plan(before, auth.declarations).first.isEmpty()
+            if (already) {
+                record("Termo já aceito e declarações já iguais às da empresa (${auth.declarations.summary()}).")
+                return true
+            }
+            val termErr = nav.acceptTerms()
+            val declErr = if (termErr == null) nav.applyDeclarations(auth.declarations) else null
+            val after = nav.declarations()
+            val missing = after?.let(DeclarationsCheck::missing) ?: listOf("não consegui ler o bloco Termo/declarações")
+            if (termErr == null && declErr == null && missing.isEmpty()) {
+                record("Termo de Aceitação aceito (todas as declarações do modal conferidas antes de Confirmar) e declarações aplicadas: ${auth.declarations.summary()}.")
+                safely {
+                    audit.record(
+                        AuditAction.CONFIGURACAO, origin = AuditOrigin.ROBO, portal = Portal.COMPRAS_GOV, tenderNumber = "${t.number}/${t.year}",
+                        newValue = auth.declarations.summary(),
+                        details = "Robô aceitou o Termo de Aceitação e aplicou as declarações da empresa (autorizado por ${auth.authorizedBy} em ${Formatters.dateTime(auth.authorizedAt)})",
+                    )
+                }
+                return true
+            }
+            val why = termErr ?: declErr ?: missing.joinToString("; ")
+            record("Termo/declarações: $why. O robô NÃO confirmou nada pendente.")
+            if (!awaitUser(
+                    ctrl, runId, "Termo/declarações: $why. Confira no portal e toque em Continuar (o robô confere de novo).",
+                    attention = RobotAttention.DECLARATIONS, showPortal = true,
+                )
+            ) return false
+        }
+        return false
+    }
+
+    /**
+     * Termo/declarações (LEGAIS) sem autorização: o robô só LÊ. Faltando algo, para, abre a tela do portal com a faixa
+     * "Marque o termo e as declarações e toque em Continuar" e confere de novo depois do toque. false = parado.
      */
     private suspend fun checkDeclarations(ctrl: Control, runId: String, nav: SpaNavigator, record: (String) -> Unit): Boolean {
-        setStep(runId, "Conferir termo e declarações (o robô não marca)")
+        setStep(runId, "Conferir termo e declarações (sem autorização: o robô não marca)")
         var confirmed = false
         while (!ctrl.stop) {
             val state = nav.declarations()
@@ -461,31 +769,50 @@ class PortalRobotEngine @Inject constructor(
             }
             val missing = state?.let(DeclarationsCheck::missing) ?: listOf("não consegui ler o bloco Termo/declarações")
             record("Termo/declarações pendentes: ${missing.joinToString("; ")}.")
-            val msg = "Marque o termo e as declarações e toque em Continuar. Falta: ${missing.joinToString("; ")}. (São declarações legais da empresa: o robô nunca marca.)"
+            val msg = "Marque o termo e as declarações e toque em Continuar. Falta: ${missing.joinToString("; ")}. " +
+                "(Para o robô fazer isso, autorize o termo na confirmação “Soltar o robô”.)"
             if (!awaitUser(ctrl, runId, msg, attention = RobotAttention.DECLARATIONS, showPortal = true)) return false
             confirmed = true
         }
         return false
     }
 
-    /** Preenche e salva UM item. null = OK; [ALREADY_SAVED] = já tinha o valor; senão o motivo (para). */
-    private suspend fun proposalItem(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan): String? {
-        if (!gate.ensureLive(companyId)) return PortalSessionGate.OPEN_APP_MESSAGE
-        // Ainda na página da compra certa? (o portal pode ter navegado)
-        nav.openPurchase(p)?.let { return "a página da compra não está aberta ($it)" }
+    /** Página certa + cartão do item [item] (número exato). null = pronto para preencher; senão o resultado final. */
+    private suspend fun reachItem(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan): ItemOutcome? {
+        if (!gate.ensureLive(companyId)) return ItemOutcome.PageLost(PortalSessionGate.OPEN_APP_MESSAGE)
+        // Ainda na página da compra certa? (o portal pode ter navegado) — nunca preenche fora dela.
+        nav.openPurchase(p)?.let { return ItemOutcome.PageLost("a página da compra certa não está aberta ($it)") }
         val n = item.itemNumber
-        val card = nav.itemCard(n) ?: return "o item $n não aparece no cadastro de proposta desta compra"
-        if (card.myUnitValue != null && ProposalMoney.matches(item.unitPrice, card.myUnitValue.toPlainString().replace('.', ','))) return ALREADY_SAVED
-        nav.openItemForm(n)?.let { return it }
-        nav.fillOptional(n, "quantidade ofertada", TextNorm.formatInputNumber(item.quantity), numeric = true)?.let { return it }
-        nav.fillItemValue(n, item.unitPrice)?.let { return it }
-        nav.fillOptional(n, "marca", item.brand, numeric = false)?.let { return it }
-        nav.fillOptional(n, "fabricante", item.manufacturer, numeric = false)?.let { return it }
-        nav.fillOptional(n, "modelo", item.modelVersion, numeric = false)?.let { return it }
-        nav.fillOptional(n, "descricao detalhada", item.detailedDescription, numeric = false)?.let { return it }
-        // Valor ainda certo logo antes de salvar (nada mexeu no campo).
-        return nav.saveItem(n, item.unitPrice)
+        val card = nav.locateItem(n) ?: run {
+            val seen = nav.visibleItems()
+            val hint = if (seen.isEmpty()) "nenhum item visível" else "itens visíveis: ${seen.take(8).joinToString()}${if (seen.size > 8) "…" else ""}"
+            return ItemOutcome.NotFound("o item $n não aparece no cadastro de proposta desta compra ($hint)")
+        }
+        if (card.myUnitValue != null && ProposalMoney.matches(item.unitPrice, card.myUnitValue.toPlainString().replace('.', ','))) return ItemOutcome.AlreadySaved
+        return null
     }
+
+    /** Abre o formulário do item e digita/confere os campos (sem salvar). null = pronto para salvar. */
+    private suspend fun fillOnly(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan): ItemOutcome? {
+        reachItem(companyId, nav, p, item)?.let { return it }
+        val n = item.itemNumber
+        nav.openItemForm(n)?.let { return ItemOutcome.Failed(it) }
+        nav.fillOptional(n, "quantidade ofertada", TextNorm.formatInputNumber(item.quantity), numeric = true)?.let { return ItemOutcome.Failed(it) }
+        nav.fillItemValue(n, item.unitPrice)?.let { return ItemOutcome.Failed(it) }
+        nav.fillOptional(n, "marca", item.brand, numeric = false)?.let { return ItemOutcome.Failed(it) }
+        nav.fillOptional(n, "fabricante", item.manufacturer, numeric = false)?.let { return ItemOutcome.Failed(it) }
+        nav.fillOptional(n, "modelo", item.modelVersion, numeric = false)?.let { return ItemOutcome.Failed(it) }
+        nav.fillOptional(n, "descricao detalhada", item.detailedDescription, numeric = false)?.let { return ItemOutcome.Failed(it) }
+        return null
+    }
+
+    /** Preenche e salva UM item (Salvar do próprio bloco), relendo "Meu valor (unitário)". */
+    private suspend fun proposalItem(companyId: Long, nav: SpaNavigator, p: SpaNavigator.Purchase, item: ProposalItemPlan): ItemOutcome {
+        fillOnly(companyId, nav, p, item)?.let { return it }
+        // Valor ainda certo logo antes de salvar (nada mexeu no campo).
+        return nav.saveItem(item.itemNumber, item.unitPrice)?.let { ItemOutcome.Failed(it) } ?: ItemOutcome.Saved
+    }
+
 
     // ================================================================== robô de LANCE
 

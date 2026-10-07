@@ -102,6 +102,12 @@ interface CompanyRepository {
     suspend fun upsertCompany(company: Company): Long
     suspend fun deleteCompany(id: Long)
 
+    /**
+     * Grava só as "Declarações padrão do Compras.gov" da empresa (quem opera robôs pode definir na confirmação do
+     * robô de proposta). Registra auditoria.
+     */
+    suspend fun updatePortalDeclarations(companyId: Long, declarations: com.licitaia.domain.model.PortalDeclarations)
+
     fun observeUsers(companyId: Long): Flow<List<UserProfile>>
     /** Usuários reais identificados (ex.: via Google) que ainda não têm empresa — para o administrador vincular. */
     fun observeUnassignedUsers(): Flow<List<UserProfile>>

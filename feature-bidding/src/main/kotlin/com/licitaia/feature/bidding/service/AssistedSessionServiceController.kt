@@ -65,6 +65,19 @@ class AssistedSessionServiceController @Inject constructor(
         }
     }
 
+    /** Progresso do robô de proposta ("Item 12 de 77 · …") na notificação persistente. */
+    override fun updateProgress(text: String?) {
+        runOnMain {
+            if (robotProgress == text) return@runOnMain
+            robotProgress = text
+            if (running && requested > 0) {
+                runCatching { NotificationManagerCompat.from(context).notify(AssistedSessionService.NOTIFICATION_ID, AssistedSessionService.buildNotification(context, requestedSessions, requestedRobots, robotProgress)) }
+            }
+        }
+    }
+
+    private var robotProgress: String? = null
+
     private fun runOnMain(block: () -> Unit) {
         val safe = { runCatching(block) }
         if (Looper.myLooper() == Looper.getMainLooper()) safe() else main.post { safe() }
@@ -78,7 +91,7 @@ class AssistedSessionServiceController @Inject constructor(
         }
         if (running) {
             // Atualização do contador: não exige novo start (que poderia ser bloqueado em segundo plano).
-            runCatching { NotificationManagerCompat.from(context).notify(AssistedSessionService.NOTIFICATION_ID, AssistedSessionService.buildNotification(context, requestedSessions, requestedRobots)) }
+            runCatching { NotificationManagerCompat.from(context).notify(AssistedSessionService.NOTIFICATION_ID, AssistedSessionService.buildNotification(context, requestedSessions, requestedRobots, robotProgress)) }
             return
         }
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {

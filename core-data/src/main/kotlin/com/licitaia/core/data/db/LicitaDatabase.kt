@@ -1,4 +1,4 @@
-﻿package com.licitaia.core.data.db
+package com.licitaia.core.data.db
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
@@ -14,7 +14,7 @@ import androidx.room.TypeConverters
         PortalMyTenderEntity::class, PortalRobotPlanEntity::class, EditalQuestionEntity::class,
         OpportunityFlagEntity::class, OpportunityFirstSeenEntity::class, TenderStatusWatchEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = true,
 )
 @TypeConverters(RoomConverters::class)

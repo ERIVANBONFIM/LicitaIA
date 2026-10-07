@@ -443,6 +443,28 @@ private fun CompanyEditor(form: CompanyForm, viewModel: CompaniesViewModel) {
             FormField(form, "Agência", form.bankAgency, { v -> viewModel.updateCompanyForm { it.copy(bankAgency = v.take(12)) } }, Modifier.weight(1f))
             FormField(form, "Conta", form.bankAccount, { v -> viewModel.updateCompanyForm { it.copy(bankAccount = v.take(20)) } }, Modifier.weight(1f), imeAction = ImeAction.Done)
         }
+
+        FormSection(
+            "Declarações padrão do Compras.gov",
+            "São declarações LEGAIS da empresa, feitas sob as penas da lei no cadastro de proposta (Lei 14.133/2021). " +
+                "O robô de proposta só as aplica no portal se você autorizar na confirmação “Soltar o robô”. Responda conforme a situação real da empresa.",
+        )
+        val d = form.declarations
+        DeclarationChoice(
+            "Declaração para fornecedores ME/EPP e equiparados",
+            "Sim = a empresa é ME/EPP (LC 123/2006), não ultrapassou o limite de faturamento e pode usar o tratamento favorecido.",
+            d.meEpp, enabled = !form.busy,
+        ) { v -> viewModel.updateCompanyForm { it.copy(declarations = it.declarations.copy(meEpp = v)) } }
+        DeclarationChoice(
+            "Equidade entre mulheres e homens (art. 60, III)",
+            "Sim = a empresa desenvolve ações de equidade entre mulheres e homens no ambiente de trabalho (Decreto 11.430/2023).",
+            d.genderEquity, enabled = !form.busy,
+        ) { v -> viewModel.updateCompanyForm { it.copy(declarations = it.declarations.copy(genderEquity = v)) } }
+        DeclarationChoice(
+            "Programa de integridade (art. 60, IV)",
+            "Sim = a empresa desenvolve programa de integridade (Decreto 12.304/2024).",
+            d.integrity, enabled = !form.busy,
+        ) { v -> viewModel.updateCompanyForm { it.copy(declarations = it.declarations.copy(integrity = v)) } }
         Spacer(Modifier.height(4.dp))
         ButtonRow {
             SecondaryButton("Cancelar", viewModel::dismissCompanyForm, Modifier.weight(1f), enabled = !form.busy, tone = Tone.NEUTRAL)
@@ -503,6 +525,19 @@ private fun UserEditor(form: UserForm, companies: List<Company>, viewModel: Comp
         ButtonRow {
             SecondaryButton("Cancelar", viewModel::dismissUserForm, Modifier.weight(1f), enabled = !form.busy, tone = Tone.NEUTRAL)
             PrimaryButton(if (form.isNew) "Criar usuário" else "Salvar", viewModel::saveUser, Modifier.weight(1f), loading = form.busy)
+        }
+    }
+}
+
+@Composable
+private fun DeclarationChoice(title: String, hint: String, value: Boolean?, enabled: Boolean, onChange: (Boolean?) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary)
+        Text(hint, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SelectChip("Sim", value == true, { if (enabled) onChange(true) })
+            SelectChip("Não", value == false, { if (enabled) onChange(false) })
+            SelectChip("Não informada", value == null, { if (enabled) onChange(null) }, color = LicitaColors.TextMuted)
         }
     }
 }

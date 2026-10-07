@@ -128,6 +128,8 @@ object PortalRobotPlanCodec {
         val modelVersion: String = "",
         val detailedDescription: String = "",
         val floorUnitPrice: Double? = null,
+        /** Participação no item (planos antigos sem o campo: todos participam). */
+        val selected: Boolean = true,
     )
 
     @Serializable
@@ -146,7 +148,7 @@ object PortalRobotPlanCodec {
         companyId = plan.companyId,
         tenderKey = plan.tenderKey,
         itemsJson = json.encodeToString(ListSerializer(ItemDto.serializer()), plan.items.map {
-            ItemDto(it.itemNumber, it.description, it.quantity, it.unitPrice, it.brand, it.manufacturer, it.modelVersion, it.detailedDescription, it.floorUnitPrice)
+            ItemDto(it.itemNumber, it.description, it.quantity, it.unitPrice, it.brand, it.manufacturer, it.modelVersion, it.detailedDescription, it.floorUnitPrice, it.selected)
         }),
         proposalStatus = plan.proposalStatus.name,
         proposalLogJson = json.encodeToString(ListSerializer(String.serializer()), plan.proposalLog.takeLast(MAX_LOG_LINES)),
@@ -161,7 +163,7 @@ object PortalRobotPlanCodec {
 
     fun decode(e: PortalRobotPlanEntity): PortalRobotPlan {
         val items = json.decodeFromString(ListSerializer(ItemDto.serializer()), e.itemsJson).map {
-            ProposalItemPlan(it.itemNumber, it.description, it.quantity, it.unitPrice, it.brand, it.manufacturer, it.modelVersion, it.detailedDescription, it.floorUnitPrice)
+            ProposalItemPlan(it.itemNumber, it.description, it.quantity, it.unitPrice, it.brand, it.manufacturer, it.modelVersion, it.detailedDescription, it.floorUnitPrice, it.selected)
         }
         val bid = json.decodeFromString(BidDto.serializer(), e.bidJson).let { b ->
             BidRobotConfig(

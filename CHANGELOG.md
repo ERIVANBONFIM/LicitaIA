@@ -2,6 +2,23 @@
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
 
+## [0.5.3] — 2026-10-07
+
+### Adicionado
+- Declarações padrão do Compras.gov no cadastro da empresa (ME/EPP, equidade de gênero, programa de integridade).
+- Confirmação do robô em tela cheia: todos os itens com rolagem, escolha de quais itens participar, total dos
+  selecionados e autorização obrigatória do Termo de Aceitação e das declarações (registrada na auditoria).
+- Robô aceita o termo sozinho quando autorizado: marca o termo, "Marcar todas", confere uma a uma e só então
+  Confirmar; aplica as respostas ME/EPP/equidade/integridade da empresa.
+- Grupos: o robô lê "GRUPO N | M itens", abre o grupo, percorre todas as páginas internas (1, 2, 3…) e só passa
+  para o próximo grupo quando não houver mais "Proposta incompleta". Progresso por item, grupo e página.
+
+### Corrigido
+- Robô confere se está na compra certa (UASG, número/ano e endereço) antes de preencher; tenta de novo pela busca.
+- "Abrir no portal" ficava preso na compra anterior: agora sempre vai para a compra pedida (o último pedido vale).
+- Itens procurados pelo número exato (7 não confunde com 77); item não encontrado fora de grupo não para tudo.
+- "Arquivos da licitação" começa fechado e abre ao tocar; ações compactas Baixar · Abrir · Copiar · Enviar.
+
 ## [0.5.2] — 2026-10-07
 
 ### Alterado

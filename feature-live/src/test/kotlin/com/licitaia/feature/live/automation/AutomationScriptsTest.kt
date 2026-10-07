@@ -90,7 +90,8 @@ class AutomationScriptsTest {
         val text = RobotPlanRules.proposalConfirmation(t, ok)
         assertTrue(text.contains("UASG 160123 · 90005/2026"))
         assertTrue(text.contains("Item 1"))
-        assertTrue(text.contains("NÃO são marcados"))
+        // Termo só com a autorização do usuário (checkbox da confirmação).
+        assertTrue(text.contains("só com a sua autorização"))
         assertNotNull(RobotPlanRules.bidConfirmation(t, plan).takeIf { it.contains("PISO") })
         assertEquals(30 * 60_000L, 1_000_000_000L - RobotPlanRules.prepareAt(1_000_000_000L))
     }

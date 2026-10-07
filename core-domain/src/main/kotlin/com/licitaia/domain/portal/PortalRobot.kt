@@ -65,9 +65,25 @@ data class ProposalItemPlan(
     val detailedDescription: String = "",
     /** Piso do lance POR UNIDADE deste item (robô de lance nunca vai abaixo). null = sem piso → robô não opera o item. */
     val floorUnitPrice: Double? = null,
+    /** A empresa participa deste item (o robô de proposta só cadastra os selecionados). */
+    val selected: Boolean = true,
 ) {
     val totalPrice: Double get() = quantity * unitPrice
+    val hasPrice: Boolean get() = unitPrice > 0.0 && unitPrice.isFinite() && quantity > 0.0 && quantity.isFinite()
 }
+
+/**
+ * Autorização dada na confirmação "Soltar o robô" para o robô aceitar o Termo de Aceitação e aplicar as declarações
+ * da empresa no cadastro de proposta. Vale só para a execução que ela iniciou (não fica guardada no plano).
+ */
+data class ProposalAuthorization(
+    /** "Autorizo o aceite do Termo de Aceitação e das declarações obrigatórias apresentadas pelo Compras.gov". */
+    val acceptTerms: Boolean,
+    /** Respostas que serão aplicadas (ME/EPP, equidade, integridade). */
+    val declarations: com.licitaia.domain.model.PortalDeclarations,
+    val authorizedBy: String,
+    val authorizedAt: Long,
+)
 
 enum class RobotProposalStatus(val label: String) {
     NAO_CONFIGURADA("Não configurada"),

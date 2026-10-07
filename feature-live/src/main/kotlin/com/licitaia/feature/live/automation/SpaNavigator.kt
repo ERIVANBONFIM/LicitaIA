@@ -4,8 +4,9 @@ import kotlinx.coroutines.delay
 
 /**
  * Passos nas telas REAIS do Compras.gov.br ([SpaScripts]) sobre um [PageDriver]. Cada função devolve null = ok ou o
- * motivo (PT-BR) de não ter conseguido — quem chama decide parar e pedir o usuário. Nada aqui marca declarações,
- * clica na lixeira, em favoritos ou em "Desfazer alterações".
+ * motivo (PT-BR) de não ter conseguido — quem chama decide parar e pedir o usuário. Nada aqui clica na lixeira, em
+ * favoritos ou em "Desfazer alterações"; termo/declarações ([acceptTerms]/[applyDeclarations]) só são chamados pelo
+ * robô quando o usuário autorizou na confirmação.
  */
 class SpaNavigator(
     private val driver: PageDriver,
@@ -52,8 +53,13 @@ class SpaNavigator(
 
     /** Garante a lista (abas "Minhas participações"/"Todas as compras"); de outra tela do SPA usa "Tela inicial". */
     suspend fun toComprasList(): String? {
-        if (waitState(15_000) { it.isComprasList } != null) return null
+        // No cadastro de proposta (talvez de OUTRA compra) não adianta esperar a lista: volta pela "Tela inicial".
+        val url0 = state()?.url.orEmpty()
+        val onProposal = url0.contains("/fornecedor/cadastro-propostas") || url0.contains("compra=") || url0.contains("acompanha", ignoreCase = true)
+        if (waitState(if (onProposal) 1_000 else 15_000) { it.isComprasList } != null) return null
         if (reply(SpaScripts.clickAria("Tela inicial")).ok && waitState(15_000) { it.isComprasList } != null) return null
+        // Página de compra sem o botão da casinha: migalha "Compras eletrônicas" (navegação dentro do SPA).
+        if (reply(SpaScripts.clickBreadcrumb("Compras eletrônicas")).ok && waitState(15_000) { it.isComprasList } != null) return null
         return "a lista “Compras eletrônicas” (abas Minhas participações / Todas as compras) não apareceu"
     }
 
@@ -131,13 +137,51 @@ class SpaNavigator(
         return null
     }
 
-    private suspend fun waitProposalPage(p: Purchase, timeoutMs: Long = 25_000): Boolean {
+    /** Página atual pelo `location.href` (o SPA troca de rota sem recarregar) + texto do início do corpo. */
+    suspend fun pageInfo(): PurchasePage? {
+        val o = AutomationJson.obj(driver.eval(SpaScripts.pageInfo())) ?: return null
+        return with(AutomationJson) {
+            PurchasePage(o.str("url")?.takeIf { it.isNotBlank() } ?: driver.currentUrl().orEmpty(), o.str("text").orEmpty(), o.bool("list"), o.bool("modal"))
+        }
+    }
+
+    private suspend fun waitProposalPage(p: Purchase, timeoutMs: Long = 25_000, requireProposalPage: Boolean = true): Boolean {
         val deadline = clock() + timeoutMs
         while (clock() < deadline) {
-            if (CompraCode.isProposalPageFor(driver.currentUrl(), p.uasg, p.modality, p.number, p.year)) return true
+            val page = pageInfo()
+            val url = page?.url ?: driver.currentUrl()
+            if (CompraCode.isProposalPageFor(url, p.uasg, p.modality, p.number, p.year)) return true
+            if (!requireProposalPage && page != null && PurchasePageCheck.verify(page, p, requireProposalPage = false) == null) return true
             sleep(700)
         }
         return false
+    }
+
+    /**
+     * null = a página é o cadastro de proposta da compra [p] (URL com o `compra=` esperado E cabeçalho com "UASG" e
+     * "N° número/ano"). Espera até [timeoutMs] o cabeçalho carregar.
+     */
+    suspend fun verifyPurchasePage(p: Purchase, timeoutMs: Long = 0, requireProposalPage: Boolean = true): String? {
+        val deadline = clock() + timeoutMs
+        while (true) {
+            val page = pageInfo()
+            val reason = if (page == null) "a página não respondeu" else PurchasePageCheck.verify(page, p, requireProposalPage)
+            if (reason == null) return null
+            if (clock() >= deadline) return reason
+            sleep(700)
+        }
+    }
+
+    /** Disponibilidade da compra aberta (prazo futuro, sem aviso de suspensa/encerrada); null = página não respondeu. */
+    suspend fun availability(): PurchasePageCheck.Availability? = pageInfo()?.let { PurchasePageCheck.availability(it.text, clock()) }
+
+    /** Toque REAL na posição devolvida por um script (`rect`). false = sem posição ou toque recusado. */
+    private suspend fun tapRect(r: SpaScripts.Reply): Boolean {
+        val rect = r.obj("rect") ?: return false
+        val x = (rect["x"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull() ?: return false
+        val y = (rect["y"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull() ?: return false
+        sleep(250)
+        return driver.tapAt(x, y)
     }
 
     /** Digita (nativo) num campo da busca e confere o valor; se a máscara recusar, tenta `insertText`. */
@@ -169,39 +213,278 @@ class SpaNavigator(
     }
 
     /**
-     * Abre o cadastro de proposta da compra: já aberto → ok; senão lista → "Minhas participações" (página atual) →
-     * "Todas as compras" com UASG + número digitados → Pesquisar (clique; senão Enter; senão toque) → "Acompanhar
-     * compra" → confere a URL `cadastro-propostas?compra=<código esperado>`.
+     * Abre o cadastro de proposta da compra e CONFERE que é a compra certa (URL `cadastro-propostas?compra=<código>` +
+     * cabeçalho "UASG …" e "N° n/aaaa"). Até 3 tentativas: a 1ª tenta o cartão da lista atual; as seguintes vão por
+     * "Todas as compras" com UASG + número DIGITADOS e toque real em Pesquisar. Nunca devolve ok fora da página certa.
      */
-    suspend fun openPurchase(p: Purchase): String? {
-        if (CompraCode.isProposalPageFor(driver.currentUrl(), p.uasg, p.modality, p.number, p.year)) return null
+    suspend fun openPurchase(p: Purchase, requireProposalPage: Boolean = true): String? {
+        if (verifyPurchasePage(p, requireProposalPage = requireProposalPage) == null) return null
+        pageInfo()?.let { PurchasePageCheck.mismatch(it, p) }?.let { log("Outra compra aberta ($it); voltando a Compras eletrônicas.") }
+        var last = "a compra não abriu"
+        for (attempt in 1..3) {
+            val reason = attemptOpen(p, viaSearch = attempt > 1, requireProposalPage) ?: verifyPurchasePage(p, timeoutMs = 10_000, requireProposalPage = requireProposalPage)
+            if (reason == null) {
+                if (attempt > 1) log("Compra certa aberta na tentativa $attempt.")
+                return null
+            }
+            last = reason
+            log("Abrir a compra (tentativa $attempt de 3): $reason")
+            sleep(1_000)
+        }
+        return "não consegui abrir o cadastro de proposta da compra certa (UASG ${p.uasgShown} · ${p.numberYear}) em 3 tentativas: $last"
+    }
+
+    private suspend fun attemptOpen(p: Purchase, viaSearch: Boolean, requireProposalPage: Boolean = true): String? {
         toComprasList()?.let { return it }
-        if (clickPurchase(p) == null) {
+        if (!viaSearch && clickPurchase(p) == null) {
             log("Compra achada na lista atual; abrindo.")
-            if (waitProposalPage(p)) return null
+            if (waitProposalPage(p, requireProposalPage = requireProposalPage)) return null
         }
         openTab("Todas as compras")?.let { return it }
         typeSearch("uasg", p.uasgShown, "Unidade compradora")?.let { return it }
         typeSearch("numero", CompraCode.searchNumber(p.number, p.year), "Número da compra")?.let { return it }
-        var shown = false
-        if (reply(SpaScripts.searchButton(tap = false)).ok) shown = waitPurchaseCard(p, 8_000)
+        // Pesquisar: toque REAL primeiro; depois clique; por fim Enter no número.
+        var shown = tapRect(reply(SpaScripts.searchButton(tap = true))) && waitPurchaseCard(p, 10_000)
+        if (!shown) {
+            log("Pesquisar (toque) sem resultado; tentando clique.")
+            if (reply(SpaScripts.searchButton(tap = false)).ok) shown = waitPurchaseCard(p, 8_000)
+        }
         if (!shown) {
             log("Pesquisar (clique) sem resultado; tentando Enter no número da compra.")
             reply(SpaScripts.focusSearch("numero"))
             if (driver.pressEnter()) shown = waitPurchaseCard(p, 8_000)
         }
-        if (!shown) {
-            log("Enter sem resultado; tentando toque em Pesquisar.")
-            val r = reply(SpaScripts.searchButton(tap = true))
-            val rect = r.obj("rect")
-            val x = (rect?.get("x") as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull()
-            val y = (rect?.get("y") as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull()
-            if (x != null && y != null && driver.tapAt(x, y)) shown = waitPurchaseCard(p, 10_000)
-        }
         if (!shown) return "a pesquisa por UASG ${p.uasgShown} e ${p.numberYear} não mostrou a compra"
+        // Cartão cujo texto tem a UASG E o "N° número/ano" (mais de um igual = ambíguo, não clica).
         clickPurchase(p)?.let { return it }
-        if (!waitProposalPage(p)) return "o cadastro de proposta da compra ${p.numberYear} não abriu (URL ${CompraCode.fromUrl(driver.currentUrl()) ?: "sem compra="})"
+        if (!waitProposalPage(p, requireProposalPage = requireProposalPage)) {
+            return "o cadastro de proposta da compra ${p.numberYear} não abriu (URL ${CompraCode.fromUrl(pageInfo()?.url ?: driver.currentUrl()) ?: "sem compra="})"
+        }
         return null
+    }
+
+    // ------------------------------------------------------------------ termo e declarações (com autorização)
+
+    private suspend fun modalState(): TermsModal.State? = TermsModal.parse(driver.eval(SpaScripts.termsModal()))
+
+    private suspend fun waitModal(open: Boolean, timeoutMs: Long): Boolean {
+        val deadline = clock() + timeoutMs
+        while (true) {
+            if ((modalState()?.open ?: false) == open) return true
+            if (clock() >= deadline) return false
+            sleep(500)
+        }
+    }
+
+    /**
+     * Aceita o Termo de Aceitação (SÓ com autorização do usuário): toque real no checkbox do termo → modal "Termo de
+     * aceitação das declarações" → "Marcar todas" → confere TODAS marcadas (senão marca uma a uma) → "Confirmar" →
+     * espera o modal fechar e o termo aparecer aceito. Qualquer declaração desmarcada no fim → para SEM confirmar.
+     */
+    suspend fun acceptTerms(): String? {
+        val st = declarations()
+        if (st?.termAccepted == true && !st.modalOpen) return null
+        if (modalState()?.open != true) {
+            val r = reply(SpaScripts.termCheckbox(tap = true))
+            if (!r.found) return "checkbox do “Termo de Aceitação” não encontrado"
+            if (!r.flag("checked")) {
+                if (!tapRect(r)) reply(SpaScripts.termCheckbox(tap = false))
+                if (!waitModal(open = true, timeoutMs = 6_000)) {
+                    if (declarations()?.termAccepted == true && modalState()?.open != true) return null
+                    log("Termo: o toque não abriu o modal; tentando clique.")
+                    reply(SpaScripts.termCheckbox(tap = false))
+                    if (!waitModal(open = true, timeoutMs = 6_000)) {
+                        return if (declarations()?.termAccepted == true) null else "o modal “Termo de aceitação das declarações” não abriu"
+                    }
+                }
+            }
+        }
+        var triedAll = false
+        var triedEach = false
+        repeat(6) {
+            val s = modalState() ?: return "não consegui ler o modal do termo"
+            when (val d = TermsModal.decide(s, triedAll, triedEach)) {
+                TermsModal.Decision.MarkAll -> {
+                    triedAll = true
+                    log("Termo: Marcar todas (${s.checked}/${s.total} marcadas).")
+                    if (!tapRect(reply(SpaScripts.modalMarkAll(tap = true)))) reply(SpaScripts.modalMarkAll(tap = false))
+                    sleep(900)
+                    if ((modalState()?.checked ?: 0) <= s.checked) { reply(SpaScripts.modalMarkAll(tap = false)); sleep(900) }
+                }
+                TermsModal.Decision.MarkEach -> {
+                    triedEach = true
+                    log("Termo: conferindo uma a uma (${s.missing} desmarcada(s)).")
+                    repeat(s.total + 2) {
+                        val r = reply(SpaScripts.modalBox(tap = true))
+                        val left = r.int("left") ?: 0
+                        if (!r.found || left == 0) return@repeat
+                        if (!tapRect(r)) reply(SpaScripts.modalBox(tap = false))
+                        sleep(400)
+                        if ((reply(SpaScripts.modalBox(tap = true)).int("left") ?: 0) >= left) { reply(SpaScripts.modalBox(tap = false)); sleep(400) }
+                    }
+                }
+                TermsModal.Decision.Confirm -> {
+                    log("Termo: ${s.checked} de ${s.total} declarações marcadas e conferidas; Confirmar.")
+                    if (!tapRect(reply(SpaScripts.modalButton("Confirmar", tap = true)))) reply(SpaScripts.modalButton("Confirmar", tap = false))
+                    if (!waitModal(open = false, timeoutMs = 8_000)) {
+                        reply(SpaScripts.modalButton("Confirmar", tap = false))
+                        if (!waitModal(open = false, timeoutMs = 8_000)) return "o modal do termo não fechou depois de Confirmar"
+                    }
+                    sleep(800)
+                    return if (declarations()?.termAccepted == true) null else "o termo não aparece aceito depois de Confirmar"
+                }
+                is TermsModal.Decision.Stop -> return d.reason
+            }
+        }
+        return "não consegui concluir o termo de aceitação"
+    }
+
+    /**
+     * Aplica as respostas da empresa nos rádios Sim/Não (abre o acordeão se preciso; toque real, depois clique) e confere.
+     * Grupo presente sem resposta da empresa → para (o robô não escolhe pela empresa).
+     */
+    suspend fun applyDeclarations(d: com.licitaia.domain.model.PortalDeclarations): String? {
+        repeat(3) {
+            val st = declarations() ?: return "não consegui ler as declarações"
+            val (todo, unanswered) = DeclarationRadios.plan(st, d)
+            if (unanswered.isNotEmpty()) return "a empresa não tem resposta cadastrada para: ${unanswered.joinToString()}"
+            if (todo.isEmpty()) return null
+            for (t in todo) {
+                var r = reply(SpaScripts.declarationRadio(t.id, tap = true))
+                if (r.flag("expanded")) { sleep(800); r = reply(SpaScripts.declarationRadio(t.id, tap = true)) }
+                if (!r.found) return "rádio “${t.label}” (${if (t.yes) "Sim" else "Não"}) não encontrado"
+                if (r.flag("disabled")) return "as declarações continuam desabilitadas (termo ainda não aceito?)"
+                if (r.flag("hidden")) return "o rádio “${t.label}” está escondido (acordeão não abriu)"
+                if (r.flag("checked")) continue
+                log("Declaração “${t.label}”: ${if (t.yes) "Sim" else "Não"} (resposta da empresa).")
+                if (!tapRect(r)) reply(SpaScripts.declarationRadio(t.id, tap = false))
+                sleep(500)
+                if (!reply(SpaScripts.declarationRadio(t.id, tap = true)).flag("checked")) { reply(SpaScripts.declarationRadio(t.id, tap = false)); sleep(500) }
+            }
+        }
+        val st = declarations() ?: return "não consegui ler as declarações"
+        val left = DeclarationRadios.plan(st, d).first
+        return if (left.isEmpty()) null else "não consegui marcar: ${left.joinToString { "${it.label} = ${if (it.yes) "Sim" else "Não"}" }}"
+    }
+
+    // ------------------------------------------------------------------ muitos itens, grupos/lotes, paginação
+
+    /** Abre os grupos/lotes fechados (até 3 passadas) e devolve a estrutura de cada grupo (vazio = compra sem grupos). */
+    suspend fun prepareGroups(): List<GroupStructure> {
+        repeat(3) {
+            val clicked = reply(SpaScripts.expandGroups()).int("clicked") ?: 0
+            if (clicked == 0) return@repeat
+            log("Abrindo $clicked grupo(s)/lote(s).")
+            sleep(1_200)
+        }
+        return GroupPlanner.parse(driver.eval(SpaScripts.groupsInfo()))
+    }
+
+    /**
+     * Procura o cartão do item [n] (número EXATO): na tela; abrindo grupos; rolando a página (listas preguiçosas/
+     * virtualizadas); pela paginação PrimeNG. null = não está nesta compra.
+     */
+    suspend fun locateItem(n: Int): ProposalItemCard? {
+        itemCard(n)?.let { return it }
+        if ((reply(SpaScripts.expandGroups()).int("clicked") ?: 0) > 0) { sleep(1_200); itemCard(n)?.let { return it } }
+        reply(SpaScripts.scrollLoad(top = true))
+        sleep(500)
+        var lastCards = -1
+        var stable = 0
+        for (i in 0 until 80) {
+            val r = reply(SpaScripts.scrollLoad(top = false))
+            sleep(600)
+            itemCard(n)?.let { return it }
+            if ((reply(SpaScripts.expandGroups()).int("clicked") ?: 0) > 0) { sleep(1_000); itemCard(n)?.let { return it } }
+            val cards = r.int("cards") ?: 0
+            if (cards == lastCards && r.flag("end")) { if (++stable >= 2) break } else stable = 0
+            lastCards = cards
+        }
+        if (reply(SpaScripts.firstPage()).ok) { sleep(1_500); itemCard(n)?.let { return it } }
+        for (page in 0 until 60) {
+            if (!reply(SpaScripts.nextPage()).ok) break
+            sleep(1_500)
+            reply(SpaScripts.expandGroups())
+            sleep(500)
+            itemCard(n)?.let { return it }
+        }
+        return null
+    }
+
+    /** Cartão do grupo [key] ("GRUPO 1") relido agora (total, "Meu valor (total)", "Proposta incompleta"). */
+    suspend fun groupCard(key: String): GroupCard? =
+        GroupPlanner.parse(driver.eval(SpaScripts.groupsInfo())).firstNotNullOfOrNull { g -> GroupCard.parse(g.text)?.takeIf { it.key == key } }
+
+    /** Paginador DENTRO do grupo [key] (null = grupo não encontrado). */
+    suspend fun groupPager(key: String): GroupPager? = GroupPager.parse(driver.eval(SpaScripts.groupPager(key, "read")))
+
+    /** Itens (número) visíveis agora no grupo [key] (página atual do paginador do grupo). */
+    suspend fun groupItems(key: String): List<Int> =
+        GroupPlanner.parse(driver.eval(SpaScripts.groupsInfo())).firstOrNull { GroupCard.parse(it.text)?.key == key }?.items.orEmpty()
+
+    /**
+     * Garante o grupo [key] ABERTO e na página [page] do paginador dele (o portal fecha o grupo e/ou volta à página 1
+     * depois de salvar). null = ok.
+     */
+    suspend fun ensureGroupPage(key: String, page: Int): String? {
+        repeat(8) {
+            if ((reply(SpaScripts.expandGroups()).int("clicked") ?: 0) > 0) sleep(1_200)
+            val pg = groupPager(key) ?: return "o $key não aparece na página"
+            when (val a = GroupTraversal.decide(pg, page)) {
+                GroupTraversal.Action.Stay -> return null
+                is GroupTraversal.Action.Fail -> return a.reason
+                is GroupTraversal.Action.GoTo -> {
+                    log("$key: indo para a página ${a.page} (estava na ${pg.current}).")
+                    reply(SpaScripts.groupPager(key, "page", a.page))
+                    sleep(1_300)
+                }
+            }
+        }
+        return "não consegui abrir a página $page do $key"
+    }
+
+    /** Recolhe o grupo antes de passar para o próximo. */
+    suspend fun collapseGroup(key: String) { reply(SpaScripts.collapseGroup(key)); sleep(600) }
+
+    /** Números dos itens visíveis (diagnóstico). */
+    suspend fun visibleItems(): List<Int> =
+        AutomationJson.obj(driver.eval(SpaScripts.itemNumbers()))?.let { with(AutomationJson) { it.strings("items") } }.orEmpty().mapNotNull { it.toIntOrNull() }
+
+    /**
+     * Salva o GRUPO de uma vez (os valores já digitados e conferidos) e confere cada item pelo "Meu valor (unitário)".
+     * Devolve, por item, null = conferido ou o motivo.
+     */
+    suspend fun saveGroup(g: GroupStructure, values: List<Pair<Int, Double>>): Map<Int, String?> {
+        reply(SpaScripts.dismissToasts())
+        sleep(800)
+        val r = reply(SpaScripts.saveGroup(g.index, g.label))
+        if (!r.ok) return values.associate { it.first to (r.error ?: "não consegui tocar no Salvar do grupo") }
+        val deadline = clock() + 25_000
+        val pending = values.toMap().toMutableMap()
+        val out = LinkedHashMap<Int, String?>()
+        var success = false
+        while (pending.isNotEmpty()) {
+            sleep(900)
+            for ((n, v) in pending.toMap()) {
+                val o = AutomationJson.obj(driver.eval(SpaScripts.itemStatus(n)))
+                val toasts = SpaScripts.parseToasts(o)
+                toasts.firstOrNull { it.severity == "error" || it.severity == "warn" }?.let { t ->
+                    pending.keys.forEach { k -> out[k] = "o portal avisou: “${t.text.take(160)}”" }
+                    return values.associate { it.first to out[it.first] }
+                }
+                if (toasts.any { it.severity == "success" }) success = true
+                val card = o?.let { with(AutomationJson) { it.str("t") } }?.takeIf { it.isNotBlank() }?.let { ProposalItemCardParser.parse(it, n) }
+                if (card?.myUnitValue != null && ProposalMoney.matches(v, card.myUnitValue.toPlainString().replace('.', ','))) {
+                    out[n] = null
+                    pending.remove(n)
+                }
+            }
+            if (clock() >= deadline) break
+        }
+        pending.keys.forEach { n ->
+            out[n] = if (success) "o portal disse “sucesso”, mas o item não mostra “Meu valor (unitário)” igual" else "sem confirmação do portal depois do Salvar do grupo"
+        }
+        return values.associate { it.first to out[it.first] }
     }
 
     // ------------------------------------------------------------------ cadastro de proposta
@@ -229,7 +512,11 @@ class SpaNavigator(
         if (prep.flag("ready")) return null
         val open = prep.int("open") ?: 0
         var toggles = 0
-        if (!reply(SpaScripts.toggleItem(n)).ok) return "seta do item $n não encontrada"
+        if (!reply(SpaScripts.toggleItem(n)).ok) {
+            // Itens dentro de grupo podem mostrar o campo sem seta: o campo de valor entre este cartão e o próximo.
+            if (reply(SpaScripts.claimItemForm(n, tok, byPosition = true)).ok) return null
+            return "seta do item $n não encontrada"
+        }
         toggles++
         val deadline = clock() + 10_000
         while (clock() < deadline) {

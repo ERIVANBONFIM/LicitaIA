@@ -54,8 +54,10 @@ class CompanyBackupRepository @Inject constructor(
          * recebem NULL) e as tabelas por empresa `opportunity_flags` (descartadas/vistas; restauradas sem sobrescrever as
          * locais) e `tender_status_watch` (último estado oficial, com o novo id da licitação), que ENTRAM no backup;
          * `opportunity_first_seen` é global e NÃO entra. Backups 2..13 continuam aceitos.
+         * v15 só acrescentou colunas em `companies` (declarações padrão do Compras.gov), tabela que NÃO entra no backup;
+         * backups 2..14 continuam aceitos.
          */
-        const val BACKUP_SCHEMA = 14
+        const val BACKUP_SCHEMA = 15
 
         /** Tabelas que podem faltar em backups de versões anteriores. */
         val OPTIONAL_TABLES = setOf("edital_questions", "opportunity_flags", "tender_status_watch")

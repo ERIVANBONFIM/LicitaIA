@@ -60,6 +60,8 @@ data class CompanyForm(
     val bankName: String = "",
     val bankAgency: String = "",
     val bankAccount: String = "",
+    /** Declarações padrão do Compras.gov (o robô de proposta só as aplica com autorização na confirmação). */
+    val declarations: com.licitaia.domain.model.PortalDeclarations = com.licitaia.domain.model.PortalDeclarations(),
     val errors: Map<String, String> = emptyMap(),
     val busy: Boolean = false,
 ) {
@@ -73,6 +75,7 @@ data class CompanyForm(
             zipDigits = BrDocuments.digits(c.zipCode).take(8), phoneDigits = BrDocuments.digits(c.phone).take(11), email = c.email,
             legalRepName = c.legalRepName, legalRepCpfDigits = BrDocuments.digits(c.legalRepCpf).take(11), legalRepRole = c.legalRepRole,
             bankName = c.bankName, bankAgency = c.bankAgency, bankAccount = c.bankAccount,
+            declarations = c.portalDeclarations,
         )
     }
 
@@ -83,6 +86,7 @@ data class CompanyForm(
         street = street.trim(), complement = complement.trim(), district = district.trim(), zipCode = zipDigits,
         phone = phoneDigits, email = email.trim(), legalRepName = legalRepName.trim(), legalRepCpf = legalRepCpfDigits,
         legalRepRole = legalRepRole.trim(), bankName = bankName.trim(), bankAgency = bankAgency.trim(), bankAccount = bankAccount.trim(),
+        portalDeclarations = declarations,
     )
 }
 

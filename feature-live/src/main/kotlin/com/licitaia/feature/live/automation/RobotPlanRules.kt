@@ -2,6 +2,8 @@ package com.licitaia.feature.live.automation
 
 import com.licitaia.domain.bidding.BidRuleEngine
 import com.licitaia.domain.model.BidRule
+import com.licitaia.domain.model.PortalDeclarations
+import com.licitaia.domain.portal.ProposalAuthorization
 import com.licitaia.domain.model.RobotMode
 import com.licitaia.domain.portal.BidRobotConfig
 import com.licitaia.domain.portal.BidRobotMode
@@ -13,17 +15,57 @@ import com.licitaia.domain.util.Formatters
 /** Validação e textos de confirmação dos robôs (puros, testáveis). */
 object RobotPlanRules {
 
-    /** Antes de "Soltar robô — cadastrar proposta". Lista vazia = pode seguir. */
+    /**
+     * Antes de "Soltar robô — cadastrar proposta". Lista vazia = pode seguir. Números valem para todos os itens; preço
+     * e quantidade só para os itens SELECIONADOS (participação).
+     */
     fun proposalErrors(items: List<ProposalItemPlan>): List<String> = buildList {
         if (items.isEmpty()) add("Inclua pelo menos um item.")
+        else if (items.none { it.selected }) add("Selecione pelo menos um item para participar.")
         val dup = items.groupBy { it.itemNumber }.filter { it.value.size > 1 }.keys
         if (dup.isNotEmpty()) add("Item repetido: ${dup.joinToString()}.")
         items.forEach { i ->
             if (i.itemNumber <= 0) add("Número de item inválido (${i.itemNumber}).")
+            if (!i.selected) return@forEach
             if (!(i.unitPrice > 0.0) || i.unitPrice.isInfinite()) add("Item ${i.itemNumber}: informe o valor unitário.")
             if (!(i.quantity > 0.0) || i.quantity.isInfinite()) add("Item ${i.itemNumber}: informe a quantidade ofertada.")
             i.floorUnitPrice?.let { f -> if (f > i.unitPrice + 1e-9) add("Item ${i.itemNumber}: o piso (${Formatters.brl(f)}) não pode ser maior que o valor da proposta.") }
         }
+    }
+
+    /** Resumo da participação: selecionados, total ofertado dos selecionados e itens sem preço. */
+    data class Selection(val total: Int, val selected: Int, val selectedTotal: Double, val withoutPrice: List<Int>) {
+        val label: String get() = "$selected de $total itens selecionados"
+    }
+
+    fun selection(items: List<ProposalItemPlan>): Selection {
+        val sel = items.filter { it.selected }
+        return Selection(
+            total = items.size, selected = sel.size,
+            selectedTotal = sel.filter { it.hasPrice }.sumOf { it.totalPrice },
+            withoutPrice = items.filter { !it.hasPrice }.map { it.itemNumber }.sorted(),
+        )
+    }
+
+    /** Marcar/desmarcar todos: item sem preço nunca fica marcado. */
+    fun selectAll(items: List<ProposalItemPlan>, selected: Boolean): List<ProposalItemPlan> =
+        items.map { it.copy(selected = selected && it.hasPrice) }
+
+    /**
+     * Botão "Soltar o robô" da confirmação: plano válido, ≥1 item selecionado, autorização do Termo/declarações
+     * marcada e as três declarações da empresa respondidas.
+     */
+    fun confirmationErrors(items: List<ProposalItemPlan>, acceptTerms: Boolean, declarations: PortalDeclarations): List<String> = buildList {
+        addAll(proposalErrors(items))
+        if (!acceptTerms) add("Marque “Autorizo o aceite do Termo de Aceitação e das declarações obrigatórias apresentadas pelo Compras.gov”.")
+        if (!declarations.complete) add("Responda as declarações da empresa (ME/EPP, equidade de gênero e programa de integridade).")
+    }
+
+    /** Texto da autorização para a auditoria (quem, quando, licitação, respostas, itens). */
+    fun authorizationAudit(t: PortalMyTender, auth: ProposalAuthorization, items: List<ProposalItemPlan>): String {
+        val s = selection(items)
+        return "Autorização do Termo de Aceitação e das declarações do Compras.gov por ${auth.authorizedBy} em " +
+            "${Formatters.dateTime(auth.authorizedAt)} · ${t.label} · ${auth.declarations.summary()} · ${s.label} · total ${Formatters.brl(s.selectedTotal)}"
     }
 
     /** Antes de armar o robô de lance. */
@@ -67,7 +109,7 @@ object RobotPlanRules {
         appendLine("Licitação: ${t.label}${t.modality.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}")
         if (t.objectDescription.isNotBlank()) appendLine(t.objectDescription.take(160))
         appendLine()
-        items.sortedBy { it.itemNumber }.forEach { i ->
+        items.filter { it.selected }.sortedBy { it.itemNumber }.forEach { i ->
             append("Item ${i.itemNumber}: ${Formatters.brl(i.unitPrice)} × ${TextNorm.formatInputNumber(i.quantity)} = ${Formatters.brl(i.totalPrice)}")
             i.floorUnitPrice?.let { append(" · piso ${Formatters.brl(it)}") }
             appendLine()
@@ -75,10 +117,10 @@ object RobotPlanRules {
                 .takeIf { it.isNotEmpty() }?.let { appendLine("   " + it.joinToString(" · ") { (k, v) -> "$k: $v" }) }
         }
         appendLine()
-        appendLine("Total: ${Formatters.brl(items.sumOf { it.totalPrice })}")
+        appendLine("Total: ${Formatters.brl(selection(items).selectedTotal)} (${selection(items).label})")
         appendLine()
-        append("O robô vai abrir Compras eletrônicas pelo menu, procurar a compra, preencher e SALVAR item por item no portal, conferindo o valor gravado. ")
-        append("Declarações e termos legais NÃO são marcados pelo robô: ele para e você marca.")
+        append("O robô vai abrir Compras eletrônicas pelo menu, localizar a compra, conferir que é a compra certa, aceitar os termos (só com a sua autorização), ")
+        append("abrir os grupos, preencher, SALVAR e reler cada item no portal.")
     }
 
     fun bidConfirmation(t: PortalMyTender, plan: PortalRobotPlan): String = buildString {

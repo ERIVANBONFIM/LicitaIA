@@ -38,16 +38,22 @@ object ProposalRobotMapping {
                 manufacturer = item.manufacturer.trim(),
                 modelVersion = item.model.trim(),
                 detailedDescription = description,
+                selected = item.unitPrice > 0.0 && item.quantity > 0.0,
             )
         }
     }
 
-    /** Mantém o piso de lance já definido no plano para o mesmo nº de item (o piso não vem da proposta). */
+    /**
+     * Mantém o piso de lance e a escolha "participar" já definidos no plano para o mesmo nº de item (não vêm da
+     * proposta). Item sem preço continua fora mesmo que estivesse marcado.
+     */
     fun mergeFloors(fresh: List<ProposalItemPlan>, existing: List<ProposalItemPlan>): List<ProposalItemPlan> {
         val floors = existing.associate { it.itemNumber to it.floorUnitPrice }
+        val selection = existing.associate { it.itemNumber to it.selected }
         return fresh.map { item ->
             val floor = floors[item.itemNumber]?.takeIf { it <= item.unitPrice + 1e-9 }
-            if (floor != null) item.copy(floorUnitPrice = floor) else item
+            val selected = (selection[item.itemNumber] ?: item.selected) && item.hasPrice
+            (if (floor != null) item.copy(floorUnitPrice = floor) else item).copy(selected = selected)
         }
     }
 

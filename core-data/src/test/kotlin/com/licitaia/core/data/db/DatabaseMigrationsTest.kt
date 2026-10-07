@@ -484,10 +484,49 @@ class DatabaseMigrationsTest {
         ).forEach { assertTrue("14.json sem: $it", text.contains(it)) }
     }
 
+    @Test fun version15AddsCompanyDeclarationColumnsWithEmptyDefault() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val companies = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(companies)") } returns companies
+        every { companies.moveToNext() } returnsMany listOf(true, true, false)
+        every { companies.getColumnIndexOrThrow("name") } returns 0
+        every { companies.getString(0) } returnsMany listOf("id", "bankAccount")
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_14_TO_15.migrate(db)
+        assertEquals(14, DatabaseMigrations.FROM_14_TO_15.startVersion)
+        assertEquals(15, DatabaseMigrations.FROM_14_TO_15.endVersion)
+        assertEquals(
+            listOf("declMeEpp", "declGenderEquity", "declIntegrity").map { "ALTER TABLE companies ADD COLUMN $it TEXT NOT NULL DEFAULT ''" },
+            sql,
+        )
+        assertTrue(sql.none { s -> listOf("DROP", "DELETE", "UPDATE", "INSERT").any { Regex("\\b$it\\b", RegexOption.IGNORE_CASE).containsMatchIn(s) } })
+    }
+
+    @Test fun version15IsIdempotent() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val companies = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(companies)") } returns companies
+        every { companies.moveToNext() } returnsMany List(3) { true } + false
+        every { companies.getColumnIndexOrThrow("name") } returns 0
+        every { companies.getString(0) } returnsMany DatabaseMigrations.COMPANY_DECLARATION_COLUMNS
+        DatabaseMigrations.FROM_14_TO_15.migrate(db)
+        verify(exactly = 0) { db.execSQL(any()) }
+    }
+
+    /** As colunas da v15 no schema exportado pelo Room têm o mesmo default da migração. */
+    @Test fun version15SchemaMatchesMigration() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/15.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/15.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val text = schema.readText()
+        assertTrue(text.contains("\"version\": 15"))
+        DatabaseMigrations.COMPANY_DECLARATION_COLUMNS.forEach { assertTrue("15.json sem: $it", text.contains("`$it` TEXT NOT NULL DEFAULT ''")) }
+    }
+
     @Test fun allMigrationsAreOrderedAndContiguous() {
         val all = DatabaseMigrations.ALL.toList()
         assertEquals(1, all.first().startVersion)
-        assertEquals(14, all.last().endVersion)
+        assertEquals(15, all.last().endVersion)
         all.zipWithNext().forEach { (a, b) -> assertEquals(a.endVersion, b.startVersion) }
     }
 }

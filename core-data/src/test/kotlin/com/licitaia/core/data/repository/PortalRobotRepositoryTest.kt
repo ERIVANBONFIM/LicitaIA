@@ -28,6 +28,18 @@ class PortalRobotRepositoryTest {
         assertEquals(3, decoded.afterBestSeconds)
     }
 
+    @Test fun itemSelectionRoundTripAndOldPlansParticipateInAllItems() {
+        val plan = PortalRobotPlan(
+            companyId = 3, tenderKey = "160192-00048-2026",
+            items = listOf(ProposalItemPlan(1, quantity = 12.0, unitPrice = 209.25), ProposalItemPlan(7, quantity = 1.0, unitPrice = 0.0, selected = false)),
+        )
+        val encoded = PortalRobotPlanCodec.encode(plan)
+        assertEquals(listOf(true, false), PortalRobotPlanCodec.decode(encoded).items.map { it.selected })
+        // Plano gravado antes do campo "selected": todos os itens participam.
+        val old = encoded.copy(itemsJson = encoded.itemsJson.replace(",\"selected\":true", "").replace(",\"selected\":false", ""))
+        assertEquals(listOf(true, true), PortalRobotPlanCodec.decode(old).items.map { it.selected })
+    }
+
     @Test fun mergeKeepsFirstSeenSourcesAndProposalFlag() {
         val old = PortalMyTender(1, "k", uasg = "160123", number = "1", year = 2026, modality = "Pregão", objectDescription = "Objeto antigo",
             openingAt = 10, situation = "", hasProposal = true, sources = setOf(PortalMyTender.SOURCE_PARTICIPOU), matchedTenderId = 9, firstSeenAt = 1, updatedAt = 1)

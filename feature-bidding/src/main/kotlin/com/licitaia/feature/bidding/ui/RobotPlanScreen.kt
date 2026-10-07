@@ -102,6 +102,9 @@ data class RobotPlanUiState(
     val tender: PortalMyTender? = null,
     val plan: PortalRobotPlan? = null,
     val runs: List<RobotRun> = emptyList(),
+    /** Declarações padrão do Compras.gov da empresa ativa. */
+    val declarations: com.licitaia.domain.model.PortalDeclarations = com.licitaia.domain.model.PortalDeclarations(),
+    val userName: String = "",
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -114,6 +117,7 @@ class RobotPlanViewModel @Inject constructor(
     private val engine: PortalRobotEngine,
     private val scheduler: RobotScheduler,
     private val strategies: com.licitaia.domain.bidding.BidStrategyConfigRepository,
+    private val companies: com.licitaia.domain.repository.CompanyRepository,
 ) : ViewModel() {
     /** Padrões da tela Estratégias para um robô ainda não configurado. */
     suspend fun strategyDefaults(): com.licitaia.domain.bidding.BidStrategyConfig? =
@@ -131,6 +135,7 @@ class RobotPlanViewModel @Inject constructor(
                 canOperate = !s.user.demo && Rbac.can(s.user.role, Permission.OPERAR_SESSOES),
                 tender = tenders.firstOrNull { it.tenderKey == key }, plan = plan,
                 runs = runs.values.filter { it.companyId == id && it.tenderKey == key }.sortedByDescending { it.startedAt },
+                declarations = s.activeCompany.portalDeclarations, userName = s.user.name,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RobotPlanUiState())
@@ -173,10 +178,25 @@ class RobotPlanViewModel @Inject constructor(
         }
     }
 
-    fun startProposal() {
+    /**
+     * Confirmação "Soltar o robô": salva a seleção de itens no plano, grava as declarações escolhidas no cadastro da
+     * empresa (se mudaram) e solta o robô com a autorização do Termo/declarações (registrada na auditoria pelo motor).
+     */
+    fun startProposal(items: List<ProposalItemPlan>, sessionAt: Long?, declarations: com.licitaia.domain.model.PortalDeclarations, saveDeclarations: Boolean) {
         val id = state.value.companyId ?: return
         viewModelScope.launch {
-            engine.startProposal(id, key).onSuccess { _events.send("Robô de proposta solto. Acompanhe aqui ou no portal.") }
+            if (saveDeclarations) {
+                runCatching { companies.updatePortalDeclarations(id, declarations) }
+                    .onSuccess { _events.send("Declarações salvas no cadastro da empresa.") }
+                    .onFailure { _events.send(it.message ?: "Não foi possível salvar as declarações."); return@launch }
+            }
+            val base = basePlan() ?: return@launch
+            runCatching { repo.savePlan(base.copy(items = items, sessionAt = sessionAt ?: base.sessionAt, proposalStatus = if (base.proposalStatus == RobotProposalStatus.NAO_CONFIGURADA) RobotProposalStatus.PRONTA else base.proposalStatus)) }
+                .onFailure { _events.send(it.message ?: "Falha ao salvar o plano."); return@launch }
+            val auth = com.licitaia.domain.portal.ProposalAuthorization(
+                acceptTerms = true, declarations = declarations, authorizedBy = state.value.userName.ifBlank { "Operador" }, authorizedAt = System.currentTimeMillis(),
+            )
+            engine.startProposal(id, key, auth).onSuccess { _events.send("Robô de proposta solto. Acompanhe aqui ou no portal.") }
                 .onFailure { _events.send(it.message ?: "Não foi possível iniciar.") }
         }
     }
@@ -216,10 +236,12 @@ class RobotPlanViewModel @Inject constructor(
 /** Linha editável de item (texto bruto dos campos). */
 private class ItemForm(
     number: String = "", qty: String = "", price: String = "", floor: String = "", brand: String = "", maker: String = "",
-    model: String = "", detail: String = "", val description: String = "",
+    model: String = "", detail: String = "", val description: String = "", selected: Boolean = true,
 ) {
     var number by mutableStateOf(number); var qty by mutableStateOf(qty); var price by mutableStateOf(price); var floor by mutableStateOf(floor)
     var brand by mutableStateOf(brand); var maker by mutableStateOf(maker); var model by mutableStateOf(model); var detail by mutableStateOf(detail)
+    /** Participar deste item (o robô de proposta só cadastra os selecionados). */
+    var selected by mutableStateOf(selected)
 
     fun toPlan(): ProposalItemPlan? {
         val n = number.trim().toIntOrNull() ?: return null
@@ -227,13 +249,13 @@ private class ItemForm(
             itemNumber = n, description = description, quantity = TextNorm.parseMoney(qty) ?: 0.0, unitPrice = TextNorm.parseMoney(price) ?: 0.0,
             brand = brand.trim(), manufacturer = maker.trim(), modelVersion = model.trim(), detailedDescription = detail.trim(),
             floorUnitPrice = floor.takeIf { it.isNotBlank() }?.let { TextNorm.parseMoney(it) },
-        )
+        ).let { it.copy(selected = selected && it.hasPrice) }
     }
 
     companion object {
         fun of(i: ProposalItemPlan) = ItemForm(
             i.itemNumber.toString(), TextNorm.formatInputNumber(i.quantity), TextNorm.formatInputMoney(i.unitPrice),
-            i.floorUnitPrice?.let(TextNorm::formatInputMoney).orEmpty(), i.brand, i.manufacturer, i.modelVersion, i.detailedDescription, i.description,
+            i.floorUnitPrice?.let(TextNorm::formatInputMoney).orEmpty(), i.brand, i.manufacturer, i.modelVersion, i.detailedDescription, i.description, i.selected,
         )
     }
 }
@@ -257,7 +279,7 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
     var afterBest by remember { mutableStateOf("3") }
     var maxBids by remember { mutableStateOf("30") }
     var onTotal by remember { mutableStateOf(false) }
-    var confirmProposal by remember { mutableStateOf<String?>(null) }
+    var confirmProposal by remember { mutableStateOf<List<ProposalItemPlan>?>(null) }
     var confirmBid by remember { mutableStateOf<String?>(null) }
 
     // Carrega o plano salvo UMA vez nos campos (depois o usuário edita).
@@ -291,12 +313,21 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
         maxBids = (maxBids.toIntOrNull() ?: 30).coerceAtLeast(1), bidOnTotal = onTotal,
     )
 
-    confirmProposal?.let { text ->
-        ConfirmDialog(
-            title = "Soltar robô — cadastrar proposta?", message = text,
-            onConfirm = { confirmProposal = null; vm.saveItems(planItems(), sessionAt()) { vm.startProposal() } },
-            onDismiss = { confirmProposal = null }, confirmLabel = "Confirmo — cadastrar", tone = Tone.WARNING, icon = Icons.Outlined.SmartToy,
-        )
+    confirmProposal?.let { list ->
+        if (tender != null) {
+            ProposalConfirmDialog(
+                tender = tender, planItems = list, companyDeclarations = state.declarations,
+                onEditCompany = { confirmProposal = null; navigator.navigate(Routes.COMPANIES) },
+                onDismiss = { confirmProposal = null },
+                onConfirm = { chosen, decl, saveDecl ->
+                    confirmProposal = null
+                    // A seleção feita na confirmação volta para o plano (e para os campos desta tela).
+                    val byNumber = chosen.associateBy { it.itemNumber }
+                    items.forEach { f -> f.number.trim().toIntOrNull()?.let { n -> byNumber[n]?.let { f.selected = it.selected } } }
+                    vm.startProposal(planItems(), sessionAt(), decl, saveDecl)
+                },
+            )
+        }
     }
     confirmBid?.let { text ->
         ConfirmDialog(
@@ -354,6 +385,19 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
                     "confira e edite. O piso por unidade é usado só pelo robô de lance.",
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
             )
+            val sel = RobotPlanRules.selection(planItems())
+            LicitaCard(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(sel.label, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                        Text("Total ofertado: ${Formatters.brl(sel.selectedTotal)}", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                        if (sel.withoutPrice.isNotEmpty()) Text("${sel.withoutPrice.size} sem preço (fora da proposta)", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+                    }
+                    androidx.compose.material3.TextButton(onClick = { items.forEach { f -> f.selected = f.toPlan()?.hasPrice == true } }) { Text("Marcar todos") }
+                    androidx.compose.material3.TextButton(onClick = { items.forEach { it.selected = false } }) { Text("Desmarcar") }
+                }
+            }
+            DeclarationsHint(state.declarations) { navigator.navigate(Routes.COMPANIES) }
             items.forEachIndexed { index, f -> ItemEditor(f, onRemove = { items.removeAt(index) }) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SecondaryButton("Salvar", { vm.saveItems(planItems(), sessionAt()) }, Modifier.weight(1f), icon = Icons.Outlined.Save, enabled = state.canOperate)
@@ -381,7 +425,7 @@ fun RobotPlanScreen(vm: RobotPlanViewModel = hiltViewModel()) {
                 {
                     val list = planItems()
                     val errors = RobotPlanRules.proposalErrors(list) + if (list.size < items.size) listOf("Revise o número de todos os itens.") else emptyList()
-                    if (errors.isNotEmpty()) navigator.showMessage(errors.first()) else confirmProposal = RobotPlanRules.proposalConfirmation(tender, list)
+                    if (errors.isNotEmpty()) navigator.showMessage(errors.first()) else confirmProposal = list
                 },
                 Modifier.fillMaxWidth(), enabled = state.canOperate && !running, icon = Icons.Outlined.PlayArrow, tone = Tone.WARNING,
             )
@@ -475,8 +519,10 @@ private fun RunCard(run: RobotRun, onStop: () -> Unit, onContinue: () -> Unit, o
 
 @Composable
 private fun ItemEditor(f: ItemForm, onRemove: () -> Unit) {
-    LicitaCard(Modifier.fillMaxWidth()) {
+    val noPrice = f.toPlan()?.hasPrice != true
+    LicitaCard(Modifier.fillMaxWidth(), accent = if (noPrice) LicitaColors.Yellow else if (!f.selected) LicitaColors.TextMuted else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.Checkbox(checked = f.selected && !noPrice, onCheckedChange = { f.selected = it }, enabled = !noPrice)
             Field("Item nº", f.number, { f.number = it }, Modifier.width(90.dp), KeyboardType.Number)
             Spacer(Modifier.width(8.dp))
             Text(f.description.ifBlank { "Item do portal" }, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary, maxLines = 2, modifier = Modifier.weight(1f))

@@ -38,12 +38,20 @@ fun CompanyEntity.toDomain() = Company(
     street = street, complement = complement, district = district, zipCode = zipCode, phone = phone, email = email,
     legalRepName = legalRepName, legalRepCpf = legalRepCpf, legalRepRole = legalRepRole,
     bankName = bankName, bankAgency = bankAgency, bankAccount = bankAccount,
+    portalDeclarations = com.licitaia.domain.model.PortalDeclarations(
+        meEpp = com.licitaia.domain.model.PortalDeclarations.decode(declMeEpp),
+        genderEquity = com.licitaia.domain.model.PortalDeclarations.decode(declGenderEquity),
+        integrity = com.licitaia.domain.model.PortalDeclarations.decode(declIntegrity),
+    ),
 )
 fun Company.toEntity() = CompanyEntity(
     id, name, tradeName, cnpj, segment, uf, city, preferredAi, demo,
     street = street, complement = complement, district = district, zipCode = zipCode, phone = phone, email = email,
     legalRepName = legalRepName, legalRepCpf = legalRepCpf, legalRepRole = legalRepRole,
     bankName = bankName, bankAgency = bankAgency, bankAccount = bankAccount,
+    declMeEpp = com.licitaia.domain.model.PortalDeclarations.encode(portalDeclarations.meEpp),
+    declGenderEquity = com.licitaia.domain.model.PortalDeclarations.encode(portalDeclarations.genderEquity),
+    declIntegrity = com.licitaia.domain.model.PortalDeclarations.encode(portalDeclarations.integrity),
 )
 
 fun UserEntity.toDomain() = UserProfile(

@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.OpenInNew
@@ -18,6 +20,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.clickable
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -148,8 +154,10 @@ internal fun PortalLinksCard(tender: Tender, links: OfficialLinks?, onOpenPortal
 internal fun OfficialFilesCard(links: OfficialLinks?, loading: Boolean, error: String?, onRefresh: () -> Unit, title: String = "Arquivos da licitação") {
     val context = LocalContext.current
     val navigator = LocalAppNavigator.current
+    // Fechado por padrão: o cabeçalho mostra a contagem e abre/fecha a lista ao tocar.
+    var expanded by rememberSaveable { mutableStateOf(false) }
     LicitaCard(Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) {
             IconBubble(Icons.Outlined.FolderOpen, LicitaColors.Green)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -163,6 +171,10 @@ internal fun OfficialFilesCard(links: OfficialLinks?, loading: Boolean, error: S
                 )
             }
             IconButton(onClick = onRefresh, enabled = !loading) { Icon(Icons.Outlined.Refresh, contentDescription = "Atualizar arquivos") }
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "Fechar arquivos" else "Abrir arquivos", tint = LicitaColors.TextSecondary,
+            )
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
         if (error != null && !loading) {
@@ -174,7 +186,7 @@ internal fun OfficialFilesCard(links: OfficialLinks?, loading: Boolean, error: S
             Spacer(Modifier.height(8.dp))
             Text("O PNCP não tem arquivos publicados para esta contratação.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
         }
-        files.forEachIndexed { i, f ->
+        if (expanded) files.forEachIndexed { i, f ->
             if (i > 0) HorizontalDivider(color = LicitaColors.Outline)
             OfficialFileRow(
                 f,
@@ -191,20 +203,28 @@ internal fun OfficialFilesCard(links: OfficialLinks?, loading: Boolean, error: S
 private fun OfficialFileRow(f: OfficialFile, onDownload: () -> Unit, onOpen: () -> Unit, onShare: () -> Unit, onCopy: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(f.title, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            f.typeName?.let { StatusBadge(it, Tone.INFO) }
+            Text(f.title, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         }
+        f.typeName?.let { Spacer(Modifier.height(4.dp)); StatusBadge(it, Tone.INFO) }
         val meta = listOfNotNull(
             f.publishedAt?.let { "publicado ${Formatters.date(it)}" },
             f.sizeBytes?.let { "%.1f MB".format(java.util.Locale("pt", "BR"), it / 1_048_576.0) },
         ).joinToString(" · ")
         if (meta.isNotEmpty()) Text(meta, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SecondaryButton("Baixar", onDownload, Modifier.weight(1f), icon = Icons.Outlined.Download)
-            Spacer(Modifier.width(6.dp))
-            SecondaryButton("Abrir", onOpen, Modifier.weight(1f), icon = Icons.Outlined.OpenInNew, tone = Tone.NEUTRAL)
-            IconButton(onClick = onCopy) { Icon(Icons.Outlined.ContentCopy, contentDescription = "Copiar link") }
-            IconButton(onClick = onShare) { Icon(Icons.Outlined.Share, contentDescription = "Compartilhar link") }
+            FileAction(Icons.Outlined.Download, "Baixar", onDownload, Modifier.weight(1f))
+            FileAction(Icons.Outlined.OpenInNew, "Abrir", onOpen, Modifier.weight(1f))
+            FileAction(Icons.Outlined.ContentCopy, "Copiar", onCopy, Modifier.weight(1f))
+            FileAction(Icons.Outlined.Share, "Enviar", onShare, Modifier.weight(1f))
         }
+    }
+}
+
+/** Ação compacta (ícone + rótulo curto) que não corta o texto em telas estreitas. */
+@Composable
+private fun FileAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.clickable(onClick = onClick).padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, contentDescription = label, tint = LicitaColors.BlueBright)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary, maxLines = 1)
     }
 }

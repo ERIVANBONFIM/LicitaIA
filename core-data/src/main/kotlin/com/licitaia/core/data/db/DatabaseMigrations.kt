@@ -282,9 +282,27 @@ object DatabaseMigrations {
         }
     }
 
+    /** Colunas da v15 em `companies` (declarações padrão do Compras.gov), na ordem da entidade. */
+    internal val COMPANY_DECLARATION_COLUMNS = listOf("declMeEpp", "declGenderEquity", "declIntegrity")
+
+    /**
+     * Versão 15: declarações padrão do Compras.gov da empresa (ME/EPP, equidade de gênero, programa de integridade)
+     * em `companies`. Só adiciona colunas TEXT NOT NULL DEFAULT '' (= não informada; idempotente); nada é alterado.
+     */
+    val FROM_14_TO_15 = object : Migration(14, 15) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val columns = db.query("PRAGMA table_info(companies)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            COMPANY_DECLARATION_COLUMNS.filter { it !in columns }.forEach { column ->
+                db.execSQL("ALTER TABLE companies ADD COLUMN $column TEXT NOT NULL DEFAULT ''")
+            }
+        }
+    }
+
     /** Todas as migrações incrementais, na ordem. */
     val ALL: Array<Migration> get() = arrayOf(
         FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6, FROM_6_TO_7, FROM_7_TO_8, FROM_8_TO_9, FROM_9_TO_10,
-        FROM_10_TO_11, FROM_11_TO_12, FROM_12_TO_13, FROM_13_TO_14,
+        FROM_10_TO_11, FROM_11_TO_12, FROM_12_TO_13, FROM_13_TO_14, FROM_14_TO_15,
     )
 }

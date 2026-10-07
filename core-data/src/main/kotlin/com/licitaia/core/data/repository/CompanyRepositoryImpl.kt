@@ -84,6 +84,32 @@ class CompanyRepositoryImpl @Inject constructor(
         id
     }
 
+    override suspend fun updatePortalDeclarations(companyId: Long, declarations: com.licitaia.domain.model.PortalDeclarations) {
+        withContext(Dispatchers.IO) {
+            val session = holder.current ?: throw IllegalStateException("Entre na sua conta.")
+            require(session.sameRealm()) { "Sessão inconsistente. Entre novamente." }
+            require(companyId in session.user.companyIds) { "Empresa fora do seu acesso." }
+            // Administrador (cadastro da empresa) ou quem opera robôs (confirmação do robô de proposta).
+            require(
+                session.user.role == UserRole.ADMIN ||
+                    com.licitaia.domain.security.Rbac.can(session.user.role, com.licitaia.domain.security.Permission.OPERAR_SESSOES),
+            ) { "Seu perfil não pode alterar as declarações da empresa." }
+            val existing = companyDao.getById(companyId) ?: error("Empresa não encontrada.")
+            require(existing.demo == session.user.demo) { "Empresa fora do seu acesso." }
+            val before = existing.toDomain().portalDeclarations
+            companyDao.upsert(existing.toDomain().copy(portalDeclarations = declarations).toEntity())
+            companyDao.getById(companyId)?.toDomain()?.let { saved ->
+                if (holder.current?.activeCompany?.id == companyId) holder.update { it.copy(activeCompany = saved) }
+            }
+            audit.record(
+                AuditAction.CADASTRO,
+                previousValue = before.summary(),
+                newValue = declarations.summary(),
+                details = "Declarações padrão do Compras.gov de ${existing.tradeName.ifBlank { existing.name }} atualizadas",
+            )
+        }
+    }
+
     override suspend fun deleteCompany(id: Long) {
         withContext(Dispatchers.IO) {
             requireAdmin(id)

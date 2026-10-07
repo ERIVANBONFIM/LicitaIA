@@ -12,7 +12,9 @@ import kotlinx.serialization.json.put
  * `input[placeholder="Ex: 102021"]`, `input[data-test="input-valor-proposta"]`, `.p-toast-message`, ids das declarações.
  *
  * Regras: nunca lê cookies/storage; o único valor de campo lido é o que o próprio robô digitou; NUNCA clica em
- * declarações, termo, lixeira (`fa-trash-alt`), favoritos ou "Desfazer alterações". Parâmetros como literal JSON.
+ * lixeira (`fa-trash-alt`), favoritos ou "Desfazer alterações". Termo de aceitação e rádios das declarações só são
+ * tocados quando o usuário AUTORIZOU na confirmação do robô (respostas do cadastro da empresa). Parâmetros como
+ * literal JSON.
  */
 object SpaScripts {
 
@@ -21,11 +23,24 @@ var SP={};
 SP.T=function(e){return String((e&&(e.innerText||e.textContent))||'').replace(/\s+/g,' ').trim();};
 SP.cards=function(){return [].slice.call(document.querySelectorAll('div.cp-itens-card')).filter(function(c){return LZ.vis(c);});};
 SP.fav=function(c){if(c.querySelector('button[aria-label="Remover dos favoritos"]'))return true;var h=c.querySelector('.fa-heart');return !!(h&&h.classList.contains('fas'));};
-SP.itemNo=function(c){var s=c.querySelector('app-identificacao-item span');var n=s?parseInt(SP.T(s),10):NaN;if(isNaN(n)){var m=SP.T(c).match(/^(\d{1,4})\b/);n=m?parseInt(m[1],10):-1;}return n;};
+SP.itemNo=function(c){if(SP.isGroupText(SP.T(c)))return -1;var s=c.querySelector('app-identificacao-item span');var n=s?parseInt(SP.T(s),10):NaN;if(isNaN(n)){var m=SP.T(c).match(/^(\d{1,4})\b/);n=m?parseInt(m[1],10):-1;}return n;};
 SP.itemCards=function(n){return SP.cards().filter(function(c){return SP.itemNo(c)===n;});};
-SP.inputs=function(){return [].slice.call(document.querySelectorAll('input[data-test="input-valor-proposta"]')).filter(function(e){return LZ.vis(e);});};
+SP.VAL='input[data-test="input-valor-proposta"],input[data-test*="valor-proposta"],input[formcontrolname="valorProposta"],input[formcontrolname="valorUnitario"],input[name="valorProposta"]';
+SP.inputs=function(){return [].slice.call(document.querySelectorAll(SP.VAL)).filter(function(e){return LZ.vis(e);});};
 SP.marked=function(n){var es=[].slice.call(document.querySelectorAll('input[data-lz-item="'+n+'"]')).filter(function(e){return e.isConnected&&LZ.vis(e);});return es.length===1?es[0]:null;};
-SP.form=function(inp){var e=inp;for(var i=0;i<10&&e&&e.parentElement;i++){e=e.parentElement;if(e.querySelectorAll('input[data-test="input-valor-proposta"]').length>1)return null;if(e.querySelector('div.cp-itens-card')&&e.querySelectorAll('div.cp-itens-card').length>1)return null;var bs=[].slice.call(e.querySelectorAll('button')).filter(function(b){return LZ.N(SP.T(b))==='salvar'&&LZ.vis(b);});if(bs.length===1)return {box:e,save:bs[0]};if(bs.length>1)return null;}return null;};
+SP.saveRe=/^(salvar|salvar todos|salvar tudo|salvar grupo|salvar lote|salvar itens|salvar proposta|salvar valores|gravar)$/;
+SP.form=function(inp){var e=inp;for(var i=0;i<10&&e&&e.parentElement;i++){e=e.parentElement;if(e.querySelectorAll(SP.VAL).length>1)return null;if(e.querySelector('div.cp-itens-card')&&e.querySelectorAll('div.cp-itens-card').length>1)return null;var bs=[].slice.call(e.querySelectorAll('button')).filter(function(b){return SP.saveRe.test(LZ.N(SP.T(b)))&&LZ.vis(b);});if(bs.length===1)return {box:e,save:bs[0]};if(bs.length>1)return null;}return null;};
+SP.isGroupText=function(t){return /^(grupo|lote)\s*\d*\b|^g\s?\d+\b/.test(LZ.N(t));};
+SP.groupHeads=function(){var hs=[];SP.cards().forEach(function(c){if(SP.isGroupText(SP.T(c)))hs.push(c);});
+[].slice.call(document.querySelectorAll('.p-accordionheader,.p-accordion-header,p-accordion-header,[aria-expanded]')).forEach(function(h){if(!LZ.vis(h)||(h.closest&&h.closest('modal-container')))return;if(!SP.isGroupText(SP.T(h)))return;if(hs.some(function(x){return x===h||x.contains(h)||h.contains(x);}))return;hs.push(h);});
+hs.sort(function(a,b){return (a.compareDocumentPosition(b)&4)?-1:1;});return hs;};
+SP.inGroup=function(e,hs,i){var h=hs[i],nx=hs[i+1];if(!h||!e)return false;return !!(h.compareDocumentPosition(e)&4)&&(!nx||!!(nx.compareDocumentPosition(e)&2));};
+SP.groupSaves=function(hs,i){var own=[];SP.inputs().filter(function(e){return SP.inGroup(e,hs,i);}).forEach(function(e){var f=SP.form(e);if(f)own.push(f.save);});
+return [].slice.call(document.querySelectorAll('button')).filter(function(b){return LZ.vis(b)&&SP.inGroup(b,hs,i)&&SP.saveRe.test(LZ.N(SP.T(b)))&&own.indexOf(b)<0;});};
+SP.termBox=function(){var a=[].slice.call(document.querySelectorAll('a')).filter(function(x){return LZ.N(SP.T(x)).indexOf('termo de aceitacao')===0&&!(x.closest&&x.closest('modal-container,[role=dialog]'));})[0];if(!a)return null;var el=a,box=null;for(var up=0;up<6&&el&&!box;up++){el=el.parentElement;if(el)box=el.querySelector('input[type=checkbox]');}return box;};
+SP.modal=function(){return document.querySelector('modal-container.modal.show,modal-container.show');};
+SP.modalBoxes=function(m){return [].slice.call(m.querySelectorAll('input[type=checkbox]')).filter(function(b){return b.id!=='marcarTodas';});};
+SP.modalBtn=function(m,label){return [].slice.call(m.querySelectorAll('button')).filter(function(b){return LZ.N(SP.T(b))===label&&LZ.vis(b);})[0]||null;};
 SP.toasts=function(){return [].slice.call(document.querySelectorAll('.p-toast-message')).map(function(t){return {c:String(t.className),t:SP.T(t).slice(0,300)};});};
 SP.chk=function(e){if(!e)return false;if(e.checked)return true;var w=e.closest&&e.closest('p-checkbox,p-radiobutton,.p-checkbox,.p-radiobutton');return !!(w&&(w.classList.contains('p-checkbox-checked')||w.classList.contains('p-radiobutton-checked')));};
 SP.focus=function(e){try{e.scrollIntoView({block:'center'});}catch(x){}try{e.focus();}catch(x){}try{e.select();}catch(x){}try{e.setSelectionRange(0,String(e.value||'').length);}catch(x){}return document.activeElement===e;};
@@ -63,6 +78,13 @@ if(!ts.length)return JSON.stringify({ok:false});LZ.click(ts[0]);return JSON.stri
     fun clickAria(label: String): String = script(
         buildJsonObject { put("label", label) },
         """var bs=[].slice.call(document.querySelectorAll('button[aria-label]')).filter(function(b){return b.getAttribute('aria-label')===P.label&&LZ.vis(b);});
+if(!bs.length)return JSON.stringify({ok:false});LZ.click(bs[0]);return JSON.stringify({ok:true});""",
+    )
+
+    /** Migalha (breadcrumb) pelo texto (ex.: "Compras eletrônicas") — navegação dentro do SPA, nunca loadUrl. */
+    fun clickBreadcrumb(label: String): String = script(
+        buildJsonObject { put("label", TextNorm.norm(label)) },
+        """var bs=[].slice.call(document.querySelectorAll('.br-breadcrumb a,.br-breadcrumb button,.br-breadcrumb span,nav[aria-label*="readcrumb"] a,nav[aria-label*="readcrumb"] span,.breadcrumb a,.p-breadcrumb a')).filter(function(e){return LZ.vis(e)&&LZ.N(SP.T(e))===P.label;});
 if(!bs.length)return JSON.stringify({ok:false});LZ.click(bs[0]);return JSON.stringify({ok:true});""",
     )
 
@@ -204,6 +226,141 @@ LZ.click(fm.save);return JSON.stringify({ok:true});""",
     fun itemStatus(n: Int): String = script(
         buildJsonObject { put("n", n) },
         """var cs=SP.itemCards(P.n);return JSON.stringify({found:cs.length===1,t:cs.length===1?SP.T(cs[0]).slice(0,800):'',toasts:SP.toasts()});""",
+    )
+
+    // ------------------------------------------------------------------ compra certa / disponibilidade
+
+    /** URL real (`location.href`, não a do WebView — o SPA troca a rota sem recarregar), início do texto e lista? */
+    fun pageInfo(): String = noParams(
+        """var tabs=[].slice.call(document.querySelectorAll('p-tab,[role=tab]')).map(function(t){return LZ.N(SP.T(t));});
+var list=tabs.indexOf('minhas participacoes')>=0&&tabs.indexOf('todas as compras')>=0;
+return JSON.stringify({url:String(location.href),text:SP.T(document.body).slice(0,4000),list:list,modal:!!SP.modal()});""",
+    )
+
+    // ------------------------------------------------------------------ termo de aceitação (só com autorização do usuário)
+
+    /** Checkbox "Termo de Aceitação." do bloco Termo/declarações: posição (toque real) ou clique JS. */
+    fun termCheckbox(tap: Boolean): String = script(
+        buildJsonObject { put("tap", tap) },
+        """var b=SP.termBox();if(!b)return JSON.stringify({found:false});if(SP.chk(b))return JSON.stringify({found:true,ok:true,checked:true});
+if(P.tap)return JSON.stringify({found:true,ok:true,rect:SP.rect(b)});LZ.click(b);return JSON.stringify({found:true,ok:true,clicked:true});""",
+    )
+
+    /** Estado do modal "Termo de aceitação das declarações": declarações marcadas/total e o botão Confirmar. */
+    fun termsModal(): String = noParams(
+        """var m=SP.modal();if(!m)return JSON.stringify({open:false,total:0,checked:0});var bs=SP.modalBoxes(m);var c=bs.filter(function(b){return SP.chk(b);}).length;
+var cf=SP.modalBtn(m,'confirmar');var all=m.querySelector('#marcarTodas');
+return JSON.stringify({open:true,title:SP.T(m).slice(0,80),total:bs.length,checked:c,all:!!all,allChecked:SP.chk(all),confirm:!!cf,confirmDisabled:!!(cf&&(cf.disabled||cf.classList.contains('p-disabled')))});""",
+    )
+
+    /** "Marcar todas" (#marcarTodas) do modal: posição ou clique JS. */
+    fun modalMarkAll(tap: Boolean): String = script(
+        buildJsonObject { put("tap", tap) },
+        """var m=SP.modal();if(!m)return JSON.stringify({found:false});var e=m.querySelector('#marcarTodas');if(!e)return JSON.stringify({found:false});
+if(SP.chk(e))return JSON.stringify({found:true,ok:true,checked:true});if(P.tap)return JSON.stringify({found:true,ok:true,rect:SP.rect(e)});LZ.click(e);return JSON.stringify({found:true,ok:true});""",
+    )
+
+    /** Primeira declaração DESMARCADA do modal: posição ou clique JS. `left` = quantas faltam. */
+    fun modalBox(tap: Boolean): String = script(
+        buildJsonObject { put("tap", tap) },
+        """var m=SP.modal();if(!m)return JSON.stringify({found:false});var un=SP.modalBoxes(m).filter(function(b){return !SP.chk(b);});
+if(!un.length)return JSON.stringify({found:true,ok:true,left:0});if(P.tap)return JSON.stringify({found:true,ok:true,left:un.length,rect:SP.rect(un[0])});LZ.click(un[0]);return JSON.stringify({found:true,ok:true,left:un.length});""",
+    )
+
+    /** Botão do modal ("confirmar") — só depois de conferir todas as declarações marcadas. */
+    fun modalButton(label: String, tap: Boolean): String = script(
+        buildJsonObject { put("label", TextNorm.norm(label)); put("tap", tap) },
+        """var m=SP.modal();if(!m)return JSON.stringify({found:false});var b=SP.modalBtn(m,P.label);if(!b)return JSON.stringify({found:false});
+if(b.disabled)return JSON.stringify({found:true,ok:false,error:'desabilitado'});if(P.tap)return JSON.stringify({found:true,ok:true,rect:SP.rect(b)});LZ.click(b);return JSON.stringify({found:true,ok:true});""",
+    )
+
+    /**
+     * Rádio de declaração pelo id (ex.: `labelSimMeepp`). Escondido (acordeão fechado) → abre o acordeão do bloco e
+     * devolve `expanded`; desabilitado → `disabled`; senão posição (toque real) ou clique JS no rótulo/rádio.
+     */
+    fun declarationRadio(id: String, tap: Boolean): String = script(
+        buildJsonObject { put("id", id); put("tap", tap) },
+        """var e=document.getElementById(P.id);if(!e)return JSON.stringify({found:false});if(SP.chk(e))return JSON.stringify({found:true,ok:true,checked:true});
+if(e.disabled)return JSON.stringify({found:true,ok:false,disabled:true});
+if(!LZ.vis(e)){var el=e,h=null;for(var i=0;i<8&&el&&!h;i++){el=el.parentElement;if(el){var hs=[].slice.call(el.querySelectorAll('button.header')).filter(function(b){return LZ.vis(b);});if(hs.length===1)h=hs[0];}}
+if(h){LZ.click(h);return JSON.stringify({found:true,ok:false,expanded:true});}return JSON.stringify({found:true,ok:false,hidden:true});}
+if(P.tap)return JSON.stringify({found:true,ok:true,rect:SP.rect(e)});var lb=document.querySelector('label[for="'+P.id+'"]');LZ.click(lb||e);return JSON.stringify({found:true,ok:true,clicked:true});""",
+    )
+
+    // ------------------------------------------------------------------ muitos itens / grupos / lotes
+
+    /**
+     * Abre os agrupadores FECHADOS (cartões/cabeçalhos "Grupo"/"Lote"/"G1", acordeões PrimeNG com aria-expanded=false).
+     * Cartão sem aria-expanded: abre se nenhum item aparece no trecho dele (e nunca toca duas vezes no mesmo).
+     */
+    fun expandGroups(): String = noParams(
+        """var n=0;var hs=SP.groupHeads();hs.forEach(function(h,i){var ax=h.getAttribute('aria-expanded')!=null?h:h.querySelector('[aria-expanded]');var collapsed;
+if(ax)collapsed=ax.getAttribute('aria-expanded')==='false';else{var at=parseInt(h.getAttribute('data-lz-open-at')||'0',10);if(Date.now()-at<4000)return;collapsed=!SP.cards().some(function(c){return SP.itemNo(c)>0&&SP.inGroup(c,hs,i);});}
+if(!collapsed)return;var b=ax||SP.chevron(h)||h;LZ.click(b);h.setAttribute('data-lz-open-at',String(Date.now()));n++;});return JSON.stringify({ok:true,clicked:n,groups:hs.length});""",
+    )
+
+    /** Estrutura de cada grupo aberto (itens, campos de valor, Salvar por item x Salvar do grupo, valor do grupo). */
+    fun groupsInfo(): String = noParams(
+        """var hs=SP.groupHeads();var out=[];hs.forEach(function(h,i){var items=SP.cards().filter(function(c){return SP.itemNo(c)>0&&SP.inGroup(c,hs,i);}).map(SP.itemNo);
+var ins=SP.inputs().filter(function(e){return SP.inGroup(e,hs,i);});var per=ins.filter(function(e){return !!SP.form(e);}).length;
+var gv=[].slice.call(document.querySelectorAll('label')).some(function(l){return LZ.vis(l)&&SP.inGroup(l,hs,i)&&/valor (total )?d[oa] (grupo|lote)|valor global/.test(LZ.N(SP.T(l)));});
+out.push({i:i,label:SP.T(h).slice(0,80),text:SP.T(h).slice(0,300),items:items,inputs:ins.length,perItemSave:per,saves:SP.groupSaves(hs,i).map(function(b){return SP.T(b);}),groupValue:gv});});
+return JSON.stringify({groups:out});""",
+    )
+
+    /** O ÚNICO botão de salvar do grupo [index] (conferido pelo rótulo do grupo). */
+    fun saveGroup(index: Int, label: String): String = script(
+        buildJsonObject { put("i", index); put("label", TextNorm.norm(label).take(30)) },
+        """var hs=SP.groupHeads();var h=hs[P.i];if(!h||LZ.N(SP.T(h)).indexOf(P.label)!==0)return JSON.stringify({ok:false,error:'o grupo mudou na página'});
+var bs=SP.groupSaves(hs,P.i);if(bs.length!==1)return JSON.stringify({ok:false,error:bs.length+' botões de salvar no grupo'});if(bs[0].disabled)return JSON.stringify({ok:false,error:'Salvar do grupo desabilitado'});
+LZ.click(bs[0]);return JSON.stringify({ok:true});""",
+    )
+
+    /**
+     * Paginador PrimeNG DENTRO do grupo [key] ("grupo 1": só os paginadores entre o cartão do grupo e o próximo grupo,
+     * nunca o da página). [action]: "read" | "page" (vai para [page]) | "next". Devolve páginas, atual e se há próxima.
+     */
+    fun groupPager(key: String, action: String, page: Int = 0): String = script(
+        buildJsonObject { put("key", TextNorm.norm(key)); put("action", action); put("page", page) },
+        """var hs=SP.groupHeads();var gi=-1;hs.forEach(function(h,i){var t=LZ.N(SP.T(h)).replace(/\|/g,' ').replace(/\s+/g,' ');if(gi<0&&t.indexOf(P.key)===0&&!/\d/.test(t.charAt(P.key.length)))gi=i;});
+if(gi<0)return JSON.stringify({found:false,error:'grupo não encontrado'});
+var pg=[].slice.call(document.querySelectorAll('.p-paginator,p-paginator')).filter(function(x){return LZ.vis(x)&&SP.inGroup(x,hs,gi)&&!x.parentElement.closest('.p-paginator');})[0];
+if(!pg)return JSON.stringify({found:true,ok:true,pager:false,pages:['1'],current:1,next:false});
+var nums=[].slice.call(pg.querySelectorAll('button.p-paginator-page,.p-paginator-page')).filter(function(b){return LZ.vis(b);});
+var cur=nums.filter(function(b){return b.classList.contains('p-paginator-page-selected')||b.classList.contains('p-highlight')||b.getAttribute('aria-current')==='page';})[0];
+var nx=pg.querySelector('button.p-paginator-next,.p-paginator-next');var hasNext=!!(nx&&!nx.disabled&&!nx.classList.contains('p-disabled'));
+var r={found:true,ok:true,pager:true,pages:nums.map(function(b){return SP.T(b);}),current:cur?parseInt(SP.T(cur),10):1,next:hasNext};
+if(P.action==='next'){if(!hasNext)return JSON.stringify(Object.assign(r,{ok:false,error:'sem próxima página'}));LZ.click(nx);r.clicked=true;}
+else if(P.action==='page'){var b=nums.filter(function(x){return SP.T(x)===String(P.page)||x.getAttribute('aria-label')==='Página '+P.page||x.getAttribute('aria-label')==='Page '+P.page;})[0];
+if(b){LZ.click(b);r.clicked=true;}else if(hasNext&&P.page>r.current){LZ.click(nx);r.clicked=true;r.stepped=true;}else{var pv=pg.querySelector('button.p-paginator-prev,.p-paginator-prev');if(pv&&!pv.disabled&&P.page<r.current){LZ.click(pv);r.clicked=true;r.stepped=true;}else{r.ok=false;r.error='página '+P.page+' não disponível';}}}
+return JSON.stringify(r);""",
+    )
+
+    /** Recolhe o grupo [key] (seta do cartão) quando os itens dele estão visíveis — antes de ir para o próximo grupo. */
+    fun collapseGroup(key: String): String = script(
+        buildJsonObject { put("key", TextNorm.norm(key)) },
+        """var hs=SP.groupHeads();var gi=-1;hs.forEach(function(h,i){var t=LZ.N(SP.T(h)).replace(/\|/g,' ').replace(/\s+/g,' ');if(gi<0&&t.indexOf(P.key)===0&&!/\d/.test(t.charAt(P.key.length)))gi=i;});
+if(gi<0)return JSON.stringify({ok:false});var h=hs[gi];var open=SP.cards().some(function(c){return SP.itemNo(c)>0&&SP.inGroup(c,hs,gi);});if(!open)return JSON.stringify({ok:true,already:true});
+var ax=h.getAttribute('aria-expanded')!=null?h:h.querySelector('[aria-expanded]');var b=ax||SP.chevron(h);if(!b)return JSON.stringify({ok:false});LZ.click(b);h.setAttribute('data-lz-open-at',String(Date.now()));return JSON.stringify({ok:true});""",
+    )
+
+    /** Rola a página (e contêineres de rolagem/virtualizados) um passo; [top] = volta ao topo. Toca "Carregar mais". */
+    fun scrollLoad(top: Boolean): String = script(
+        buildJsonObject { put("top", top) },
+        """[].slice.call(document.querySelectorAll('button')).filter(function(b){return LZ.vis(b)&&/^(carregar|mostrar|ver) mais/.test(LZ.N(SP.T(b)));}).slice(0,1).forEach(function(b){LZ.click(b);});
+var se=document.scrollingElement||document.documentElement;if(P.top)se.scrollTop=0;else se.scrollTop=se.scrollTop+Math.max(300,window.innerHeight*0.9);
+[].slice.call(document.querySelectorAll('.p-scroller,.p-virtualscroller,cdk-virtual-scroll-viewport,.p-datatable-wrapper,.p-dataview-content')).forEach(function(s){try{if(P.top)s.scrollTop=0;else s.scrollTop=s.scrollTop+Math.max(200,s.clientHeight*0.9);}catch(x){}});
+var end=(se.scrollTop+window.innerHeight)>=se.scrollHeight-8;return JSON.stringify({ok:true,cards:SP.cards().length,end:end});""",
+    )
+
+    /** Paginação PrimeNG: primeira página (só se habilitada). */
+    fun firstPage(): String = noParams(
+        """var b=document.querySelector('button.p-paginator-first');if(!b||b.disabled||b.classList.contains('p-disabled'))return JSON.stringify({ok:false});LZ.click(b);return JSON.stringify({ok:true});""",
+    )
+
+    /** Números dos itens visíveis (diagnóstico de "item não encontrado"). */
+    fun itemNumbers(): String = noParams(
+        """var ns=SP.cards().map(SP.itemNo).filter(function(n){return n>0;});return JSON.stringify({ok:true,items:ns.slice(0,400).map(String)});""",
     )
 
     // ------------------------------------------------------------------ leitura das respostas
