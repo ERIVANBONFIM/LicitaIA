@@ -54,7 +54,9 @@ class PncpConnectorTest {
             }
         }
         server.start()
-        connector = PncpConnector(OkHttpClient(), PncpConnector.defaultJson(), server.url("/"), clock = { now }, pageDelayMs = 0)
+        connector = PncpConnector(
+            OkHttpClient(), PncpConnector.defaultJson(), server.url("/"), clock = { now }, pageDelayMs = 0, retryDelaysMs = listOf(0L),
+        )
     }
 
     @Before
@@ -193,7 +195,35 @@ class PncpConnectorTest {
         val result = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, ufs = setOf("MG")))
 
         assertEquals(10, result.size)
-        assertEquals(listOf("1", "2"), requests.map { it.query("pagina") })
+        // Página 2: requisição original + 3 retentativas, depois devolve o parcial.
+        assertEquals(listOf("1", "2", "2", "2", "2"), requests.map { it.query("pagina") })
+    }
+
+    @Test
+    fun `429 transitorio e retentado e a busca continua`() = runBlocking {
+        val page1 = fixture("contratacoes_proposta_mg_p1.json")
+        var hits = 0
+        start { req ->
+            when (req.query("pagina")) {
+                "1" -> if (++hits <= 2) MockResponse().setResponseCode(429).setHeader("Retry-After", "0") else jsonResponse(page1)
+                else -> noContent()
+            }
+        }
+
+        val result = connector.listOpportunities(OpportunityFilter(modality = Modality.CREDENCIAMENTO, ufs = setOf("MG")))
+
+        assertEquals(10, result.size)
+        assertEquals(listOf("1", "1", "1", "2"), requests.map { it.query("pagina") })
+    }
+
+    @Test
+    fun `espera do 429 usa Retry-After limitado ou 2 a 5 s`() {
+        assertEquals(3_000L, PncpConnector.rateLimitWaitMs(0, 3_000L))
+        assertEquals(PncpConnector.MAX_RETRY_AFTER_MS, PncpConnector.rateLimitWaitMs(0, 120_000L))
+        assertEquals(2_000L, PncpConnector.rateLimitWaitMs(0, null))
+        assertEquals(3_500L, PncpConnector.rateLimitWaitMs(1, null))
+        assertEquals(5_000L, PncpConnector.rateLimitWaitMs(2, null))
+        assertEquals(5_000L, PncpConnector.rateLimitWaitMs(7, null))
     }
 
     @Test

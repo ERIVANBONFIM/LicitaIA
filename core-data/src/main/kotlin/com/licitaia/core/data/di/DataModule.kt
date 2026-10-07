@@ -110,6 +110,7 @@ object DataProvidersModule {
     @Provides fun aiConfigDao(db: LicitaDatabase): AiConfigDao = db.aiConfigDao()
     @Provides fun messageDao(db: LicitaDatabase): MessageDao = db.messageDao()
     @Provides fun competitionDao(db: LicitaDatabase): CompetitionDao = db.competitionDao()
+    @Provides fun relevanceScoreDao(db: LicitaDatabase): com.licitaia.core.data.db.RelevanceScoreDao = db.relevanceScoreDao()
 }
 
 @Module

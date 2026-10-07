@@ -3,6 +3,8 @@ package com.licitaia.connector.pncp
 import com.licitaia.connector.api.BidSubmission
 import com.licitaia.connector.api.HumanConfirmation
 import com.licitaia.connector.api.LiveSessionHandle
+import com.licitaia.connector.api.OfficialDocument
+import com.licitaia.connector.api.OfficialDocumentSource
 import com.licitaia.connector.api.PortalAuthResult
 import com.licitaia.connector.api.PortalBidState
 import com.licitaia.connector.api.PortalConnector
@@ -39,7 +41,9 @@ class PncpConnector internal constructor(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Pausa entre páginas (o PNCP devolve 429 com rajadas de ~20 requisições em poucos segundos). */
     private val pageDelayMs: Long = DEFAULT_PAGE_DELAY_MS,
-) : PortalConnector {
+    /** Esperas entre retentativas após HTTP 429 sem `Retry-After` (testes usam 0). */
+    private val retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS,
+) : PortalConnector, OfficialDocumentSource {
 
     constructor(
         client: OkHttpClient,
@@ -47,7 +51,8 @@ class PncpConnector internal constructor(
         baseUrl: HttpUrl = PncpApi.DEFAULT_BASE_URL.toHttpUrl(),
         clock: () -> Long = System::currentTimeMillis,
         pageDelayMs: Long = DEFAULT_PAGE_DELAY_MS,
-    ) : this(PncpApi(client, json, baseUrl), clock, pageDelayMs)
+        retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS,
+    ) : this(PncpApi(client, json, baseUrl), clock, pageDelayMs, retryDelaysMs)
 
     override val portal: Portal = Portal.PNCP
 
@@ -103,11 +108,14 @@ class PncpConnector internal constructor(
                 while (page <= pagesPerCombo && collected.size < maxItems) {
                     if (requests > 0 && pageDelayMs > 0) delay(pageDelayMs) // respeita o limite de requisições do PNCP
                     val result = try {
-                        api.contratacoesComPropostaAberta(
-                            dataFinal = dataFinal, codigoModalidade = code, uf = uf, pagina = page, tamanhoPagina = PncpApi.MAX_PAGE_SIZE,
-                        )
+                        withRateLimitRetry {
+                            api.contratacoesComPropostaAberta(
+                                dataFinal = dataFinal, codigoModalidade = code, uf = uf, pagina = page, tamanhoPagina = PncpApi.MAX_PAGE_SIZE,
+                            )
+                        }
                     } catch (e: PncpException) {
-                        // 429 depois de já ter resultados: devolve o parcial (o backoff do app cuida das próximas buscas).
+                        // 429 persistente (após as retentativas) com resultados já obtidos: devolve o parcial
+                        // (o backoff do app cuida das próximas buscas).
                         if (e.httpStatus == 429 && collected.isNotEmpty()) break@outer
                         throw e
                     }
@@ -122,6 +130,24 @@ class PncpConnector internal constructor(
         return collected.values
             .filter { OpportunityFilterMatcher.matches(filter, it) }
             .sortedBy { it.proposalDeadline }
+    }
+
+    /**
+     * HTTP 429 do PNCP: espera `Retry-After` (limitado) ou 2–5 s e tenta de novo, até [MAX_RATE_LIMIT_RETRIES] vezes,
+     * em vez de desistir na primeira rajada. Outras falhas sobem direto.
+     */
+    private suspend fun <T> withRateLimitRetry(block: suspend () -> T): T {
+        var attempt = 0
+        while (true) {
+            try {
+                return block()
+            } catch (e: PncpException) {
+                if (e.httpStatus != 429 || attempt >= MAX_RATE_LIMIT_RETRIES) throw e
+                val wait = rateLimitWaitMs(attempt, e.retryAfterMs, retryDelaysMs)
+                attempt++
+                if (wait > 0) delay(wait)
+            }
+        }
     }
 
     override suspend fun getTenderDetails(opportunityId: String): TenderDetails? {
@@ -158,6 +184,17 @@ class PncpConnector internal constructor(
         )
     }
 
+    /**
+     * Edital oficial + anexos relevantes de uma contratação (`/arquivos` da API de integração do PNCP),
+     * escolhidos por [PncpEditalSelector]. Vale para ids PNCP e Compras.gov.br (mesmo número de controle).
+     */
+    override suspend fun officialEditalDocuments(pncpControlNumber: String): List<OfficialDocument> {
+        val ref = PncpControlNumber.parse(pncpControlNumber)
+            ?: throw IllegalArgumentException("Número de controle PNCP inválido: $pncpControlNumber")
+        val documents = withRateLimitRetry { api.documentos(ref) }
+        return PncpEditalSelector.select(documents)
+    }
+
     // ------------------------------------------------------------ não suportado (consulta pública)
 
     override suspend fun authenticate(credentials: PortalCredentials): PortalAuthResult = PortalAuthResult.Failure(NOT_SUPPORTED)
@@ -192,6 +229,25 @@ class PncpConnector internal constructor(
 
     companion object {
         const val DEFAULT_PAGE_DELAY_MS = 350L
+
+        /** Retentativas após HTTP 429 (além da requisição original). */
+        const val MAX_RATE_LIMIT_RETRIES = 3
+
+        /** Esperas padrão (2 s, 3,5 s, 5 s) quando o PNCP não manda `Retry-After`. */
+        val DEFAULT_RETRY_DELAYS_MS: List<Long> = listOf(2_000L, 3_500L, 5_000L)
+
+        /** Teto para `Retry-After` (a busca não fica presa esperando minutos). */
+        const val MAX_RETRY_AFTER_MS = 10_000L
+
+        /**
+         * Espera antes da retentativa [attempt] (0 = primeira): `Retry-After` limitado a [MAX_RETRY_AFTER_MS]; sem ele,
+         * a tabela [delays] (último valor repetido). Pura e testável.
+         */
+        fun rateLimitWaitMs(attempt: Int, retryAfterMs: Long?, delays: List<Long> = DEFAULT_RETRY_DELAYS_MS): Long {
+            retryAfterMs?.takeIf { it >= 0 }?.let { return it.coerceAtMost(MAX_RETRY_AFTER_MS) }
+            if (delays.isEmpty()) return 0L
+            return delays[attempt.coerceIn(0, delays.size - 1)]
+        }
 
         const val NOT_SUPPORTED = "Não suportado pelo PNCP (consulta pública): login, propostas, lances e mensagens não existem nesta API."
 

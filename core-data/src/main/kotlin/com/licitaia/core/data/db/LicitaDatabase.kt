@@ -10,8 +10,9 @@ import androidx.room.TypeConverters
         TenderEntity::class, TenderAnalysisEntity::class, DocumentEntity::class, ProposalEntity::class,
         PortalSessionEntity::class, LiveSessionEntity::class, BidEventEntity::class, NotificationEntity::class,
         AuditEventEntity::class, AiConfigEntity::class, MessageEntity::class, CompetitionEntity::class,
+        RelevanceScoreEntity::class,
     ],
-    version = 7,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(RoomConverters::class)
@@ -32,6 +33,7 @@ abstract class LicitaDatabase : RoomDatabase() {
     abstract fun aiConfigDao(): AiConfigDao
     abstract fun messageDao(): MessageDao
     abstract fun competitionDao(): CompetitionDao
+    abstract fun relevanceScoreDao(): RelevanceScoreDao
 
     companion object {
         const val NAME = "licitaia.db"

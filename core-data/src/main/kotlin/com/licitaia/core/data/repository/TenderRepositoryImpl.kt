@@ -3,6 +3,13 @@ package com.licitaia.core.data.repository
 import com.licitaia.ai.api.AiGateway
 import com.licitaia.ai.api.TenderAnalysisRequest
 import com.licitaia.connector.api.ConnectorRegistry
+import com.licitaia.connector.api.OfficialDocument
+import com.licitaia.connector.api.OfficialDocumentSource
+import com.licitaia.core.data.edital.EditalDownloadException
+import com.licitaia.core.data.edital.EditalDownloader
+import com.licitaia.domain.model.PncpControlNumbers
+import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.pncpControlNumber
 import com.licitaia.core.data.db.CompanyDao
 import com.licitaia.core.data.db.DocumentDao
 import com.licitaia.core.data.db.NotificationDao
@@ -75,10 +82,14 @@ class TenderRepositoryImpl @Inject constructor(
     private val editalStore: EditalStore,
     private val pdfExtractor: PdfTextExtractor,
     private val pdfOcrEngine: PdfOcrEngine,
+    private val editalDownloader: EditalDownloader,
     @DataScope private val scope: CoroutineScope,
 ) : TenderRepository {
 
     private val interestMutex = Mutex()
+
+    /** Motivo da última falha ao baixar o edital oficial, por licitação (só em memória). */
+    private val fetchErrors = MutableStateFlow<Map<Long, String>>(emptyMap())
 
     /** Importações/OCR em andamento por licitação (sobrevivem à saída da tela). */
     private val importJobs = HashMap<Long, Deferred<Result<EditalImportResult>>>()
@@ -117,11 +128,26 @@ class TenderRepositoryImpl @Inject constructor(
             val now = System.currentTimeMillis()
             opportunityDao.upsertAll(listOf(opportunity.toEntity(now)))
             val newId = tenderDao.upsert(opportunity.toTender(companyId, now, editalRegistered = opportunity.editalUrl != null).toEntity())
+            val pncpControl = PncpControlNumbers.fromOpportunityId(opportunity.id)
             audit.record(
                 AuditAction.ANALISE, portal = opportunity.portal, tenderNumber = opportunity.number,
-                details = "Interesse registrado; edital ${if (opportunity.editalUrl != null) "registrado" else "pendente"}; análise iniciada",
+                details = "Interesse registrado; edital ${if (opportunity.editalUrl != null) "registrado" else "pendente"}; " +
+                    if (pncpControl != null) "download do edital oficial (PNCP $pncpControl) e análise iniciados" else "análise iniciada",
             )
-            scope.launch { runAnalysis(newId, background = true) }
+            scope.launch {
+                // Com número de controle PNCP: baixa o edital oficial ANTES da análise para a IA receber o texto real.
+                // Falha no download (sem rede, sem PDF) não impede o interesse nem a análise (metadados); o card mostra o motivo.
+                if (pncpControl != null) {
+                    try {
+                        fetchOfficialEdital(newId)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // já registrado em fetchErrors/auditoria
+                    }
+                }
+                runAnalysis(newId, background = true)
+            }
             newId
         }
         id
@@ -231,11 +257,26 @@ class TenderRepositoryImpl @Inject constructor(
      * meio de um OCR longo, o trabalho continua, o banco é atualizado e o progresso segue observável.
      * Uma segunda chamada para a mesma licitação enquanto há importação em andamento reaproveita o job.
      */
-    override suspend fun attachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult> {
+    override suspend fun attachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult> =
+        runImportJob(tenderId) { doAttachEdital(tenderId, source) }
+
+    override suspend fun fetchOfficialEdital(tenderId: Long): Result<EditalImportResult> =
+        runImportJob(tenderId) { doFetchOfficialEdital(tenderId) }.also { result ->
+            fetchErrors.update { errors ->
+                result.exceptionOrNull()
+                    ?.let { errors + (tenderId to (it.message?.takeIf(String::isNotBlank) ?: "Falha ao baixar o edital oficial.")) }
+                    ?: (errors - tenderId)
+            }
+        }
+
+    override fun observeOfficialEditalError(tenderId: Long): Flow<String?> =
+        fetchErrors.map { it[tenderId] }.distinctUntilChanged()
+
+    private suspend fun runImportJob(tenderId: Long, block: suspend () -> Result<EditalImportResult>): Result<EditalImportResult> {
         val job = synchronized(importJobs) {
             importJobs[tenderId] ?: scope.async(Dispatchers.IO) {
                 try {
-                    doAttachEdital(tenderId, source)
+                    block().also { r -> if (r.isSuccess) fetchErrors.update { it - tenderId } }
                 } finally {
                     synchronized(importJobs) { importJobs.remove(tenderId) }
                     importProgress.update { it - tenderId }
@@ -245,11 +286,57 @@ class TenderRepositoryImpl @Inject constructor(
         return job.await()
     }
 
+    /** Resolve o edital oficial na lista de arquivos do PNCP e o baixa (com anexos relevantes) pelo fluxo [EditalSource.Remote]. */
+    private suspend fun doFetchOfficialEdital(tenderId: Long): Result<EditalImportResult> {
+        val entity = tenderDao.getById(tenderId)
+            ?: return Result.failure(IllegalArgumentException("Licitação não encontrada."))
+        val tender = entity.toDomain()
+        val documents = try {
+            access.requireCompany(tender.companyId, Permission.ANALISAR)
+            val control = tender.pncpControlNumber
+                ?: throw IllegalStateException("Esta licitação não tem número de controle PNCP: importe o PDF do edital manualmente.")
+            publishProgress(tenderId, EditalImportProgress.Stage.BAIXANDO)
+            val source = (registry.get(Portal.PNCP) as? OfficialDocumentSource)
+                ?: registry.all().firstNotNullOfOrNull { it as? OfficialDocumentSource }
+                ?: throw IllegalStateException("A consulta de documentos do PNCP não está disponível.")
+            val listed = try {
+                source.officialEditalDocuments(control)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IllegalArgumentException) {
+                throw e
+            } catch (e: Exception) {
+                throw EditalDownloadException(e.message?.takeIf(String::isNotBlank) ?: "Falha ao consultar os arquivos da contratação no PNCP.", e)
+            }
+            if (listed.none { it.role == OfficialDocument.Role.EDITAL }) {
+                throw IllegalStateException("O PNCP não tem o arquivo do edital publicado para esta contratação.")
+            }
+            listed
+        } catch (e: CancellationException) {
+            throw e
+        } catch (error: Exception) {
+            runCatching {
+                audit.record(
+                    AuditAction.GERACAO_DOCUMENTO, result = AuditResult.FALHA, portal = tender.portal, tenderNumber = tender.number,
+                    reason = error.message, details = "Falha ao localizar o edital oficial no PNCP",
+                )
+            }
+            return Result.failure(error)
+        }
+        val main = documents.first { it.role == OfficialDocument.Role.EDITAL }
+        return doAttachEdital(tenderId, EditalSource.Remote(main.url), annexes = documents.filter { it.role == OfficialDocument.Role.ANEXO })
+    }
+
     private fun publishProgress(tenderId: Long, stage: EditalImportProgress.Stage, page: Int = 0, total: Int = 0) {
         importProgress.update { it + (tenderId to EditalImportProgress(tenderId, stage, page, total)) }
     }
 
-    private suspend fun doAttachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult> {
+    private suspend fun doAttachEdital(
+        tenderId: Long,
+        source: EditalSource,
+        /** Anexos oficiais (Termo de Referência etc.) cujo texto é concatenado ao do edital (só [EditalSource.Remote]). */
+        annexes: List<OfficialDocument> = emptyList(),
+    ): Result<EditalImportResult> {
         val entity = tenderDao.getById(tenderId)
             ?: return Result.failure(IllegalArgumentException("Licitação não encontrada."))
         val tender = entity.toDomain()
@@ -260,35 +347,18 @@ class TenderRepositoryImpl @Inject constructor(
                 is EditalSource.Pdf -> {
                     publishProgress(tenderId, EditalImportProgress.Stage.COPIANDO)
                     val pdf = editalStore.importPdf(tender.companyId, tenderId, source.uri)
-                    publishProgress(tenderId, EditalImportProgress.Stage.EXTRAINDO)
-                    val extraction = pdfExtractor.extract(pdf)
-                    val extracted = EditalTextPreparer.normalize(extraction.text)
-                    if (!EditalOcrSupport.needsOcr(extraction.scanned, EditalOcrSupport.meaningfulChars(extracted))) {
-                        val textPath = editalStore.writeText(tender.companyId, tenderId, extracted).absolutePath
-                        tenderDao.updateEdital(
-                            id = tenderId, pdfPath = pdf.absolutePath, textPath = textPath, chars = extracted.length,
-                            pages = extraction.totalPages, scanned = false, registered = true, now = now,
-                        )
-                        audit.record(
-                            AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
-                            newValue = "${extraction.totalPages} página(s) · ${extracted.length} caractere(s)",
-                            details = "PDF do edital importado e texto extraído" + if (extraction.truncated) " (lidas ${extraction.pagesRead} de ${extraction.totalPages} páginas)" else "",
-                        )
-                        EditalImportResult(chars = extracted.length, pages = extraction.totalPages, scanned = false, storedPath = pdf.absolutePath)
-                    } else {
-                        // Sem camada de texto: guarda o PDF como escaneado e tenta o OCR local em seguida.
-                        editalStore.textFile(tender.companyId, tenderId).delete()
-                        tenderDao.updateEdital(
-                            id = tenderId, pdfPath = pdf.absolutePath, textPath = null, chars = 0,
-                            pages = extraction.totalPages, scanned = true, registered = true, now = now,
-                        )
-                        audit.record(
-                            AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
-                            result = AuditResult.PENDENTE, newValue = "${extraction.totalPages} página(s) · 0 caractere(s)",
-                            details = "PDF do edital importado sem camada de texto (escaneado); iniciando OCR local",
-                        )
-                        runOcr(tender.copy(editalPdfPath = pdf.absolutePath, editalPages = extraction.totalPages), automatic = true)
-                    }
+                    processStoredPdf(tender, pdf, now, origin = "PDF do edital importado", annexes = emptyList())
+                }
+                is EditalSource.Remote -> {
+                    publishProgress(tenderId, EditalImportProgress.Stage.BAIXANDO)
+                    val pdf = editalDownloader.download(source.url, editalStore.pdfFile(tender.companyId, tenderId))
+                    val fromPncp = runCatching { java.net.URI(source.url).host.orEmpty().lowercase().let { it == "pncp.gov.br" || it.endsWith(".pncp.gov.br") } }
+                        .getOrDefault(false)
+                    processStoredPdf(
+                        tender, pdf, now,
+                        origin = if (fromPncp) "Edital baixado do PNCP" else "Edital baixado do portal oficial",
+                        annexes = annexes,
+                    )
                 }
                 is EditalSource.Ocr -> {
                     val path = tender.editalPdfPath?.takeIf { File(it).exists() }
@@ -327,6 +397,114 @@ class TenderRepositoryImpl @Inject constructor(
             }
             Result.failure(surfaced)
         }
+    }
+
+    /**
+     * Extração de texto do PDF já gravado em `filesDir/editais/{companyId}/{tenderId}.pdf` (importado ou baixado):
+     * texto direto quando há camada de texto; senão OCR local automático. [annexes] (download oficial) têm o texto
+     * concatenado com "--- Anexo: <título> ---", respeitando o limite total de páginas do extrator.
+     */
+    private suspend fun processStoredPdf(
+        tender: Tender,
+        pdf: File,
+        now: Long,
+        origin: String,
+        annexes: List<OfficialDocument>,
+    ): EditalImportResult {
+        val tenderId = tender.id
+        publishProgress(tenderId, EditalImportProgress.Stage.EXTRAINDO)
+        val extraction = pdfExtractor.extract(pdf)
+        val extracted = EditalTextPreparer.normalize(extraction.text)
+        if (!EditalOcrSupport.needsOcr(extraction.scanned, EditalOcrSupport.meaningfulChars(extracted))) {
+            val annexText = collectAnnexText(tender, annexes, PdfTextExtractor.MAX_PAGES - extraction.pagesRead)
+            val full = (extracted + annexText.text).take(PdfTextExtractor.HARD_CHAR_LIMIT)
+            val textPath = editalStore.writeText(tender.companyId, tenderId, full).absolutePath
+            tenderDao.updateEdital(
+                id = tenderId, pdfPath = pdf.absolutePath, textPath = textPath, chars = full.length,
+                pages = extraction.totalPages, scanned = false, registered = true, now = now,
+            )
+            audit.record(
+                AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
+                newValue = "${extraction.totalPages} página(s) · ${full.length} caractere(s)",
+                details = "$origin e texto extraído" +
+                    (if (extraction.truncated) " (lidas ${extraction.pagesRead} de ${extraction.totalPages} páginas)" else "") +
+                    annexText.summary,
+            )
+            return EditalImportResult(chars = full.length, pages = extraction.totalPages, scanned = false, storedPath = pdf.absolutePath)
+        }
+        // Sem camada de texto: guarda o PDF como escaneado e tenta o OCR local em seguida.
+        editalStore.textFile(tender.companyId, tenderId).delete()
+        tenderDao.updateEdital(
+            id = tenderId, pdfPath = pdf.absolutePath, textPath = null, chars = 0,
+            pages = extraction.totalPages, scanned = true, registered = true, now = now,
+        )
+        audit.record(
+            AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
+            result = AuditResult.PENDENTE, newValue = "${extraction.totalPages} página(s) · 0 caractere(s)",
+            details = "$origin sem camada de texto (escaneado); iniciando OCR local",
+        )
+        val ocr = runOcr(tender.copy(editalPdfPath = pdf.absolutePath, editalPages = extraction.totalPages), automatic = true)
+        if (annexes.isEmpty()) return ocr
+        val annexText = collectAnnexText(tender, annexes, PdfTextExtractor.MAX_PAGES - (ocr.pages ?: extraction.totalPages))
+        if (annexText.text.isEmpty()) return ocr
+        val base = editalStore.readText(editalStore.textFile(tender.companyId, tenderId).absolutePath).orEmpty()
+        val full = (base + annexText.text).take(PdfTextExtractor.HARD_CHAR_LIMIT)
+        val file = editalStore.writeText(tender.companyId, tenderId, full)
+        tenderDao.updateEdital(
+            id = tenderId, pdfPath = pdf.absolutePath, textPath = file.absolutePath, chars = full.length,
+            pages = ocr.pages, scanned = true, registered = true, now = System.currentTimeMillis(),
+        )
+        audit.record(
+            AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number, origin = AuditOrigin.SISTEMA,
+            newValue = "${full.length} caractere(s)", details = "Texto dos anexos oficiais concatenado ao edital (OCR)" + annexText.summary,
+        )
+        return ocr.copy(chars = full.length)
+    }
+
+    private class AnnexText(val text: String, val summary: String)
+
+    /**
+     * Baixa e extrai o texto dos anexos oficiais (somente PDFs com camada de texto; sem OCR) até [pageBudget] páginas.
+     * Falha em um anexo não derruba o edital: o anexo é apenas ignorado e citado no resumo da auditoria.
+     */
+    private suspend fun collectAnnexText(tender: Tender, annexes: List<OfficialDocument>, pageBudget: Int): AnnexText {
+        if (annexes.isEmpty()) return AnnexText("", "")
+        var budget = pageBudget
+        val text = StringBuilder()
+        val included = mutableListOf<String>()
+        val skipped = mutableListOf<String>()
+        val temp = File(editalStore.directory(tender.companyId), "${tender.id}.anexo.pdf")
+        for (annex in annexes) {
+            if (budget <= 0) {
+                skipped += "${annex.title} (limite de páginas)"
+                continue
+            }
+            try {
+                publishProgress(tender.id, EditalImportProgress.Stage.BAIXANDO)
+                editalDownloader.download(annex.url, temp)
+                publishProgress(tender.id, EditalImportProgress.Stage.EXTRAINDO)
+                val extraction = pdfExtractor.extract(temp, maxPages = budget)
+                val annexBody = EditalTextPreparer.normalize(extraction.text)
+                if (extraction.scanned || annexBody.isBlank()) {
+                    skipped += "${annex.title} (sem camada de texto)"
+                } else {
+                    text.append("\n\n--- Anexo: ").append(annex.title).append(" ---\n\n").append(annexBody)
+                    included += annex.title
+                    budget -= extraction.pagesRead
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                skipped += "${annex.title} (${e.message ?: "falha"})"
+            } finally {
+                temp.delete()
+            }
+        }
+        val summary = buildString {
+            if (included.isNotEmpty()) append("; anexos: ").append(included.joinToString(", "))
+            if (skipped.isNotEmpty()) append("; anexos ignorados: ").append(skipped.joinToString(", "))
+        }
+        return AnnexText(text.toString(), summary)
     }
 
     /**
@@ -489,7 +667,8 @@ class TenderRepositoryImpl @Inject constructor(
 
     private companion object {
         const val HEURISTIC_PROVIDER_NAME = "Heurística local (sem IA)"
-        const val MAX_PROMPT_CHARS = 60_000
+        // ~50 mil tokens: cabe com folga nos modelos atuais (GPT, Claude, Gemini) e cobre editais completos com TR.
+        const val MAX_PROMPT_CHARS = 200_000
         const val MIN_PASTED_CHARS = 200
     }
 }

@@ -48,6 +48,10 @@ internal data class ComprasGovContratacao(
     val modalidadeNome: String? = null,
     val srp: Boolean? = null,
     val modoDisputaNomePncp: String? = null,
+    /** 5 = "Não se aplica" (dispensa sem disputa), 4 = "Dispensa Com Disputa" (respostas reais de 06/10/2026). */
+    val modoDisputaIdPncp: Int? = null,
+    /** 3 = "Ato que autoriza a Contratação Direta", 2 = "Aviso de Contratação Direta". */
+    val tipoInstrumentoConvocatorioCodigoPncp: Int? = null,
     val amparoLegalNome: String? = null,
     val informacaoComplementar: String? = null,
     val processo: String? = null,
@@ -131,4 +135,18 @@ internal data class ComprasGovItemLegado(
     val criterio_julgamento: String? = null,
     val id_compra: String? = null,
     val id_compra_item: String? = null,
+)
+
+/**
+ * Detalhe de uma contratação no PNCP (`/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}`), só os campos do
+ * enriquecimento de prazo. Verificado em 06/10/2026: `situacaoCompraId` inteiro (1 Divulgada no PNCP, 2 Revogada,
+ * 3 Anulada, 4 Suspensa); datas sem fuso ("2026-10-14T09:00:00"); dispensas sem disputa vêm com as duas datas nulas.
+ */
+@Serializable
+internal data class PncpCompraStatus(
+    val numeroControlePNCP: String? = null,
+    val dataAberturaProposta: String? = null,
+    val dataEncerramentoProposta: String? = null,
+    val situacaoCompraId: Int? = null,
+    val situacaoCompraNome: String? = null,
 )

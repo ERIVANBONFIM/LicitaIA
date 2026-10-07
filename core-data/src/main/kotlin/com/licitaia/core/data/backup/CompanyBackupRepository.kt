@@ -38,8 +38,12 @@ class CompanyBackupRepository @Inject constructor(
     private val limit = 64 * 1024 * 1024
 
     private companion object {
-        /** Versão de schema gravada no backup = versão atual do Room; restauração aceita versões anteriores. */
-        const val BACKUP_SCHEMA = 7
+        /**
+         * Versão de schema gravada no backup = versão atual do Room; restauração aceita versões anteriores.
+         * v8 só acrescentou o cache `relevance_scores`, que NÃO entra no backup (é refeito pela IA).
+         * v9 acrescentou `radars.showNoDispute` e `opportunities.noDispute` (backups antigos recebem o DEFAULT 0).
+         */
+        const val BACKUP_SCHEMA = 9
     }
 
     private fun session() = requireNotNull(holder.current) { "Entre em sua conta." }.also {

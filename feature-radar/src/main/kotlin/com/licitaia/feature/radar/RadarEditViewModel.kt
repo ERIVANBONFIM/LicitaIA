@@ -40,6 +40,8 @@ data class RadarForm(
     val cnae: String = "",
     val preferredObject: String = "",
     val requireLocalSupport: Boolean = false,
+    /** Mostrar dispensas sem disputa (contratação direta). Padrão: ocultas. */
+    val showNoDispute: Boolean = false,
     val active: Boolean = true,
     val nameError: String? = null,
     val keywordsError: String? = null,
@@ -104,7 +106,7 @@ class RadarEditViewModel @Inject constructor(
                 minValue = moneyText(radar.minValue), maxValue = moneyText(radar.maxValue),
                 startDate = radar.startDate, endDate = radar.endDate, minScore = radar.minScore,
                 cnae = radar.cnae.orEmpty(), preferredObject = radar.preferredObject.orEmpty(),
-                requireLocalSupport = radar.requireLocalSupport, active = radar.active,
+                requireLocalSupport = radar.requireLocalSupport, showNoDispute = radar.showNoDispute, active = radar.active,
             )
         }
     }
@@ -190,6 +192,7 @@ class RadarEditViewModel @Inject constructor(
                 cnae = f.cnae.trim().ifBlank { null },
                 preferredObject = f.preferredObject.trim().ifBlank { null },
                 requireLocalSupport = f.requireLocalSupport,
+                showNoDispute = f.showNoDispute,
                 active = f.active,
                 createdAt = base?.createdAt?.takeIf { it > 0 } ?: System.currentTimeMillis(),
             )

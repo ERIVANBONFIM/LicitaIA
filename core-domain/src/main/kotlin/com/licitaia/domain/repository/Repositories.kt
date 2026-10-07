@@ -5,6 +5,8 @@ import com.licitaia.domain.auth.PinVerification
 import com.licitaia.domain.model.AiAuthMode
 import com.licitaia.domain.model.AiConfig
 import com.licitaia.domain.model.AiProviderType
+import com.licitaia.domain.model.AiScoreUpdate
+import com.licitaia.domain.model.AiScoringRequest
 import com.licitaia.domain.model.AppNotification
 import com.licitaia.domain.model.AppSettings
 import com.licitaia.domain.model.AuctioneerMessage
@@ -128,6 +130,20 @@ interface OpportunityRepository {
     suspend fun runRadarWithSources(radarId: Long): Result<SearchOutcome> =
         runRadar(radarId).map { SearchOutcome(it) }
 
+    /**
+     * Notas por IA para os candidatos de [request] (lotes de até 25, um de cada vez, cancelável). Cada emissão traz os
+     * itens já avaliados (score = nota da IA). Sem rede ou com falha do provedor, emite [AiScoreUpdate.failure] e para:
+     * os demais itens continuam com a nota heurística. Padrão: nada a avaliar.
+     */
+    fun scoreWithAi(request: AiScoringRequest): Flow<AiScoreUpdate> = kotlinx.coroutines.flow.emptyFlow()
+
+    /**
+     * Radar com notas por IA aplicadas antes do score mínimo (uso em segundo plano): avalia até [aiLimit] candidatos
+     * ainda sem nota, ignorando [skipIds] (já vistos). Padrão: igual a [runRadar].
+     */
+    suspend fun runRadarWithAi(radarId: Long, aiLimit: Int, skipIds: Set<String> = emptySet()): Result<List<ScoredOpportunity>> =
+        runRadar(radarId)
+
     suspend fun getOpportunity(id: String): Opportunity?
     /** Total de oportunidades encontradas pelos radares ativos da empresa. */
     fun observeRadarMatchCount(companyId: Long): Flow<Int>
@@ -166,6 +182,19 @@ interface TenderRepository {
      * pelo OCR local; `ocr = true` no resultado indica texto reconhecido (conferir trechos importantes).
      */
     suspend fun attachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult>
+
+    /**
+     * Baixa o EDITAL OFICIAL publicado no PNCP (licitações com número de controle PNCP): consulta a lista de
+     * arquivos da contratação, escolhe o documento do tipo "Edital" e anexa também Termo de Referência/anexos
+     * relevantes (texto concatenado com "--- Anexo: <título> ---"). Segue o fluxo de extração + OCR de [attachEdital].
+     */
+    suspend fun fetchOfficialEdital(tenderId: Long): Result<EditalImportResult>
+
+    /**
+     * Motivo da última falha ao baixar o edital oficial (ex.: disparo automático do "Tenho Interesse" sem rede);
+     * null quando não houve falha ou após um download bem-sucedido. Mantido só em memória.
+     */
+    fun observeOfficialEditalError(tenderId: Long): Flow<String?> = kotlinx.coroutines.flow.flowOf(null)
 
     /** Progresso da importação/OCR em andamento para a licitação; null quando não há importação. */
     fun observeEditalImportProgress(tenderId: Long): Flow<EditalImportProgress?>

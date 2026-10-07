@@ -48,7 +48,20 @@ data class PortalWebUiState(
     val keepAliveMinutes: Int = AppSettings().portalKeepAliveMinutes,
     /** Há rede validada. Sem rede a tela mostra "Sem internet — sua sessão continua salva" e o status NÃO muda. */
     val online: Boolean = true,
+    /** O portal tem o fluxo de "Entrar automaticamente com certificado digital" mapeado (hoje só Compras.gov.br). */
+    val autoLoginSupported: Boolean = false,
+    /** "Entrar automaticamente com certificado digital" ligado para este portal/empresa. */
+    val autoLoginOn: Boolean = false,
+    /** CNPJ da empresa ativa (usado só para escolher a linha certa na seleção de empresa do portal). */
+    val companyCnpj: String = "",
 )
+
+/** Aviso do login automático na tela do portal. */
+sealed interface AutoLoginBanner {
+    data object Running : AutoLoginBanner
+    /** Parou e devolveu o controle: "Conclua o login no portal". */
+    data class NeedsUser(val reason: String) : AutoLoginBanner
+}
 
 /**
  * Estado da sessão do portal no navegador interno. Recebe apenas URLs navegadas, o fato de existirem
@@ -111,10 +124,19 @@ class PortalWebViewModel @Inject constructor(
                     keepAliveOn = st.isPortalKeepAliveOn(companyId, p),
                     keepAliveMinutes = st.portalKeepAliveMinutes,
                     online = online,
+                    autoLoginSupported = CertAutoLogin.supports(p),
+                    autoLoginOn = CertAutoLogin.supports(p) && st.isAutoCertLoginOn(companyId, p),
+                    companyCnpj = session.activeCompany.cnpj,
                 )
             }.catch { emit(PortalWebUiState(portal = p, companyId = companyId, ready = true, online = connectivity.isOnline)) }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PortalWebUiState(portal = portal))
+
+    /** "Compras.gov.br instável" (503 do portal) para esta empresa/portal; null = sem instabilidade. */
+    val unstable: StateFlow<PortalInstability.State?> = auth.session.flatMapLatest { session ->
+        val p = portal
+        if (session == null || p == null) flowOf(null) else keepAlive.unstableState(session.activeCompany.id, p)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private fun effectiveStatus(persisted: PortalConnectionStatus): PortalConnectionStatus {
         val o = optimisticStatus ?: return persisted
@@ -130,7 +152,14 @@ class PortalWebViewModel @Inject constructor(
      * @param contentExpired resultado da checagem de conteúdo desta página (false = não avaliado / sem aviso).
      * @return BLOCKED quando a URL está fora da allowlist (a tela decide bloquear).
      */
-    fun onNavigated(url: String, hasCookies: Boolean, contentExpired: Boolean = false, loadFailed: Boolean = false): PortalWebPolicy.Signal {
+    fun onNavigated(
+        url: String,
+        hasCookies: Boolean,
+        contentExpired: Boolean = false,
+        loadFailed: Boolean = false,
+        /** Entrada oficial (inicial ou reentrada) em andamento: a página de login dela não é "sessão caiu". */
+        entering: Boolean = false,
+    ): PortalWebPolicy.Signal {
         val p = portal ?: return PortalWebPolicy.Signal.NONE
         val s = state.value
         val companyId = s.companyId ?: return PortalWebPolicy.Signal.NONE
@@ -145,11 +174,18 @@ class PortalWebViewModel @Inject constructor(
         // Mesma URL avaliada mais de uma vez (history + finished + conteúdo): reaproveita o "anterior" da primeira avaliação.
         val prevWasLogin = if (url == lastUrl) lastPrevWasLogin else lastWasLogin
         val status = effectiveStatus(s.status)
-        val signal = PortalWebPolicy.evaluate(p, url, hasCookies, prevWasLogin, status, contentExpired, online = online, loadFailed = loadFailed)
+        val evaluated = PortalWebPolicy.evaluate(p, url, hasCookies, prevWasLogin, status, contentExpired, online = online, loadFailed = loadFailed)
+        // Durante a entrada/reentrada quem conclui expirado é o EntryGate (só se o login do gov.br não for superado).
+        val signal = if (entering && evaluated == PortalWebPolicy.Signal.EXPIRED && isLogin) PortalWebPolicy.Signal.NONE else evaluated
+        // "Verificando sessão…": a primeira página conclusiva decide (área logada → aberta; gov.br público → login).
+        if (signal != PortalWebPolicy.Signal.BLOCKED) {
+            _sessionCheck.value = PortalWebPolicy.resolveSessionCheck(p, _sessionCheck.value, url, signal, contentExpired)
+        }
         if (signal != PortalWebPolicy.Signal.BLOCKED) {
             lastPrevWasLogin = prevWasLogin
             lastUrl = url
-            lastWasLogin = isLogin
+            // Login (ou página de passagem do Comprasnet logo após o login) vale como "anterior era login".
+            lastWasLogin = PortalWebPolicy.carriesLoginFlag(p, url, prevWasLogin) || isLogin
             PortalWebPolicy.host(url)?.let { visitedHosts += "https://$it/" }
         }
         when (signal) {
@@ -157,11 +193,56 @@ class PortalWebViewModel @Inject constructor(
             PortalWebPolicy.Signal.EXPIRED -> scheduleExpire(companyId, p)
             else -> Unit
         }
+        // Status já era CONECTADO (sem novo CONNECTED) e a aba chegou à área logada: a instabilidade também acabou.
+        if (signal == PortalWebPolicy.Signal.NONE && unstable.value != null && !contentExpired &&
+            status == PortalConnectionStatus.CONECTADO && PortalWebPolicy.isLoggedArea(p, url)
+        ) {
+            keepAlive.onPortalConnected(companyId, p)
+        }
         // "Voltar para onde estava": guarda a página da área logada (sanitizada), nunca com aviso de sessão encerrada.
         val loggedNow = signal == PortalWebPolicy.Signal.CONNECTED ||
             (signal == PortalWebPolicy.Signal.NONE && status == PortalConnectionStatus.CONECTADO && !contentExpired)
         if (loggedNow) rememberResumeUrl(companyId, p, url)
         return signal
+    }
+
+    /** Sessão aberta agora (status persistido ou recém-sinalizado nesta aba). */
+    fun sessionOpen(): Boolean = effectiveStatus(state.value.status) == PortalConnectionStatus.CONECTADO
+
+    private val _sessionCheck = MutableStateFlow(PortalWebPolicy.SessionCheck.NONE)
+    /** Selo "Verificando sessão…" / "Faça login no portal" enquanto a aba sem estado confirma o status persistido. */
+    val sessionCheck: StateFlow<PortalWebPolicy.SessionCheck> = _sessionCheck
+
+    /** A tela abriu um WebView sem estado: com status CONECTADO, o selo fica "Verificando sessão…" até a 1ª página conclusiva. */
+    fun beginSessionCheck(freshTab: Boolean): Boolean {
+        val p = portal ?: return false
+        val check = PortalWebPolicy.initialSessionCheck(p, effectiveStatus(state.value.status), freshTab)
+        if (check == PortalWebPolicy.SessionCheck.VERIFYING) _sessionCheck.value = check
+        return check == PortalWebPolicy.SessionCheck.VERIFYING
+    }
+
+    fun isVerifyingSession(): Boolean = _sessionCheck.value == PortalWebPolicy.SessionCheck.VERIFYING
+
+    /**
+     * A aba caiu no www.gov.br público vindo do portal (ou com a sessão marcada como aberta): NÃO está logada. Marca
+     * SESSAO_EXPIRADA na hora (página carregada com rede; não depende de confirmação) se estava CONECTADO. Logo após
+     * abrir ("Verificando sessão…") o aviso é "Faça login no portal", não "sessão expirada". O relogin automático
+     * NÃO é disparado daqui: a tela navega para a entrada oficial e o EntryGate inicia o login automático nela.
+     */
+    fun onLoginRequired() {
+        val p = portal ?: return
+        val s = state.value
+        val companyId = s.companyId ?: return
+        cancelPendingExpire()
+        reloginTried = true
+        if (_sessionCheck.value == PortalWebPolicy.SessionCheck.VERIFYING) _sessionCheck.value = PortalWebPolicy.SessionCheck.LOGIN_REQUIRED
+        if (effectiveStatus(s.status) != PortalConnectionStatus.CONECTADO) return
+        mark(companyId, p, loggedIn = false)
+    }
+
+    /** Aviso curto na tela (snackbar). */
+    fun notify(message: String) {
+        viewModelScope.launch { _events.send(message) }
     }
 
     private fun rememberResumeUrl(companyId: Long, p: Portal, url: String) {
@@ -176,6 +257,30 @@ class PortalWebViewModel @Inject constructor(
      * originou não conta como sessão encerrada.
      */
     fun onLoadFailed() = cancelPendingExpire()
+
+    /**
+     * "Não autorizado" no cnetmobile: a tela volta UMA vez à área de trabalho (intro.htm) e reabre "Licitação e Dispensa
+     * (novo)" pelo link do portal. Não marca expirado; avisa
+     * "Reconectando ao …" e descarta qualquer EXPIRED pendente.
+     */
+    fun onReconnecting() {
+        val p = portal ?: return
+        cancelPendingExpire()
+        viewModelScope.launch { _events.send("Reconectando ao ${p.displayName}…") }
+    }
+
+    /**
+     * A entrada/reentrada terminou no login do gov.br sem chegar à área logada (e o login automático está desligado ou
+     * já parou): marca SESSAO_EXPIRADA (com o alerta) se estava CONECTADO. Não dispara outro relogin automático.
+     */
+    fun onEntryFailed() {
+        val p = portal ?: return
+        val s = state.value
+        val companyId = s.companyId ?: return
+        reloginTried = true
+        if (_sessionCheck.value == PortalWebPolicy.SessionCheck.VERIFYING) _sessionCheck.value = PortalWebPolicy.SessionCheck.LOGIN_REQUIRED
+        if (effectiveStatus(s.status) == PortalConnectionStatus.CONECTADO) scheduleExpire(companyId, p)
+    }
 
     private var pendingExpire: Job? = null
 
@@ -199,9 +304,83 @@ class PortalWebViewModel @Inject constructor(
     private fun mark(companyId: Long, p: Portal, loggedIn: Boolean) {
         optimisticStatus = if (loggedIn) PortalConnectionStatus.CONECTADO else PortalConnectionStatus.SESSAO_EXPIRADA
         optimisticAt = System.currentTimeMillis()
+        // Logo após abrir (a verificação concluiu "sem sessão"): o aviso é "Faça login no portal", não "sessão expirada".
+        val justOpened = _sessionCheck.value != PortalWebPolicy.SessionCheck.NONE
+        if (loggedIn) {
+            reloginTried = false
+            _sessionCheck.value = PortalWebPolicy.SessionCheck.NONE
+            if (_autoLoginBanner.value is AutoLoginBanner.NeedsUser) _autoLoginBanner.value = null
+            // Chegou à área logada: encerra o "portal instável" (e avisa "voltou — você está conectado", se havia).
+            keepAlive.onPortalConnected(companyId, p)
+        }
         viewModelScope.launch {
             runCatching { portals.markSessionDetected(companyId, p, loggedIn) }
-                .onSuccess { _events.send(if (loggedIn) "Sessão aberta em ${p.displayName}" else "${p.displayName}: sessão expirada — faça login novamente") }
+                .onSuccess {
+                    _events.send(
+                        when {
+                            loggedIn -> "Sessão aberta em ${p.displayName}"
+                            justOpened -> "${p.displayName}: faça login no portal"
+                            else -> "${p.displayName}: sessão expirada — faça login novamente"
+                        },
+                    )
+                }
+            // Sessão caiu com a tela aberta e o login automático ligado: UMA tentativa por evento de reconexão.
+            if (!loggedIn && state.value.autoLoginOn && !reloginTried) {
+                reloginTried = true
+                _autoReloginRequests.send(Unit)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ login automático com certificado
+
+    private val _autoLoginBanner = MutableStateFlow<AutoLoginBanner?>(null)
+    val autoLoginBanner: StateFlow<AutoLoginBanner?> = _autoLoginBanner
+
+    /** Pedidos de relogin automático (sessão expirou com a tela aberta). A tela inicia no WebView retido. */
+    private val _autoReloginRequests = Channel<Unit>(Channel.CONFLATED)
+    val autoReloginRequests = _autoReloginRequests.receiveAsFlow()
+    private var reloginTried = false
+
+    fun onAutoLoginStarted() {
+        _autoLoginBanner.value = AutoLoginBanner.Running
+    }
+
+    fun dismissAutoLoginBanner() {
+        _autoLoginBanner.value = null
+    }
+
+    /** Resultado de uma tentativa iniciada pela tela: aviso + auditoria CONEXAO_PORTAL (sem URLs). */
+    fun onAutoLoginOutcome(outcome: CertAutoLogin.Outcome) {
+        val p = portal ?: return
+        val companyId = state.value.companyId ?: return
+        _autoLoginBanner.value = when {
+            // 503 do portal: o aviso "Compras.gov.br instável" (com "Tentar agora") substitui o "Conclua o login".
+            outcome is CertAutoLogin.Outcome.Stopped && outcome.reason == CertAutoLogin.StopReason.PORTAL_UNSTABLE -> null
+            outcome is CertAutoLogin.Outcome.Stopped -> AutoLoginBanner.NeedsUser(outcome.reason.userText)
+            else -> null
+        }
+        val details = when (outcome) {
+            CertAutoLogin.Outcome.Success -> "Login automático com certificado: sucesso"
+            CertAutoLogin.Outcome.NotNeeded -> return
+            is CertAutoLogin.Outcome.Stopped -> "Login automático com certificado: ${outcome.reason.auditText}"
+        }
+        viewModelScope.launch { runCatching { portals.auditKeepAlive(companyId, p, details) } }
+    }
+
+    /** Switch "Entrar automaticamente com certificado digital" (menu ⋮; auditado). */
+    fun setAutoCertLogin(enabled: Boolean) {
+        val p = portal ?: return
+        val companyId = state.value.companyId ?: return
+        viewModelScope.launch {
+            runCatching { keepAlive.setAutoCertLogin(companyId, p, enabled) }
+                .onSuccess {
+                    _events.send(
+                        if (enabled) "Login automático com certificado ligado: o app só clica nas etapas do login; CAPTCHA e códigos ficam com você."
+                        else "Login automático com certificado desligado",
+                    )
+                }
+                .onFailure { _events.send(it.message ?: "Não foi possível alterar a preferência") }
         }
     }
 
@@ -234,8 +413,13 @@ class PortalWebViewModel @Inject constructor(
             }
             // O WebView retido guarda o token da SPA em sessionStorage: descarta-o (a tela cria um novo).
             runCatching { webViews.discard(companyId, p) }
+            // Saiu do portal: para as novas tentativas do "portal instável".
+            runCatching { keepAlive.clearUnstable(companyId, p) }
+            _autoLoginBanner.value = null
+            reloginTried = true // saiu de propósito: nada de relogin automático nesta tela
             lastUrl = null; lastWasLogin = null; lastPrevWasLogin = null; lastSavedResumeUrl = null
             optimisticStatus = null
+            _sessionCheck.value = PortalWebPolicy.SessionCheck.NONE
             busy.value = false
             result.onSuccess { _events.send("Você saiu de ${p.displayName}"); onDone() }
                 .onFailure { _events.send(it.message ?: "Não foi possível encerrar a sessão") }

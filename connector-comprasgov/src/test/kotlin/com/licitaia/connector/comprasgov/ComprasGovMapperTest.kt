@@ -40,6 +40,32 @@ class ComprasGovMapperTest {
         assertNull(ComprasGovPncpRef.parse(null))
     }
 
+    /** Campos reais de `1_consultarContratacoes_PNCP_14133?codigoModalidade=6` (MG, 20/09–01/10/2026). */
+    @Test
+    fun `dispensa sem disputa e marcada pelo modo de disputa Nao se aplica`() {
+        val semDisputa = """{"resultado":[{"numeroControlePNCP":"18338194000127-1-000123/2026","codigoModalidade":6,
+            "modalidadeIdPncp":8,"modalidadeNome":"Dispensa","modoDisputaIdPncp":5,"modoDisputaNomePncp":"Não se aplica",
+            "tipoInstrumentoConvocatorioCodigoPncp":3,"tipoInstrumentoConvocatorioNome":"Ato que autoriza a Contratação Direta",
+            "objetoCompra":"Aquisição de material","dataPublicacaoPncp":"2026-09-22T10:00:00",
+            "dataAberturaPropostaPncp":null,"dataEncerramentoPropostaPncp":null}],"totalRegistros":1}"""
+        val comDisputa = """{"resultado":[{"numeroControlePNCP":"18338194000127-1-000124/2026","codigoModalidade":6,
+            "modalidadeIdPncp":8,"modoDisputaIdPncp":4,"modoDisputaNomePncp":"Dispensa Com Disputa",
+            "tipoInstrumentoConvocatorioCodigoPncp":2,"objetoCompra":"Aquisição de material",
+            "dataAberturaPropostaPncp":"2026-09-22T08:00:00","dataEncerramentoPropostaPncp":"2026-09-25T08:00:00"}],"totalRegistros":1}"""
+        val a = ComprasGovMapper.toOpportunity(json.decodeFromString(ComprasGovPage.serializer(ComprasGovContratacao.serializer()), semDisputa).resultado.single())!!
+        val b = ComprasGovMapper.toOpportunity(json.decodeFromString(ComprasGovPage.serializer(ComprasGovContratacao.serializer()), comDisputa).resultado.single())!!
+        assertTrue(a.noDispute)
+        assertEquals(false, b.noDispute)
+        // Dispensa com disputa ainda sem prazo publicado continua "com disputa" (modo informado).
+        val semPrazo = json.decodeFromString(ComprasGovPage.serializer(ComprasGovContratacao.serializer()), comDisputa).resultado.single()
+            .copy(dataEncerramentoPropostaPncp = null)
+        assertEquals(false, ComprasGovMapper.toOpportunity(semPrazo)!!.noDispute)
+        // Sem modo de disputa no payload: dispensa sem encerramento = sem disputa; pregão nunca.
+        val semModo = semPrazo.copy(modoDisputaIdPncp = null, modoDisputaNomePncp = null, tipoInstrumentoConvocatorioCodigoPncp = null)
+        assertTrue(ComprasGovMapper.toOpportunity(semModo)!!.noDispute)
+        assertEquals(false, ComprasGovMapper.toOpportunity(semModo.copy(codigoModalidade = 5, modalidadeIdPncp = 6))!!.noDispute)
+    }
+
     @Test
     fun `referencia legada e reversivel para id_compra`() {
         val ref = ComprasGovLegacyRef.fromIdCompra("15200505000272023")
@@ -108,6 +134,33 @@ class ComprasGovMapperTest {
         val backup = mapped.first { it.id == "COMPRAS_GOV:23664303000104-1-000045/2026" }
         assertEquals(Segment.TI, backup.segment) // "appliance para armazenamento de backup" → vocabulário de TI ("backup")
         assertEquals(0.0, backup.estimatedValue, 0.0) // valor não informado → 0, nunca inventado
+    }
+
+    @Test
+    fun `segmento - almoxarifado virtual nao e telecom e link de internet em fibra e`() {
+        assertTrue(
+            Segment.TELECOM_ISP != ComprasGovMapper.inferSegment(
+                "Contratação de serviços contínuos, terceirizados, de almoxarifado virtual, sob demanda, visando o suprimento de materiais",
+            ),
+        )
+        assertEquals(
+            Segment.TELECOM_ISP,
+            ComprasGovMapper.inferSegment("Serviço de link para conexões dedicadas de acesso à Internet, por meio de fibra óptica"),
+        )
+    }
+
+    @Test
+    fun `sem data de encerramento o prazo fica nao informado e nunca vira publicacao ou abertura`() {
+        val page = json.decodeFromString(ComprasGovPage.serializer(ComprasGovContratacao.serializer()), fixture("contratacoes_14133_pregao_mg_p40.json"))
+        val dto = page.resultado.first().copy(
+            dataEncerramentoPropostaPncp = null,
+            dataAberturaPropostaPncp = "2026-09-16T08:00:00",
+            dataPublicacaoPncp = "2026-09-16T07:00:00",
+        )
+        val opp = ComprasGovMapper.toOpportunity(dto)!!
+        assertEquals(com.licitaia.domain.model.Opportunity.DEADLINE_UNKNOWN, opp.proposalDeadline)
+        assertTrue(!opp.hasProposalDeadline)
+        assertEquals(saoPaulo(2026, 9, 16, 7, 0, 0), opp.publishedAt)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.licitaia.connector.comprasgov
 
 import com.licitaia.domain.model.Modality
+import com.licitaia.domain.model.NoDisputeRule
 import com.licitaia.domain.model.Opportunity
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.Segment
@@ -181,9 +182,10 @@ internal object ComprasGovMapper {
         val id = pncpRef?.opportunityId ?: legacyRef?.opportunityId ?: return null
 
         val published = parseDate(dto.dataPublicacaoPncp) ?: parseDate(dto.dataInclusaoPncp) ?: 0L
-        val opening = parseDate(dto.dataAberturaPropostaPncp)
-        val closing = parseDate(dto.dataEncerramentoPropostaPncp)
-        val deadline = closing ?: opening ?: published
+        // Prazo = SOMENTE o fim do recebimento de propostas. A abertura (início do recebimento) e a publicação
+        // não são prazo: antes caíam aqui quando o encerramento vinha nulo e geravam "Propostas até <data passada>".
+        // Sem encerramento → DEADLINE_UNKNOWN ("prazo não informado"); o repositório tenta a data do PNCP.
+        val deadline = parseDate(dto.dataEncerramentoPropostaPncp) ?: Opportunity.DEADLINE_UNKNOWN
 
         val objeto = dto.objetoCompra?.trim().orEmpty()
         val agencyName = dto.orgaoEntidadeRazaoSocial?.trim().orEmpty().ifEmpty { "Órgão não informado" }
@@ -225,6 +227,13 @@ internal object ComprasGovMapper {
             requiresLocalSupport = false,
             keywords = keywords,
             editalUrl = pncpRef?.publicPageUrl ?: Portal.COMPRAS_GOV.publicUrl,
+            noDispute = NoDisputeRule.isNoDispute(
+                modality = modality,
+                modoDisputaId = dto.modoDisputaIdPncp,
+                modoDisputaNome = dto.modoDisputaNomePncp,
+                tipoInstrumentoCodigo = dto.tipoInstrumentoConvocatorioCodigoPncp,
+                hasProposalDeadline = deadline > Opportunity.DEADLINE_UNKNOWN,
+            ),
         )
     }
 
@@ -257,8 +266,9 @@ internal object ComprasGovMapper {
             ?: return null
 
         val published = parseDate(dto.data_publicacao) ?: parseDate(dto.data_entrega_edital) ?: 0L
+        // Lei 8.666: a "abertura das propostas" é a sessão, limite para entregar a proposta. Nunca a publicação.
         val opening = parseDate(dto.data_abertura_proposta)
-        val deadline = opening ?: parseDate(dto.data_entrega_proposta) ?: published
+        val deadline = opening ?: parseDate(dto.data_entrega_proposta) ?: Opportunity.DEADLINE_UNKNOWN
         val objeto = dto.objeto?.trim().orEmpty()
 
         val keywords = buildList {

@@ -185,10 +185,85 @@ class DatabaseMigrationsTest {
         verify(exactly = 0) { db.execSQL(any()) }
     }
 
+    @Test fun version8OnlyCreatesRelevanceScoreCache() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_7_TO_8.migrate(db)
+        assertEquals(1, sql.size)
+        val create = sql.single()
+        assertTrue(create.startsWith("CREATE TABLE IF NOT EXISTS `relevance_scores`"))
+        assertTrue(create.contains("PRIMARY KEY(`opportunityId`, `companyId`, `radarSignature`)"))
+        listOf("`score` INTEGER NOT NULL", "`reason` TEXT NOT NULL", "`provider` TEXT NOT NULL", "`createdAt` INTEGER NOT NULL")
+            .forEach { assertTrue(it, create.contains(it)) }
+        assertTrue(sql.none { it.contains("DROP", true) || it.contains("DELETE", true) || it.contains("ALTER", true) })
+    }
+
+    /** A DDL da migração precisa ser idêntica à exportada pelo Room (senão a validação do schema falha ao abrir o banco). */
+    @Test fun version8DdlMatchesExportedSchema() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/8.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/8.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val expected = DatabaseMigrations.CREATE_RELEVANCE_SCORES.replace("relevance_scores", "\${TABLE_NAME}")
+        assertTrue("8.json sem a DDL esperada", schema.readText().contains(expected.replace("\"", "\\\"")))
+        assertTrue(schema.readText().contains("\"version\": 8"))
+    }
+
+    @Test fun version9AddsNoDisputeColumnsWithDefaultHidden() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val radars = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(radars)") } returns radars
+        every { radars.moveToNext() } returnsMany listOf(true, true, false)
+        every { radars.getColumnIndexOrThrow("name") } returns 0
+        every { radars.getString(0) } returnsMany listOf("id", "requireLocalSupport")
+        val opportunities = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(opportunities)") } returns opportunities
+        every { opportunities.moveToNext() } returnsMany listOf(true, true, false)
+        every { opportunities.getColumnIndexOrThrow("name") } returns 0
+        every { opportunities.getString(0) } returnsMany listOf("id", "platformName")
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_8_TO_9.migrate(db)
+        assertEquals(
+            listOf(
+                "ALTER TABLE radars ADD COLUMN showNoDispute INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE opportunities ADD COLUMN noDispute INTEGER NOT NULL DEFAULT 0",
+            ),
+            sql,
+        )
+        assertEquals(8, DatabaseMigrations.FROM_8_TO_9.startVersion)
+        assertEquals(9, DatabaseMigrations.FROM_8_TO_9.endVersion)
+    }
+
+    @Test fun version9IsIdempotent() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val radars = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(radars)") } returns radars
+        every { radars.moveToNext() } returnsMany listOf(true, false)
+        every { radars.getColumnIndexOrThrow("name") } returns 0
+        every { radars.getString(0) } returns "showNoDispute"
+        val opportunities = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(opportunities)") } returns opportunities
+        every { opportunities.moveToNext() } returnsMany listOf(true, false)
+        every { opportunities.getColumnIndexOrThrow("name") } returns 0
+        every { opportunities.getString(0) } returns "noDispute"
+        DatabaseMigrations.FROM_8_TO_9.migrate(db)
+        verify(exactly = 0) { db.execSQL(any()) }
+    }
+
+    /** As colunas da v9 no schema exportado pelo Room têm o mesmo default da migração (senão a validação falha). */
+    @Test fun version9SchemaMatchesMigration() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/9.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/9.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val text = schema.readText()
+        assertTrue(text.contains("\"version\": 9"))
+        assertTrue(text.contains("`showNoDispute` INTEGER NOT NULL DEFAULT 0"))
+        assertTrue(text.contains("`noDispute` INTEGER NOT NULL DEFAULT 0"))
+    }
+
     @Test fun allMigrationsAreOrderedAndContiguous() {
         val all = DatabaseMigrations.ALL.toList()
         assertEquals(1, all.first().startVersion)
-        assertEquals(7, all.last().endVersion)
+        assertEquals(9, all.last().endVersion)
         all.zipWithNext().forEach { (a, b) -> assertEquals(a.endVersion, b.startVersion) }
     }
 }

@@ -84,6 +84,8 @@ data class RadarEntity(
     val requireLocalSupport: Boolean,
     val active: Boolean,
     val createdAt: Long,
+    /** Mostrar dispensas sem disputa (contratação direta). Versão 9. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val showNoDispute: Boolean = false,
 )
 
 /** Cache local das oportunidades vistas nos portais (modo offline). */
@@ -108,6 +110,8 @@ data class OpportunityEntity(
     val cachedAt: Long,
     /** Plataforma de origem informada pelo PNCP (usuarioNome). Versão 7. */
     @androidx.room.ColumnInfo(defaultValue = "NULL") val platformName: String? = null,
+    /** Dispensa sem disputa (contratação direta). Versão 9. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val noDispute: Boolean = false,
 )
 
 @Entity(
@@ -343,4 +347,19 @@ data class CompetitionEntity(
     val ourMarginPct: Double,
     val bidsCount: Int,
     val behavior: String,
+)
+
+/**
+ * Cache das notas de relevância por IA (v8). Chave: oportunidade × empresa × assinatura do radar (hash de
+ * segmento + palavras + objeto preferencial); mudou o radar, a nota é pedida de novo. Cache local: não entra no backup.
+ */
+@Entity(tableName = "relevance_scores", primaryKeys = ["opportunityId", "companyId", "radarSignature"])
+data class RelevanceScoreEntity(
+    val opportunityId: String,
+    val companyId: Long,
+    val radarSignature: String,
+    val score: Int,
+    val reason: String,
+    val provider: String,
+    val createdAt: Long,
 )

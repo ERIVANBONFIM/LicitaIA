@@ -29,7 +29,34 @@ interface AIProvider {
     suspend fun draftMessage(message: AuctioneerMessage, company: Company): MessageDraft
     suspend fun draftAppeal(tender: Tender, grounds: String, company: Company): String
     suspend fun compareDocuments(required: List<DocumentType>, available: List<CompanyDocument>, now: Long): DocumentComparison
+
+    /**
+     * Nota de relevância 0..100 para um lote (até [MAX_RELEVANCE_BATCH]) de objetos de licitação: "o objeto é algo que
+     * esta empresa fornece?". [radarHint] descreve segmento/palavras/CNAE/objeto preferencial (sem dados pessoais).
+     * Itens sem nota na resposta ficam fora da lista devolvida. Padrão (heurística/mock): lista vazia = sem nota por
+     * IA, e quem chama mantém a nota heurística marcada como tal.
+     */
+    suspend fun rateRelevance(company: Company, radarHint: String, items: List<RelevanceItem>): List<RelevanceScore> = emptyList()
+
+    companion object {
+        const val MAX_RELEVANCE_BATCH = 25
+    }
 }
+
+/** Objeto a avaliar (sem dados pessoais): id, objeto, órgão e modalidade. */
+data class RelevanceItem(
+    val id: String,
+    val objectDescription: String,
+    val agency: String,
+    val modality: String,
+)
+
+/** Nota 0..100 com motivo curto, devolvida pelo provedor de IA. */
+data class RelevanceScore(
+    val id: String,
+    val score: Int,
+    val reason: String,
+)
 
 data class TenderAnalysisRequest(
     val tender: Tender,

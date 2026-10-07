@@ -38,6 +38,25 @@ class PncpMapperTest {
         assertNull(PncpControlNumber.parse(null))
     }
 
+    /** Campos reais de `/v1/contratacoes/publicacao?codigoModalidadeContratacao=8` (MG, 01–03/10/2026). */
+    @Test
+    fun `dispensa sem dataEncerramentoProposta e marcada como sem disputa`() {
+        val base = PncpContratacao(
+            numeroControlePNCP = "18338194000127-1-000123/2026", modalidadeId = 8, modalidadeNome = "Dispensa",
+            objetoCompra = "Aquisição de material", dataPublicacaoPncp = "2026-10-01T10:00:00",
+        )
+        val semDisputa = base.copy(modoDisputaId = 5, modoDisputaNome = "Não se aplica", tipoInstrumentoConvocatorioCodigo = 3)
+        assertTrue(PncpMapper.toOpportunity(semDisputa)!!.noDispute)
+        // Sem modo de disputa: só a ausência do encerramento já indica contratação direta.
+        assertTrue(PncpMapper.toOpportunity(base)!!.noDispute)
+        val comDisputa = base.copy(
+            modoDisputaId = 4, modoDisputaNome = "Dispensa Com Disputa", tipoInstrumentoConvocatorioCodigo = 2,
+            dataEncerramentoProposta = "2026-10-10T08:00:00",
+        )
+        assertEquals(false, PncpMapper.toOpportunity(comDisputa)!!.noDispute)
+        assertEquals(false, PncpMapper.toOpportunity(base.copy(modalidadeId = 6))!!.noDispute)
+    }
+
     @Test
     fun `codigos de modalidade confirmados pela API`() {
         assertEquals(6, PncpModalities.codeOf(Modality.PREGAO_ELETRONICO))

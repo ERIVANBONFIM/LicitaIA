@@ -142,7 +142,6 @@ class PortalWebPolicyTest {
         assertEquals(Signal.NONE, PortalWebPolicy.evaluate(Portal.LICITANET, "https://licita-sso.licitanet.com.br/login", true, previousWasLoginPage = true, currentStatus = disc))
         assertEquals(Signal.CONNECTED, PortalWebPolicy.evaluate(Portal.LICITANET, "https://portal.licitanet.com.br/fornecedor/painel", true, previousWasLoginPage = true, currentStatus = disc))
         assertEquals(Signal.EXPIRED, PortalWebPolicy.evaluate(Portal.LICITANET, "https://portal.licitanet.com.br/login", true, previousWasLoginPage = false, currentStatus = conn))
-        assertNull(PortalWebPolicy.postLoginRedirect(Portal.LICITANET, "https://portal.licitanet.com.br/fornecedor/painel"))
 
         // PCP: /18/loginext/ → Keycloak → /18/loginext/oAuth/ (callback, ainda login) → área logada em operacao.*.
         val pcp = Portal.PORTAL_COMPRAS_PUBLICAS
@@ -150,7 +149,6 @@ class PortalWebPolicyTest {
         assertEquals(Signal.NONE, PortalWebPolicy.evaluate(pcp, "https://operacao.portaldecompraspublicas.com.br/18/loginext/oAuth/?code=x", true, previousWasLoginPage = true, currentStatus = disc))
         assertEquals(Signal.CONNECTED, PortalWebPolicy.evaluate(pcp, "https://operacao.portaldecompraspublicas.com.br/18/Painel/", true, previousWasLoginPage = true, currentStatus = disc))
         assertEquals(Signal.EXPIRED, PortalWebPolicy.evaluate(pcp, "https://iam.secure.portaldecompraspublicas.com.br/realms/Portal/protocol/openid-connect/auth", false, previousWasLoginPage = false, currentStatus = conn))
-        assertNull(PortalWebPolicy.postLoginRedirect(pcp, "https://operacao.portaldecompraspublicas.com.br/18/Painel/"))
     }
 
     @Test
@@ -275,23 +273,21 @@ class PortalContentAndResumeTest {
 
     @Test
     fun `sanitizacao da ultima url`() {
-        // cnetmobile sem token: URL inteira.
-        assertEquals(area, PortalWebPolicy.sanitizeResumeUrl(p, area))
+        // cnetmobile NUNCA é guardado (reabri-lo por URL dá "Não autorizado"), com ou sem token.
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, area))
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=90001&access_token=abc"))
+        // Área de trabalho e Comprasnet seguro: guardados, sem parâmetros sensíveis nem jsessionid/fragmento com token.
+        assertEquals("https://www.comprasnet.gov.br/intro.htm", PortalWebPolicy.sanitizeResumeUrl(p, "https://www.comprasnet.gov.br/intro.htm"))
         assertEquals(
-            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=90001",
-            PortalWebPolicy.sanitizeResumeUrl(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=90001&access_token=abc&code=x&state=y"),
+            "https://www.comprasnet.gov.br/seguro/fornecedor/menu.asp?x=1",
+            PortalWebPolicy.sanitizeResumeUrl(p, "https://www.comprasnet.gov.br/seguro/fornecedor/menu.asp;jsessionid=ABC?x=1&access_token=abc&code=x&state=y#id_token=zzz"),
         )
-        // Fragmento com token é descartado; jsessionid na matriz do caminho também.
-        assertEquals(
-            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/participacoes",
-            PortalWebPolicy.sanitizeResumeUrl(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/participacoes;jsessionid=ABC#id_token=zzz"),
-        )
-        // Login, outro host (portal com homeUrl), HTTP e fora da allowlist: não guarda.
+        // Login, HTTP e fora da allowlist: não guarda.
         assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://sso.acesso.gov.br/login?client_id=x"))
-        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://www.comprasnet.gov.br/intro.htm"))
-        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "http://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/"))
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://www.comprasnet.gov.br/seguro/loginPortal.asp?perfil=1"))
+        assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "http://www.comprasnet.gov.br/intro.htm"))
         assertNull(PortalWebPolicy.sanitizeResumeUrl(p, "https://evil.com/comprasnet-web/"))
-        // Portal sem homeUrl: qualquer página não-login da allowlist, sem parâmetros sensíveis.
+        // Outros portais: qualquer página não-login da allowlist, sem parâmetros sensíveis.
         assertEquals(
             "https://bllcompras.com/Process/List?page=2",
             PortalWebPolicy.sanitizeResumeUrl(Portal.BLL, "https://bllcompras.com/Process/List?page=2&Token=1&senha=x&SessionId=9"),
@@ -302,17 +298,23 @@ class PortalContentAndResumeTest {
 
     @Test
     fun `url de abertura e do keep-alive`() {
+        val intro = "https://www.comprasnet.gov.br/intro.htm"
+        val menu = "https://www.comprasnet.gov.br/seguro/fornecedor/menu.asp"
         val last = "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/participacoes"
-        assertEquals(last, PortalWebPolicy.openUrl(p, conn, last))
-        assertEquals(PortalWebPolicy.rules(p).homeUrl, PortalWebPolicy.openUrl(p, conn, null))
-        assertEquals(PortalWebPolicy.startUrl(p), PortalWebPolicy.openUrl(p, exp, last))
-        assertEquals(PortalWebPolicy.startUrl(p), PortalWebPolicy.openUrl(p, disc, last))
-        // URL guardada inválida é revalidada e ignorada.
-        assertEquals(PortalWebPolicy.rules(p).homeUrl, PortalWebPolicy.openUrl(p, conn, "https://sso.acesso.gov.br/login"))
+        // Compras.gov.br, aba sem estado: SEMPRE a entrada oficial (intro.htm sem sessão cai no www.gov.br público).
+        val entry = PortalWebPolicy.startUrl(p)
+        listOf(last, null, menu, intro, "https://sso.acesso.gov.br/login").forEach { l ->
+            assertEquals(entry, PortalWebPolicy.openUrl(p, conn, l))
+        }
+        assertEquals(entry, PortalWebPolicy.openUrl(p, exp, last))
+        assertEquals(entry, PortalWebPolicy.openUrl(p, disc, last))
         assertEquals(PortalWebPolicy.startUrl(Portal.BLL), PortalWebPolicy.openUrl(Portal.BLL, conn, null))
-        assertEquals(last, PortalWebPolicy.keepAliveUrl(p, last))
-        assertEquals(PortalWebPolicy.rules(p).homeUrl, PortalWebPolicy.keepAliveUrl(p, null))
+        // Portal sem área de trabalho: com sessão, a última página da área logada.
+        assertEquals("https://bllcompras.com/Process/List", PortalWebPolicy.openUrl(Portal.BLL, conn, "https://bllcompras.com/Process/List"))
+        assertEquals(intro, PortalWebPolicy.keepAliveUrl(p, last))
+        assertEquals(intro, PortalWebPolicy.keepAliveUrl(p, null))
         assertNull(PortalWebPolicy.keepAliveUrl(Portal.BLL, null))
+        assertEquals("https://bllcompras.com/Process/List", PortalWebPolicy.keepAliveUrl(Portal.BLL, "https://bllcompras.com/Process/List"))
     }
 
     @Test
@@ -339,18 +341,26 @@ class ComprasGovFlowTest {
     }
 
     @org.junit.Test
-    fun `apos selecionar empresa a primeira pagina normal conecta e redireciona ao workspace`() {
+    fun `apos selecionar empresa a area de trabalho intro htm conecta (sem redirecionar ao cnetmobile)`() {
         val p = Portal.COMPRAS_GOV
         // landing_sso (com cookies) ainda é login: não conecta nem expira
         org.junit.Assert.assertEquals(PortalWebPolicy.Signal.NONE, PortalWebPolicy.evaluate(p, "https://www.comprasnet.gov.br/seguro/landing_sso.asp", true, true, none))
-        val signal = PortalWebPolicy.evaluate(p, "https://www.comprasnet.gov.br/intro.htm", true, previousWasLoginPage = true, currentStatus = none)
-        org.junit.Assert.assertEquals(PortalWebPolicy.Signal.CONNECTED, signal)
+        // Área de trabalho do fornecedor (intro.htm) vinda do login: sessão aberta.
         org.junit.Assert.assertEquals(
-            "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=",
-            PortalWebPolicy.postLoginRedirect(p, "https://www.comprasnet.gov.br/intro.htm"),
+            PortalWebPolicy.Signal.CONNECTED,
+            PortalWebPolicy.evaluate(p, "https://www.comprasnet.gov.br/intro.htm", true, previousWasLoginPage = true, currentStatus = none),
         )
-        org.junit.Assert.assertNull(PortalWebPolicy.postLoginRedirect(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=123"))
-        org.junit.Assert.assertNull(PortalWebPolicy.postLoginRedirect(Portal.BLL, "https://bllcompras.com/home"))
+        org.junit.Assert.assertEquals(
+            PortalWebPolicy.Signal.CONNECTED,
+            PortalWebPolicy.evaluate(p, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=", true, previousWasLoginPage = true, currentStatus = none),
+        )
+        org.junit.Assert.assertEquals(
+            PortalWebPolicy.Signal.CONNECTED,
+            PortalWebPolicy.evaluate(p, "https://www.comprasnet.gov.br/seguro/fornecedor/menu.asp", true, previousWasLoginPage = true, currentStatus = none),
+        )
+        // Página pública do Comprasnet logo após o login mantém o vínculo com o login.
+        org.junit.Assert.assertTrue(PortalWebPolicy.carriesLoginFlag(p, "https://www.comprasnet.gov.br/aviso.htm", previous = true))
+        org.junit.Assert.assertFalse(PortalWebPolicy.carriesLoginFlag(p, "https://www.comprasnet.gov.br/intro.htm", previous = true))
     }
 
     @org.junit.Test

@@ -399,3 +399,18 @@ interface CompetitionDao {
     @Query("DELETE FROM competition_records WHERE companyId = :companyId")
     suspend fun deleteByCompany(companyId: Long)
 }
+
+@Dao
+interface RelevanceScoreDao {
+    @Query("SELECT * FROM relevance_scores WHERE companyId = :companyId AND radarSignature = :signature AND opportunityId IN (:ids)")
+    suspend fun find(companyId: Long, signature: String, ids: List<String>): List<RelevanceScoreEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(entities: List<RelevanceScoreEntity>)
+
+    @Query("DELETE FROM relevance_scores WHERE createdAt < :olderThan")
+    suspend fun prune(olderThan: Long)
+
+    @Query("DELETE FROM relevance_scores WHERE companyId = :companyId")
+    suspend fun deleteByCompany(companyId: Long)
+}

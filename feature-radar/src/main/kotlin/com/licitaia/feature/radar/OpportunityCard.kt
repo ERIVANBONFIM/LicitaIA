@@ -43,6 +43,7 @@ import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.theme.LicitaColors
 import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.ScoreSource
 import com.licitaia.domain.model.ScoredOpportunity
 import com.licitaia.domain.util.Formatters
 
@@ -147,6 +148,12 @@ internal fun LazyListScope.opportunityItems(
                         style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                     )
                     UpdatedAgoText(state.updatedAt, state.offline)
+                    aiProgressLabel(state)?.let { label ->
+                        Text(
+                            label, style = MaterialTheme.typography.labelSmall,
+                            color = if (state.aiFailure != null) LicitaColors.Yellow else LicitaColors.TextMuted,
+                        )
+                    }
                 }
             }
             items(state.items, key = { it.opportunity.id }) { item ->
@@ -154,6 +161,7 @@ internal fun LazyListScope.opportunityItems(
                     item = item,
                     busy = item.opportunity.id in state.busy,
                     canAnalyze = state.canAnalyze,
+                    aiActive = state.aiTotal > 0,
                     onInterest = { viewModel.onInterest(item) },
                     onAnalyze = { viewModel.onAnalyze(item) },
                     modifier = Modifier.padding(horizontal = 16.dp).animateItem(),
@@ -169,6 +177,17 @@ internal fun LazyListScope.opportunityItems(
  */
 @Suppress("UNUSED_PARAMETER")
 internal fun sourceLabel(items: List<ScoredOpportunity>): String = "Fontes: PNCP e Compras.gov.br (consulta pública)"
+
+/**
+ * "Notas por IA: N de M" (atualiza conforme os lotes chegam); com falha, avisa que o restante ficou heurístico.
+ * null quando não há nota por IA nesta lista.
+ */
+internal fun aiProgressLabel(state: OpportunityListState): String? = when {
+    state.aiTotal <= 0 -> null
+    state.aiFailure != null -> "Notas por IA: ${state.aiRated} de ${state.aiTotal} · ${state.aiFailure}"
+    state.aiPending -> "Notas por IA: ${state.aiRated} de ${state.aiTotal} (avaliando…)"
+    else -> "Notas por IA: ${state.aiRated} de ${state.aiTotal}"
+}
 
 /** Linha "via PNCP · <plataforma>" do card; null quando não há o que acrescentar ao chip do portal. */
 internal fun platformLine(portal: Portal, platformName: String?, opportunityId: String): String? = when {
@@ -201,11 +220,20 @@ internal fun OpportunityCard(
     onInterest: () -> Unit,
     onAnalyze: () -> Unit,
     modifier: Modifier = Modifier,
+    /** A lista usa nota por IA: notas heurísticas aparecem marcadas como tal. */
+    aiActive: Boolean = false,
 ) {
     val op = item.opportunity
     LicitaCard(modifier.fillMaxWidth(), accent = if (item.interested) LicitaColors.Green else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            ScoreRing(item.score, size = 58.dp, strokeWidth = 5.dp)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                ScoreRing(item.score, size = 58.dp, strokeWidth = 5.dp)
+                if (item.scoreSource == ScoreSource.AI) {
+                    StatusBadge("IA", Tone.INFO, Modifier.padding(top = 4.dp))
+                } else if (aiActive) {
+                    Text("heurística", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -225,6 +253,12 @@ internal fun OpportunityCard(
         }
         Spacer(Modifier.height(10.dp))
         Text(op.objectDescription, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        if (item.scoreSource == ScoreSource.AI && !item.scoreReason.isNullOrBlank()) {
+            Text(
+                "IA: ${item.scoreReason}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -238,8 +272,8 @@ internal fun OpportunityCard(
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth()) {
             DateCell("Publicação", Formatters.date(op.publishedAt), Modifier.weight(1f))
-            DateCell("Propostas até", Formatters.dateTime(op.proposalDeadline), Modifier.weight(1.3f))
-            DateCell("Sessão", Formatters.dateTime(op.sessionAt), Modifier.weight(1.3f))
+            DateCell("Propostas até", if (op.hasProposalDeadline) Formatters.dateTime(op.proposalDeadline) else "prazo não informado", Modifier.weight(1.3f))
+            DateCell("Sessão", if (op.sessionAt > 0L) Formatters.dateTime(op.sessionAt) else "—", Modifier.weight(1.3f))
         }
         if (op.requiresLocalSupport || item.interested) {
             Spacer(Modifier.height(8.dp))

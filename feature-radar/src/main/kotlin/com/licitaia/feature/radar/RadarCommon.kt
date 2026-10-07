@@ -4,8 +4,11 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.nav.Routes
+import com.licitaia.domain.model.AiScoreUpdate
+import com.licitaia.domain.model.AiScoringRequest
 import com.licitaia.domain.model.ScoredOpportunity
 import com.licitaia.domain.model.SearchOutcome
+import com.licitaia.domain.scoring.AiScoreMerge
 import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.TenderRepository
@@ -17,6 +20,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -89,7 +94,16 @@ data class OpportunityListState(
     val offline: Boolean = false,
     /** Quantos itens cada fonte trouxe na última consulta (ex.: "PNCP 120 · Compras.gov.br 35"). */
     val sourceSummary: String? = null,
-)
+    /** Itens com nota por IA esperada nesta execução (0 = sem provedor real ou nada a avaliar). */
+    val aiTotal: Int = 0,
+    /** Quantos desses já têm a nota por IA (cache + lotes recebidos). */
+    val aiRated: Int = 0,
+    /** A IA parou (sem rede/erro): os itens restantes ficam com a nota heurística. */
+    val aiFailure: String? = null,
+) {
+    /** Há itens aguardando a nota por IA. */
+    val aiPending: Boolean get() = aiTotal > 0 && aiRated < aiTotal && aiFailure == null
+}
 
 /** Base das telas que listam oportunidades (busca e resultados de radar). */
 abstract class OpportunityListViewModel(
@@ -106,8 +120,38 @@ abstract class OpportunityListViewModel(
     val events: SharedFlow<OpportunityEvent> = _events.asSharedFlow()
 
     private var loadJob: Job? = null
+    private var aiJob: Job? = null
 
     protected abstract suspend fun fetch(companyId: Long): Result<SearchOutcome>
+
+    /** Notas por IA para os candidatos da última consulta (padrão: nenhuma). */
+    protected open fun aiScores(request: AiScoringRequest): Flow<AiScoreUpdate> = emptyFlow()
+
+    /**
+     * Pede as notas por IA SEM bloquear a lista: os resultados heurísticos já estão visíveis e cada lote recebido
+     * atualiza nota/ordem (itens aprovados entram, reprovados saem). Uma nova consulta cancela a anterior.
+     */
+    private fun startAiScoring(request: AiScoringRequest?) {
+        aiJob?.cancel()
+        if (request == null || request.candidates.isEmpty()) return
+        aiJob = viewModelScope.launch {
+            try {
+                aiScores(request).collect { update ->
+                    _list.update { state ->
+                        state.copy(
+                            items = AiScoreMerge.merge(state.items, update.rated, request.minScore),
+                            aiRated = (state.aiRated + update.rated.size).coerceAtMost(state.aiTotal),
+                            aiFailure = update.failure ?: state.aiFailure,
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _list.update { it.copy(aiFailure = "IA indisponível (${e.message ?: "falha"}). Notas heurísticas mantidas.") }
+            }
+        }
+    }
 
     /**
      * Chamado no init das subclasses: recarrega a cada troca de empresa ativa e, quando a internet volta,
@@ -147,6 +191,7 @@ abstract class OpportunityListViewModel(
 
     private fun load(silent: Boolean) {
         loadJob?.cancel()
+        aiJob?.cancel()
         loadJob = viewModelScope.launch {
             val session = auth.session.value
             if (session == null) {
@@ -176,6 +221,9 @@ abstract class OpportunityListViewModel(
                             loading = false, refreshing = false, items = it.items.distinctBy { s -> s.opportunity.id }, error = null,
                             updatedAt = if (online) clock() else state.updatedAt, offline = !online,
                             sourceSummary = it.sourceSummary,
+                            aiTotal = it.aiRequest?.total ?: 0,
+                            aiRated = it.aiRequest?.alreadyRated ?: 0,
+                            aiFailure = null,
                         )
                     },
                     onFailure = {
@@ -190,6 +238,7 @@ abstract class OpportunityListViewModel(
                     },
                 )
             }
+            startAiScoring(result.getOrNull()?.aiRequest)
         }
     }
 

@@ -1,5 +1,6 @@
 package com.licitaia.connector.pncp
 
+import com.licitaia.connector.api.OpportunityScreen
 import com.licitaia.connector.comprasgov.ComprasGovConnector
 import com.licitaia.domain.model.Company
 import com.licitaia.domain.model.Opportunity
@@ -84,6 +85,39 @@ class RadarLiveDiagnosticTest {
         val radarScored = radarMatched.filter { OpportunityScorer.score(it, company, listOf(radar)) >= radar.minScore }
         println("Radar Telecom: casam ${radarMatched.size}, score ≥ 60: ${radarScored.size}")
         radarScored.take(5).forEach { println("  • ${it.uf} ${it.objectDescription.take(90)}") }
+    }
+
+    /**
+     * Radar do usuário: portal Compras.gov.br, palavras internet/link/provedor/fibra, todo o Brasil, score mínimo 70.
+     * Mesma triagem do repositório (CandidateScreens.forRadars: RadarMatcher + relevância ≥ 20) antes do enriquecimento.
+     */
+    @Test
+    fun comprasGov_radarIspBrasil() = runBlocking {
+        val radar = Radar(
+            companyId = 1, name = "ISP", segment = Segment.TELECOM_ISP, keywords = listOf("internet", "link", "provedor", "fibra"),
+            portals = listOf(Portal.COMPRAS_GOV), allPortals = false, minScore = 70,
+        )
+        val screen = OpportunityScreen { o -> RadarMatcher.matches(radar, o, company.uf) && OpportunityScorer.score(o, company, listOf(radar)) >= 20 }
+        val filter = OpportunityFilter(portals = setOf(Portal.COMPRAS_GOV))
+        val t0 = System.currentTimeMillis()
+        val listing = compras.listScreened(filter, screen)
+        val t1 = System.currentTimeMillis()
+        println("=== Radar ISP (Compras.gov.br, todo o Brasil, mínimo 70) ===")
+        println("Compras.gov.br ${listing.diagnostics.summary} (${t1 - t0} ms); PNCP prazo: ${compras.lastEnrichment}")
+        val again = compras.listScreened(filter, screen)
+        println("Segunda execução (cache): ${again.diagnostics.summary} (${System.currentTimeMillis() - t1} ms); PNCP prazo: ${compras.lastEnrichment}")
+        val fromPncp = runCatching { pncp.listOpportunities(filter) }.onFailure { println("PNCP falhou: ${it.message}") }.getOrDefault(emptyList())
+        println("PNCP classificados COMPRAS_GOV: ${fromPncp.size}")
+        val now = System.currentTimeMillis()
+        val merged = dedupe((fromPncp + listing.opportunities).filter { it.portal == Portal.COMPRAS_GOV })
+            .filterNot { it.hasProposalDeadline && it.proposalDeadline < now }
+        val matched = merged.filter { RadarMatcher.matches(radar, it, company.uf) }
+        val visible = matched.filter { OpportunityScorer.score(it, company, listOf(radar)) >= radar.minScore }
+        println("Após dedup: ${merged.size}; casam o radar: ${matched.size}; score ≥ 70: ${visible.size}")
+        visible.forEach {
+            val prazo = if (it.hasProposalDeadline) java.time.Instant.ofEpochMilli(it.proposalDeadline).toString().take(16) else "prazo não informado"
+            println("  • ${it.id.substringBefore(':')} ${it.uf} [$prazo] ${it.objectDescription.take(90)}")
+        }
     }
 
     @Test fun comprasGov_todasAsUfs() = scenario(emptySet())

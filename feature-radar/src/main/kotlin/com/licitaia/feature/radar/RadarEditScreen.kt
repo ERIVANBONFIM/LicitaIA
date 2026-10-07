@@ -170,6 +170,11 @@ fun RadarEditScreen(viewModel: RadarEditViewModel = hiltViewModel()) {
                         "Mostra apenas editais que exigem presença/suporte local",
                         form.requireLocalSupport,
                     ) { v -> viewModel.edit { it.copy(requireLocalSupport = v) } }
+                    ToggleRow(
+                        "Mostrar dispensas sem disputa (contratação direta)",
+                        "Inclui contratações diretas sem recebimento de propostas (\"Não se aplica\"); ocultas por padrão",
+                        form.showNoDispute,
+                    ) { v -> viewModel.edit { it.copy(showNoDispute = v) } }
                 }
 
                 // ---------------------------------------------------- Critérios

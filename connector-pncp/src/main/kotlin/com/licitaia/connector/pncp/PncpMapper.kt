@@ -1,6 +1,7 @@
 package com.licitaia.connector.pncp
 
 import com.licitaia.domain.model.Modality
+import com.licitaia.domain.model.NoDisputeRule
 import com.licitaia.domain.model.Opportunity
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.Segment
@@ -105,9 +106,8 @@ internal object PncpMapper {
         val modality = PncpModalities.modalityOf(dto.modalidadeId) ?: return null
 
         val published = parseDate(dto.dataPublicacaoPncp) ?: parseDate(dto.dataInclusao) ?: 0L
-        val opening = parseDate(dto.dataAberturaProposta)
-        val closing = parseDate(dto.dataEncerramentoProposta)
-        val deadline = closing ?: opening ?: published
+        // Prazo = somente o fim do recebimento de propostas; abertura/publicação nunca são prazo.
+        val deadline = parseDate(dto.dataEncerramentoProposta) ?: Opportunity.DEADLINE_UNKNOWN
 
         val objeto = dto.objetoCompra?.trim().orEmpty()
         val unidade = dto.unidadeOrgao
@@ -151,6 +151,13 @@ internal object PncpMapper {
             requiresLocalSupport = false,
             keywords = keywords,
             editalUrl = ref.publicPageUrl,
+            noDispute = NoDisputeRule.isNoDispute(
+                modality = modality,
+                modoDisputaId = dto.modoDisputaId?.toInt(),
+                modoDisputaNome = dto.modoDisputaNome,
+                tipoInstrumentoCodigo = dto.tipoInstrumentoConvocatorioCodigo?.toInt(),
+                hasProposalDeadline = deadline > Opportunity.DEADLINE_UNKNOWN,
+            ),
         )
     }
 

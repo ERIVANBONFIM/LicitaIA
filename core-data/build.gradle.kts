@@ -33,7 +33,10 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // OCR local (sem rede) para editais escaneados: ML Kit Text Recognition v2, script latino, modelo embutido (~4 MB no APK).
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    // Download do edital oficial (PNCP); o OkHttpClient HTTPS-only vem de core-network via Hilt.
+    implementation(libs.okhttp)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

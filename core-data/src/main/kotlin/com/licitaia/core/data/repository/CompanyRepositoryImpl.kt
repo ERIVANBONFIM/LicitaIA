@@ -109,6 +109,7 @@ class CompanyRepositoryImpl @Inject constructor(
                 db.liveSessionDao().deleteByCompany(id)
                 db.notificationDao().deleteByCompany(id)
                 db.aiConfigDao().deleteByCompany(id)
+                db.relevanceScoreDao().deleteByCompany(id)
                 userDao.getAll().filter { id in it.companyIds }.forEach {
                     userDao.upsert(it.copy(companyIds = it.companyIds - id))
                 }

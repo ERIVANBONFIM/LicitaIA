@@ -48,23 +48,23 @@ fun RadarEntity.toDomain() = Radar(
     id, companyId, name, segment, keywords, forbiddenKeywords,
     portals.mapNotNull { p -> Portal.entries.firstOrNull { it.name == p } }, allPortals, ufs, region, agency,
     modality, minValue, maxValue, startDate, endDate, minScore, cnae, preferredObject, requireLocalSupport,
-    active, createdAt,
+    active, createdAt, showNoDispute,
 )
 
 fun Radar.toEntity() = RadarEntity(
     id, companyId, name, segment, keywords, forbiddenKeywords, portals.map { it.name }, allPortals, ufs, region,
     agency, modality, minValue, maxValue, startDate, endDate, minScore, cnae, preferredObject, requireLocalSupport,
-    active, createdAt,
+    active, createdAt, showNoDispute,
 )
 
 fun OpportunityEntity.toDomain() = Opportunity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
-    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, platformName,
+    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, platformName, noDispute,
 )
 
 fun Opportunity.toEntity(now: Long) = OpportunityEntity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
-    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now, platformName,
+    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now, platformName, noDispute,
 )
 
 // ---------------------------------------------------------------- licitação / análise

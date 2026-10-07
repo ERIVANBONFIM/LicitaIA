@@ -21,11 +21,12 @@ object Formatters {
 
     fun percent(value: Double, decimals: Int = 1): String = String.format(ptBr, "%.${decimals}f%%", value)
 
+    // 0 = data não informada pela fonte (ex.: prazo de proposta ausente no PNCP): nunca exibir 31/12/1969.
     fun date(millis: Long?): String =
-        if (millis == null) "—" else SimpleDateFormat("dd/MM/yyyy", ptBr).format(Date(millis))
+        if (millis == null || millis <= 0L) "—" else SimpleDateFormat("dd/MM/yyyy", ptBr).format(Date(millis))
 
     fun dateTime(millis: Long?): String =
-        if (millis == null) "—" else SimpleDateFormat("dd/MM/yyyy HH:mm", ptBr).format(Date(millis))
+        if (millis == null || millis <= 0L) "—" else SimpleDateFormat("dd/MM/yyyy HH:mm", ptBr).format(Date(millis))
 
     fun time(millis: Long?): String =
         if (millis == null) "—" else SimpleDateFormat("HH:mm:ss", ptBr).format(Date(millis))

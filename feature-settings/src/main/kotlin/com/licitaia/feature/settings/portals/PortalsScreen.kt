@@ -99,6 +99,7 @@ fun PortalsScreen(vm: PortalsViewModel = hiltViewModel()) {
                         onSignOut = { vm.askSignOut(row.portal) },
                         keepAliveMinutes = state.keepAliveMinutes,
                         onKeepAlive = { vm.setKeepAlive(row.portal, it) },
+                        onAutoCertLogin = { vm.setAutoCertLogin(row.portal, it) },
                     )
                 }
                 if (state.rows.any { it.requiresLogin }) {
@@ -174,6 +175,7 @@ private fun PortalCard(
     onSignOut: () -> Unit,
     keepAliveMinutes: Int,
     onKeepAlive: (Boolean) -> Unit,
+    onAutoCertLogin: (Boolean) -> Unit,
 ) {
     val (label, tone) = when {
         !row.requiresLogin -> "Consulta pública" to Tone.INFO
@@ -216,6 +218,17 @@ private fun PortalCard(
                     if (row.keepAliveOn && row.status != PortalConnectionStatus.CONECTADO) " Volta a funcionar quando você entrar no portal." else "",
                 checked = row.keepAliveOn,
                 onCheckedChange = onKeepAlive,
+            )
+        }
+        if (row.requiresLogin && row.supportsAutoCertLogin) {
+            SwitchRow(
+                title = "Entrar automaticamente com certificado digital",
+                description = "Com o certificado já escolhido num login manual, o app clica sozinho nas etapas do login " +
+                    "(Fornecedor Brasileiro › Entrar com gov.br › Seu certificado digital › empresa com o CNPJ ativo) e, com " +
+                    "\"Manter sessão ativa\", tenta reconectar uma vez se a sessão cair. Nunca digita CPF/senha; se aparecer " +
+                    "CAPTCHA ou código, para e você conclui.",
+                checked = row.autoCertLoginOn,
+                onCheckedChange = onAutoCertLogin,
             )
         }
         Spacer(Modifier.height(12.dp))

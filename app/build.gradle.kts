@@ -30,9 +30,15 @@ android {
     defaultConfig {
         applicationId = "com.licitaia.app"
         targetSdk = 34
-        versionCode = 9
-        versionName = "0.4.3-personal"
+        versionCode = 10
+        versionName = "0.4.4-personal"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
+        // Inspeção do WebView (chrome://inspect) só em builds locais de diagnóstico: -Plicitaia.webviewDebug=true.
+        // Releases publicados nunca usam essa flag.
+        buildConfigField(
+            "boolean", "WEBVIEW_DEBUG",
+            (providers.gradleProperty("licitaia.webviewDebug").orNull == "true").toString(),
+        )
     }
 
     val signingPath = providers.gradleProperty("LICITAIA_RELEASE_STORE_FILE").orNull

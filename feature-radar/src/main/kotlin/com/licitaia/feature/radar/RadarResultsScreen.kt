@@ -61,6 +61,8 @@ class RadarResultsViewModel @Inject constructor(
         _radar.value = radar
         return opportunities.runRadarWithSources(radarId)
     }
+
+    override fun aiScores(request: com.licitaia.domain.model.AiScoringRequest) = opportunities.scoreWithAi(request)
 }
 
 @Composable

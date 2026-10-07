@@ -60,11 +60,13 @@ data class SearchFilters(
     val minValue: String = "",
     val maxValue: String = "",
     val minScore: Int = 0,
+    /** Mostrar dispensas sem disputa (contratação direta). Padrão: ocultas. */
+    val showNoDispute: Boolean = false,
     val valueError: String? = null,
 ) {
     /** Quantidade de filtros avançados ativos (exclui texto e portal, sempre visíveis). */
     val advancedCount: Int
-        get() = listOf(ufs.isNotEmpty(), segment != null, modality != null, minValue.isNotBlank(), maxValue.isNotBlank(), minScore > 0).count { it }
+        get() = listOf(ufs.isNotEmpty(), segment != null, modality != null, minValue.isNotBlank(), maxValue.isNotBlank(), minScore > 0, showNoDispute).count { it }
 }
 
 @HiltViewModel
@@ -82,6 +84,8 @@ class SearchViewModel @Inject constructor(
         start()
     }
 
+    override fun aiScores(request: com.licitaia.domain.model.AiScoringRequest) = opportunities.scoreWithAi(request)
+
     override suspend fun fetch(companyId: Long): Result<com.licitaia.domain.model.SearchOutcome> {
         val f = _filters.value
         return opportunities.searchWithSources(
@@ -95,6 +99,7 @@ class SearchViewModel @Inject constructor(
                 minValue = parseMoney(f.minValue)?.takeIf { !it.isNaN() },
                 maxValue = parseMoney(f.maxValue)?.takeIf { !it.isNaN() },
                 minScore = f.minScore,
+                showNoDispute = f.showNoDispute,
             ),
         )
     }
@@ -271,6 +276,14 @@ private fun FiltersPanel(
             onValueChange = { v -> onEdit { it.copy(minScore = (v / 5).toInt() * 5) } },
             valueRange = 0f..100f,
         )
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Mostrar dispensas sem disputa (contratação direta)", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
+                Text("Contratações diretas sem recebimento de propostas; ocultas por padrão", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+            }
+            Spacer(Modifier.width(8.dp))
+            Switch(checked = filters.showNoDispute, onCheckedChange = { v -> onEdit { it.copy(showNoDispute = v) } })
+        }
         Spacer(Modifier.height(4.dp))
         ButtonRow {
             SecondaryButton("Limpar", onClear, Modifier.weight(1f), tone = Tone.NEUTRAL)

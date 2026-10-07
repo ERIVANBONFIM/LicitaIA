@@ -63,6 +63,8 @@ data class Radar(
     val requireLocalSupport: Boolean = false,
     val active: Boolean = true,
     val createdAt: Long = 0,
+    /** Inclui dispensas sem disputa (contratação direta, [Opportunity.noDispute]). Padrão: ocultas. */
+    val showNoDispute: Boolean = false,
 )
 
 data class Opportunity(
@@ -88,13 +90,67 @@ data class Opportunity(
      * Null quando a fonte não informa (ex.: conector Compras.gov.br, cache antigo).
      */
     val platformName: String? = null,
-)
+    /**
+     * Dispensa SEM disputa (contratação direta: "Ato que autoriza a Contratação Direta", modo de disputa
+     * "Não se aplica"): não há proposta a enviar nem prazo. Oculta por padrão na Busca e nos Radares.
+     */
+    val noDispute: Boolean = false,
+) {
+    /**
+     * A fonte informou o fim do recebimento de propostas. false = "prazo não informado"
+     * ([proposalDeadline] = [DEADLINE_UNKNOWN]); a data de publicação NUNCA é usada como prazo.
+     */
+    val hasProposalDeadline: Boolean get() = proposalDeadline > DEADLINE_UNKNOWN
+
+    /** Prazo conhecido e já vencido em [now]: não é mais oportunidade. */
+    fun isProposalClosed(now: Long): Boolean = hasProposalDeadline && proposalDeadline < now
+
+    companion object {
+        /** Sentinela de "prazo não informado pela fonte". */
+        const val DEADLINE_UNKNOWN = 0L
+    }
+}
 
 data class ScoredOpportunity(
     val opportunity: Opportunity,
     /** Score de aderência 0..100. */
     val score: Int,
     val interested: Boolean,
+    /** De onde veio a nota: heurística local (padrão) ou avaliação do provedor de IA. */
+    val scoreSource: ScoreSource = ScoreSource.HEURISTIC,
+    /** Motivo curto da nota por IA (null na heurística). */
+    val scoreReason: String? = null,
+)
+
+/** Origem do score de aderência exibido. */
+enum class ScoreSource { HEURISTIC, AI }
+
+/**
+ * Pedido de notas por IA para os candidatos de uma busca/radar (heurística já aplicada e cache já consultado).
+ * Não contém dados pessoais: só o contexto do radar (segmento, palavras, CNAE, objeto preferencial).
+ */
+data class AiScoringRequest(
+    val companyId: Long,
+    /** null = busca livre (contexto = empresa + radares ativos). */
+    val radarId: Long?,
+    val minScore: Int,
+    /** Hash do contexto (segmento + palavras + objeto preferencial) — chave do cache de notas. */
+    val radarSignature: String,
+    /** Contexto curto enviado ao modelo. */
+    val radarHint: String,
+    /** Candidatos ainda sem nota por IA (heurística), em ordem de prioridade (prazos mais próximos primeiro). */
+    val candidates: List<ScoredOpportunity>,
+    /** Itens desta lista que já tinham nota por IA no cache. */
+    val alreadyRated: Int = 0,
+) {
+    /** Total de itens com nota por IA esperada nesta execução (cache + pendentes). */
+    val total: Int get() = alreadyRated + candidates.size
+}
+
+/** Lote de notas por IA recebido; [failure] != null = a IA parou (sem rede/erro) e o restante fica heurístico. */
+data class AiScoreUpdate(
+    val rated: List<ScoredOpportunity>,
+    val failure: String? = null,
 )
 
 /**
@@ -106,11 +162,84 @@ data class SearchOutcome(
     /** Fonte (portal do conector: PNCP, COMPRAS_GOV) → itens obtidos; vazio = não informado. */
     val sourceCounts: Map<Portal, Int> = emptyMap(),
     val fromCache: Boolean = false,
+    /** Fontes consultadas que falharam/estavam em espera (limite de consultas, timeout) nesta busca. */
+    val failedSources: Set<Portal> = emptySet(),
+    /** Candidatos aguardando nota por IA (null = sem provedor real configurado ou nada a avaliar). */
+    val aiRequest: AiScoringRequest? = null,
+    /** Funil das fontes que leem tudo e triam no aparelho (Compras.gov.br): lidas → candidatas → abertas. */
+    val sourceDiagnostics: Map<Portal, SourceDiagnostics> = emptyMap(),
+    /** Dispensas sem disputa que casariam com a busca/radar, mas ficaram ocultas (opção desligada). */
+    val hiddenNoDispute: Int = 0,
 ) {
-    /** Ex.: "PNCP 120 · Compras.gov.br 35"; null quando não há contagem. */
+    /**
+     * Ex.: "PNCP 120 · Compras.gov.br 8000 lidas · 34 candidatas · 12 abertas · 5 dispensas sem disputa ocultas" ou
+     * "Compras.gov.br 167 · PNCP indisponível agora"; null sem contagem.
+     */
     val sourceSummary: String?
-        get() = if (fromCache) "Cache local (fontes não consultadas)"
-        else sourceCounts.entries.sortedBy { it.key.ordinal }.joinToString(" · ") { "${it.key.displayName} ${it.value}" }.ifEmpty { null }
+        get() {
+            val parts = if (fromCache) listOf("Cache local (fontes não consultadas)")
+            else sourceCounts.entries.sortedBy { it.key.ordinal }.map { (portal, count) ->
+                sourceDiagnostics[portal]?.let { "${portal.displayName} ${it.summary}" } ?: "${portal.displayName} $count"
+            } +
+                failedSources.filter { it !in sourceCounts }.sortedBy { it.ordinal }.map { "${it.displayName} indisponível agora" }
+            val hidden = if (hiddenNoDispute <= 0) emptyList()
+            else listOf(if (hiddenNoDispute == 1) "1 dispensa sem disputa oculta" else "$hiddenNoDispute dispensas sem disputa ocultas")
+            return (parts + hidden).joinToString(" · ").ifEmpty { null }
+        }
+}
+
+/**
+ * Regra de "dispensa sem disputa" (contratação direta), confirmada em respostas reais de 06/10/2026 do Compras.gov.br
+ * (`modoDisputaIdPncp`/`modoDisputaNomePncp`, `tipoInstrumentoConvocatorioCodigoPncp`) e do PNCP (`modoDisputaId`,
+ * `tipoInstrumentoConvocatorioCodigo`): na modalidade Dispensa, modo de disputa 5 "Não se aplica" + instrumento 3
+ * "Ato que autoriza a Contratação Direta" + datas de proposta nulas; as dispensas COM disputa vêm com modo 4
+ * "Dispensa Com Disputa", instrumento 2 "Aviso de Contratação Direta" e prazo.
+ */
+object NoDisputeRule {
+    const val MODO_DISPUTA_NAO_SE_APLICA = 5
+    const val INSTRUMENTO_ATO_CONTRATACAO_DIRETA = 3
+    const val INSTRUMENTO_AVISO_CONTRATACAO_DIRETA = 2
+
+    fun isNoDispute(
+        modality: Modality,
+        modoDisputaId: Int?,
+        modoDisputaNome: String?,
+        tipoInstrumentoCodigo: Int?,
+        hasProposalDeadline: Boolean,
+    ): Boolean {
+        if (modality != Modality.DISPENSA_ELETRONICA) return false
+        val nome = java.text.Normalizer.normalize(modoDisputaNome.orEmpty(), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "").lowercase().trim()
+        if (modoDisputaId == MODO_DISPUTA_NAO_SE_APLICA || nome.contains("nao se aplica") || nome.contains("sem disputa")) return true
+        // Modo de disputa informado e diferente (ex.: 4 "Dispensa Com Disputa"): há disputa, mesmo sem prazo publicado.
+        if (modoDisputaId != null || nome.isNotEmpty()) return false
+        if (tipoInstrumentoCodigo == INSTRUMENTO_ATO_CONTRATACAO_DIRETA) return true
+        if (tipoInstrumentoCodigo == INSTRUMENTO_AVISO_CONTRATACAO_DIRETA) return false
+        // Sem indicação explícita: dispensa sem data de encerramento de propostas = sem disputa.
+        return !hasProposalDeadline
+    }
+}
+
+/**
+ * Funil de uma fonte que lê a janela inteira e tria no aparelho: [read] linhas lidas da API, [candidates] que passaram
+ * nos filtros/palavras/relevância, [open] devolvidas (prazo aberto ou não informado; [unknownDeadline] destas sem prazo).
+ * [truncated] = o teto de segurança de linhas foi atingido (as mais recentes foram priorizadas).
+ */
+data class SourceDiagnostics(
+    val read: Int,
+    val candidates: Int,
+    val open: Int,
+    val unknownDeadline: Int = 0,
+    val truncated: Boolean = false,
+) {
+    /** "8000 lidas · 34 candidatas · 12 abertas" (+ "(3 sem prazo)" quando houver). */
+    val summary: String
+        get() = buildString {
+            append(read).append(if (truncated) "+ lidas" else " lidas")
+            append(" · ").append(candidates).append(if (candidates == 1) " candidata" else " candidatas")
+            append(" · ").append(open).append(if (open == 1) " aberta" else " abertas")
+            if (unknownDeadline > 0) append(" (").append(unknownDeadline).append(" sem prazo)")
+        }
 }
 
 data class OpportunityFilter(
@@ -122,6 +251,8 @@ data class OpportunityFilter(
     val minValue: Double? = null,
     val maxValue: Double? = null,
     val minScore: Int = 0,
+    /** Inclui dispensas sem disputa ([Opportunity.noDispute]). Padrão: ocultas. */
+    val showNoDispute: Boolean = false,
 )
 
 // ---------------------------------------------------------------- Licitação de interesse / análise
@@ -216,7 +347,30 @@ sealed interface EditalSource {
 
     /** Reconhecimento de texto (OCR no aparelho) sobre o PDF já importado da licitação. */
     data object Ocr : EditalSource
+
+    /**
+     * PDF oficial baixado de um portal público (HTTPS; hosts permitidos: PNCP e Compras.gov.br).
+     * ZIP é aceito (o primeiro PDF é extraído); HTML é recusado.
+     */
+    data class Remote(val url: String) : EditalSource
 }
+
+/**
+ * Número de controle PNCP (`<cnpj 14>-1-<sequencial>/<ano>`) contido no id da oportunidade
+ * (`PNCP:<controle>` ou `COMPRAS_GOV:<controle>`). Null para ids legados/manuais/demonstração.
+ */
+object PncpControlNumbers {
+    private val PATTERN = Regex("""^(\d{14})-1-(\d{1,6})/(\d{4})$""")
+
+    fun fromOpportunityId(opportunityId: String): String? {
+        val prefix = listOf(Portal.PNCP, Portal.COMPRAS_GOV).firstOrNull { opportunityId.startsWith("${it.name}:") } ?: return null
+        val raw = opportunityId.removePrefix("${prefix.name}:").trim()
+        return raw.takeIf { PATTERN.matches(it) }
+    }
+}
+
+/** Número de controle PNCP da licitação (permite baixar o edital oficial); null quando não há. */
+val Tender.pncpControlNumber: String? get() = if (isManual) null else PncpControlNumbers.fromOpportunityId(opportunityId)
 
 data class EditalImportResult(
     val chars: Int,
@@ -238,6 +392,7 @@ data class EditalImportProgress(
     val totalPages: Int = 0,
 ) {
     enum class Stage(val label: String) {
+        BAIXANDO("Baixando o edital oficial"),
         COPIANDO("Copiando o PDF"),
         EXTRAINDO("Extraindo o texto"),
         OCR("Reconhecendo texto"),
@@ -644,8 +799,15 @@ data class AppSettings(
      * ("<companyId>:<PORTAL>"). Padrão vazio = desligado.
      */
     val portalKeepAlive: Set<String> = emptySet(),
+    /**
+     * "Entrar automaticamente com certificado digital" (opt-in), por empresa+portal: mesmas chaves de
+     * [portalKeepAliveKey]. Padrão vazio = desligado.
+     */
+    val portalAutoCertLogin: Set<String> = emptySet(),
 ) {
     fun isPortalKeepAliveOn(companyId: Long, portal: Portal): Boolean = portalKeepAliveKey(companyId, portal) in portalKeepAlive
+
+    fun isAutoCertLoginOn(companyId: Long, portal: Portal): Boolean = portalKeepAliveKey(companyId, portal) in portalAutoCertLogin
 
     companion object {
         val CAPTCHA_REPEAT_OPTIONS = listOf(1, 3, 5, 10, 15, 0)

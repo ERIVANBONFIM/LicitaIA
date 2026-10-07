@@ -64,9 +64,11 @@ class PersonalAlertsWorker @AssistedInject constructor(
         for (radar in radars.observeRadars(company).first().filter { it.active }) {
             if (isStopped || auth.session.value != session) break
             // Falha de um radar (fonte em backoff, 429...) não derruba os demais nem força retry imediato: tenta no próximo ciclo.
-            val found = opportunities.runRadar(radar.id).getOrNull() ?: continue
             val seenKey = "radar:${company}:${radar.id}"
             val previous = prefs.getStringSet(seenKey, emptySet()).orEmpty()
+            // Mesma nota da tela: heurística + nota por IA (provedor real) só para itens novos, até AI_LIMIT por ciclo;
+            // a nota fica no cache e não é pedida de novo. Sem IA/falha → nota heurística.
+            val found = opportunities.runRadarWithAi(radar.id, AI_LIMIT, skipIds = previous).getOrNull() ?: continue
             val ids = found.map { it.opportunity.id }.toSet()
             val fresh = ids - previous
             if (fresh.isNotEmpty() && auth.session.value == session) notifier.notify(
@@ -83,6 +85,8 @@ class PersonalAlertsWorker @AssistedInject constructor(
         private const val WORK_RADARS = "personal-public-alerts"
         private const val WORK_DOCUMENTS = "personal-document-alerts"
         private const val RADAR_INTERVAL_MINUTES = 15L
+        /** Notas por IA por radar a cada ciclo em segundo plano. */
+        private const val AI_LIMIT = 25
 
         fun schedule(context: Context) {
             val manager = WorkManager.getInstance(context)

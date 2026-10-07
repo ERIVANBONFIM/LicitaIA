@@ -25,17 +25,30 @@ class RetainedWebViewPolicyTest {
         assertEquals(KeepAliveAction.Skip, PortalWebPolicy.keepAliveAction(p, null, visible = true, fallbackUrl = fallback))
     }
 
+    private val workspace = KeepAliveAction.Load("https://www.comprasnet.gov.br/intro.htm", viaEntry = true)
+    private val entry = KeepAliveAction.Load("https://www.comprasnet.gov.br/seguro/loginPortal.asp?perfil=1", viaEntry = true)
+
     @Test
-    fun `processo recriado (aba vazia) - abre a ultima url da area logada`() {
-        assertEquals(KeepAliveAction.Load(fallback), PortalWebPolicy.keepAliveAction(p, null, visible = false, fallbackUrl = fallback))
-        assertEquals(KeepAliveAction.Load(fallback), PortalWebPolicy.keepAliveAction(p, "about:blank", visible = false, fallbackUrl = fallback))
+    fun `processo recriado (aba vazia) - abre a entrada oficial, nunca intro htm nem o cnetmobile`() {
+        assertEquals(entry, PortalWebPolicy.keepAliveAction(p, null, visible = false, fallbackUrl = fallback))
+        assertEquals(entry, PortalWebPolicy.keepAliveAction(p, "about:blank", visible = false, fallbackUrl = fallback))
+        assertEquals(entry, PortalWebPolicy.keepAliveAction(p, null, visible = false, fallbackUrl = PortalWebPolicy.keepAliveUrl(p, fallback)))
+        assertEquals(entry, PortalWebPolicy.keepAliveAction(p, null, visible = false, fallbackUrl = "https://www.comprasnet.gov.br/intro.htm"))
         assertEquals(KeepAliveAction.Skip, PortalWebPolicy.keepAliveAction(p, null, visible = false, fallbackUrl = null))
+        // Aba que já esteve na área logada nesta vida: pode voltar à área de trabalho.
+        assertEquals(workspace, PortalWebPolicy.keepAliveAction(p, null, visible = false, fallbackUrl = fallback, reachedLoggedArea = true))
+        // Portal sem área de trabalho fixa nem host "só pelo link": abre a última URL normalmente.
+        assertEquals(
+            KeepAliveAction.Load("https://bllcompras.com/Process/List"),
+            PortalWebPolicy.keepAliveAction(Portal.BLL, null, false, "https://bllcompras.com/Process/List"),
+        )
     }
 
     @Test
-    fun `aba parada no login ou fora da allowlist - abre a ultima url (a politica conclui expirado se voltar ao login)`() {
-        assertEquals(KeepAliveAction.Load(fallback), PortalWebPolicy.keepAliveAction(p, "https://sso.acesso.gov.br/login?x=1", false, fallback))
-        assertEquals(KeepAliveAction.Load(fallback), PortalWebPolicy.keepAliveAction(p, "https://evil.example.com/", false, fallback))
+    fun `aba parada no login ou fora da allowlist - entrada (sem estado) ou area de trabalho (com estado)`() {
+        assertEquals(entry, PortalWebPolicy.keepAliveAction(p, "https://sso.acesso.gov.br/login?x=1", false, fallback))
+        assertEquals(entry, PortalWebPolicy.keepAliveAction(p, "https://evil.example.com/", false, fallback))
+        assertEquals(workspace, PortalWebPolicy.keepAliveAction(p, "https://sso.acesso.gov.br/login?x=1", false, fallback, reachedLoggedArea = true))
         // fallback fora da allowlist nunca é carregado
         assertEquals(KeepAliveAction.Skip, PortalWebPolicy.keepAliveAction(p, null, false, "https://evil.example.com/"))
     }

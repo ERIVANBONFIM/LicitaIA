@@ -13,6 +13,7 @@ import com.licitaia.domain.repository.SettingsRepository
 import com.licitaia.feature.live.keepalive.PortalKeepAliveController
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
+import com.licitaia.feature.live.web.CertAutoLogin
 import com.licitaia.feature.live.web.PortalWebPolicy
 import com.licitaia.feature.live.web.PortalWebSessions
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -38,7 +39,12 @@ data class PortalRow(
     val capabilities: ConnectorCapabilities?,
     /** "Manter sessão ativa" ligado para este portal na empresa ativa. */
     val keepAliveOn: Boolean = false,
+    /** "Entrar automaticamente com certificado digital" ligado para este portal na empresa ativa. */
+    val autoCertLoginOn: Boolean = false,
 ) {
+    /** O portal tem o fluxo de login automático com certificado mapeado (hoje só Compras.gov.br). */
+    val supportsAutoCertLogin: Boolean get() = CertAutoLogin.supports(portal)
+
     /** false = portal público (PNCP): só "Abrir". */
     val requiresLogin: Boolean get() = PortalWebPolicy.rules(portal).requiresLogin
     val status: PortalConnectionStatus get() = session?.status ?: PortalConnectionStatus.DESCONECTADO
@@ -123,7 +129,11 @@ class PortalsViewModel @Inject constructor(
                         roleLabel = session.user.role.label,
                         companyName = session.activeCompany.tradeName.ifBlank { session.activeCompany.name },
                         rows = Portal.entries.map { p ->
-                            PortalRow(p, sessions.firstOrNull { it.portal == p }, caps[p], keepAliveOn = st.isPortalKeepAliveOn(companyId, p))
+                            PortalRow(
+                                p, sessions.firstOrNull { it.portal == p }, caps[p],
+                                keepAliveOn = st.isPortalKeepAliveOn(companyId, p),
+                                autoCertLoginOn = CertAutoLogin.supports(p) && st.isAutoCertLoginOn(companyId, p),
+                            )
                         },
                         keepAliveMinutes = st.portalKeepAliveMinutes,
                     )
@@ -140,6 +150,24 @@ class PortalsViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { keepAlive.setEnabled(session.activeCompany.id, portal, enabled) }
                 .onSuccess { _events.send(if (enabled) "${portal.displayName}: manter sessão ativa ligado" else "${portal.displayName}: manter sessão ativa desligado") }
+                .onFailure { _events.send(it.message ?: "Não foi possível alterar a preferência") }
+        }
+    }
+
+    /**
+     * "Entrar automaticamente com certificado digital" do card (auditado). Só liga depois de um certificado já ter sido
+     * escolhido num login manual; senão a mensagem explica o primeiro passo.
+     */
+    fun setAutoCertLogin(portal: Portal, enabled: Boolean) {
+        val session = auth.session.value ?: return
+        viewModelScope.launch {
+            runCatching { keepAlive.setAutoCertLogin(session.activeCompany.id, portal, enabled) }
+                .onSuccess {
+                    _events.send(
+                        if (enabled) "${portal.displayName}: login automático com certificado ligado"
+                        else "${portal.displayName}: login automático com certificado desligado",
+                    )
+                }
                 .onFailure { _events.send(it.message ?: "Não foi possível alterar a preferência") }
         }
     }

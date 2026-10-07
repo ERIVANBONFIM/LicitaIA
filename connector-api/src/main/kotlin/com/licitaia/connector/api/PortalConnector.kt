@@ -54,6 +54,53 @@ interface HttpStatusFailure {
     val httpStatus: Int?
 }
 
+/** Documento público oficial de uma contratação (PDF do edital ou anexo) com URL de download direto. */
+data class OfficialDocument(
+    val title: String,
+    val url: String,
+    /** Tipo informado pela fonte (ex.: "Edital", "Termo de Referência"); null quando ausente. */
+    val typeName: String?,
+    val role: Role,
+) {
+    enum class Role { EDITAL, ANEXO }
+}
+
+/**
+ * Fonte capaz de listar os documentos oficiais de uma contratação pelo número de controle PNCP
+ * (`<cnpj>-1-<sequencial>/<ano>`). Devolve o edital principal primeiro e depois os anexos relevantes;
+ * lista vazia = nenhum documento publicado. Falhas de rede sobem como exceção.
+ */
+interface OfficialDocumentSource {
+    suspend fun officialEditalDocuments(pncpControlNumber: String): List<OfficialDocument>
+}
+
+/**
+ * Triagem local aplicada pela fonte ANTES de etapas caras (ex.: consultar o prazo de cada candidata no PNCP):
+ * palavras do radar/busca, UF, valor, modalidade e heurística de relevância. true = candidata.
+ */
+fun interface OpportunityScreen {
+    fun accept(opportunity: Opportunity): Boolean
+
+    companion object {
+        val ACCEPT_ALL: OpportunityScreen = OpportunityScreen { true }
+    }
+}
+
+/** Resultado de [ScreenedOpportunitySource.listScreened]: oportunidades devolvidas + funil (lidas/candidatas/abertas). */
+data class ScreenedListing(
+    val opportunities: List<Opportunity>,
+    val diagnostics: com.licitaia.domain.model.SourceDiagnostics,
+)
+
+/**
+ * Fonte que lê a janela inteira da API (sem busca por texto no servidor) e precisa de uma triagem local para chegar
+ * a poucas candidatas antes de enriquecê-las. O repositório usa [listScreened] em vez de
+ * [PortalConnector.listOpportunities] quando o conector implementa esta interface.
+ */
+interface ScreenedOpportunitySource {
+    suspend fun listScreened(filter: OpportunityFilter, screen: OpportunityScreen): ScreenedListing
+}
+
 /** Registro dos conectores disponíveis (um por portal). */
 interface ConnectorRegistry {
     fun get(portal: Portal): PortalConnector

@@ -22,8 +22,14 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Falha ao consultar o PNCP, já com mensagem amigável em pt-BR. */
-class PncpException(message: String, val kind: Kind, override val httpStatus: Int? = null, cause: Throwable? = null) :
-    IOException(message, cause), com.licitaia.connector.api.HttpStatusFailure {
+class PncpException(
+    message: String,
+    val kind: Kind,
+    override val httpStatus: Int? = null,
+    cause: Throwable? = null,
+    /** Cabeçalho `Retry-After` (em ms) de uma resposta 429/503, quando informado em segundos. */
+    val retryAfterMs: Long? = null,
+) : IOException(message, cause), com.licitaia.connector.api.HttpStatusFailure {
     enum class Kind { OFFLINE, TIMEOUT, HTTP, INVALID_RESPONSE }
 }
 
@@ -144,7 +150,10 @@ internal class PncpApi(
                         throw PncpException("O PNCP devolveu uma resposta em formato inesperado.", PncpException.Kind.INVALID_RESPONSE, r.code, e)
                     }
                 }
-                else -> throw PncpException(httpMessage(r.code), PncpException.Kind.HTTP, r.code)
+                else -> throw PncpException(
+                    httpMessage(r.code), PncpException.Kind.HTTP, r.code,
+                    retryAfterMs = r.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it >= 0 }?.let { it * 1000L },
+                )
             }
         }
     }

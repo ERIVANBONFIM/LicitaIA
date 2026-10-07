@@ -5,6 +5,8 @@ import com.licitaia.ai.api.AiProviderException
 import com.licitaia.ai.api.DocumentComparison
 import com.licitaia.ai.api.MessageDraft
 import com.licitaia.ai.api.ProposalDraft
+import com.licitaia.ai.api.RelevanceItem
+import com.licitaia.ai.api.RelevanceScore
 import com.licitaia.ai.api.TenderAnalysisRequest
 import com.licitaia.ai.mock.MockAIProvider
 import com.licitaia.ai.mock.TenderHeuristics
@@ -306,6 +308,21 @@ abstract class LlmBackedProvider(
         available: List<CompanyDocument>,
         now: Long,
     ): DocumentComparison = TenderHeuristics.compare(required, available, now)
+
+    /**
+     * Nota de relevância em lote (até 25 objetos por chamada; o restante é ignorado). Resposta inválida → lança
+     * [AiProviderException] para que quem chama mantenha a heurística marcada como tal (sem nota "inventada").
+     */
+    override suspend fun rateRelevance(company: Company, radarHint: String, items: List<RelevanceItem>): List<RelevanceScore> {
+        val batch = items.take(AIProvider.MAX_RELEVANCE_BATCH)
+        if (batch.isEmpty()) return emptyList()
+        val raw = complete(RelevanceParsing.SYSTEM, RelevanceParsing.prompt(radarHint, batch), expectJson = true)
+        val scores = RelevanceParsing.parse(raw, batch, json)
+        if (scores.isEmpty()) {
+            throw AiProviderException("$displayName devolveu notas fora do formato esperado. As notas continuam heurísticas.")
+        }
+        return scores
+    }
 
     // ------------------------------------------------------------------ apoio
 

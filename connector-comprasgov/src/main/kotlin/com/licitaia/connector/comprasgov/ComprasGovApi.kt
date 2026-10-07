@@ -23,8 +23,14 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Falha ao consultar o Compras.gov.br, já com mensagem amigável em pt-BR. */
-class ComprasGovException(message: String, val kind: Kind, override val httpStatus: Int? = null, cause: Throwable? = null) :
-    IOException(message, cause), com.licitaia.connector.api.HttpStatusFailure {
+class ComprasGovException(
+    message: String,
+    val kind: Kind,
+    override val httpStatus: Int? = null,
+    cause: Throwable? = null,
+    /** Cabeçalho `Retry-After` (em ms) de uma resposta 429/503, quando informado em segundos. */
+    val retryAfterMs: Long? = null,
+) : IOException(message, cause), com.licitaia.connector.api.HttpStatusFailure {
     enum class Kind { OFFLINE, TIMEOUT, HTTP, INVALID_RESPONSE }
 }
 
@@ -44,6 +50,11 @@ class ComprasGovException(message: String, val kind: Kind, override val httpStat
  *   data_publicacao_inicial/final=YYYY-MM-DD; opcionais uasg, modalidade, numero_aviso).
  * - `GET /modulo-legado/1.1_consultarLicitacao_Id` e `2.1_consultarItemLicitacao_Id` (id_compra).
  *
+ * Enriquecimento de prazo (outro host, mesma infra): `GET https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}`
+ * — detalhe da contratação no PNCP pelo número de controle (campos `dataEncerramentoProposta`, `dataAberturaProposta`,
+ * `situacaoCompraId`, `situacaoCompraNome`, verificados em 06/10/2026). O Compras.gov.br deixa o encerramento vazio
+ * em boa parte das contratações; o PNCP é a fonte do prazo real.
+ *
  * Erros de validação chegam como HTTP 400 em JSON "problem" (`title`, `detail`); rota inexistente
  * devolve 404 `{statusCode, message}`. Resultado vazio é HTTP 200 com `resultado: []`.
  */
@@ -52,6 +63,8 @@ internal class ComprasGovApi(
     private val json: Json,
     /** Raiz da API (https://dadosabertos.compras.gov.br/). Parametrizável para testes com MockWebServer. */
     private val baseUrl: HttpUrl = DEFAULT_BASE_URL.toHttpUrl(),
+    /** Raiz do PNCP (https://pncp.gov.br/) para o enriquecimento de prazo/situação. */
+    private val pncpBaseUrl: HttpUrl = PNCP_BASE_URL.toHttpUrl(),
 ) {
     private val client: OkHttpClient = client.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -125,6 +138,15 @@ internal class ComprasGovApi(
             ComprasGovPage.serializer(ComprasGovItemLegado.serializer()),
         )?.resultado.orEmpty()
 
+    /** Prazo/situação reais no PNCP pelo número de controle; null em 204/corpo vazio; 404 sobe como exceção. */
+    suspend fun pncpCompra(ref: ComprasGovPncpRef): PncpCompraStatus? =
+        get(
+            pncpBaseUrl.newBuilder()
+                .addEncodedPathSegments("api/consulta/v1/orgaos/${ref.cnpj}/compras/${ref.ano}/${ref.sequencial}")
+                .build(),
+            PncpCompraStatus.serializer(),
+        )
+
     // ------------------------------------------------------------------ infra
 
     private fun path(segments: String): HttpUrl.Builder = baseUrl.newBuilder().addEncodedPathSegments(segments)
@@ -161,7 +183,10 @@ internal class ComprasGovApi(
                         throw ComprasGovException(INVALID_MESSAGE, ComprasGovException.Kind.INVALID_RESPONSE, r.code, e)
                     }
                 }
-                else -> throw ComprasGovException(httpMessage(r.code, problemDetail(r)), ComprasGovException.Kind.HTTP, r.code)
+                else -> throw ComprasGovException(
+                    httpMessage(r.code, problemDetail(r)), ComprasGovException.Kind.HTTP, r.code,
+                    retryAfterMs = r.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it >= 0 }?.let { it * 1000L },
+                )
             }
         }
     }
@@ -201,6 +226,7 @@ internal class ComprasGovApi(
 
     companion object {
         const val DEFAULT_BASE_URL = "https://dadosabertos.compras.gov.br/"
+        const val PNCP_BASE_URL = "https://pncp.gov.br/"
         /** Limites confirmados pela API (HTTP 400 "deve ser no mínimo 10" / "no máximo 500"). */
         const val MIN_PAGE_SIZE = 10
         const val MAX_PAGE_SIZE = 500

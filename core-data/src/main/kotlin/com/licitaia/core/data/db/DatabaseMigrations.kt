@@ -103,6 +103,39 @@ object DatabaseMigrations {
         }
     }
 
+    /** DDL da tabela `relevance_scores` exatamente como o Room a gera (schemas/.../8.json). */
+    internal const val CREATE_RELEVANCE_SCORES =
+        "CREATE TABLE IF NOT EXISTS `relevance_scores` (`opportunityId` TEXT NOT NULL, `companyId` INTEGER NOT NULL, " +
+            "`radarSignature` TEXT NOT NULL, `score` INTEGER NOT NULL, `reason` TEXT NOT NULL, `provider` TEXT NOT NULL, " +
+            "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`opportunityId`, `companyId`, `radarSignature`))"
+
+    /**
+     * Versão 8: cache das notas de relevância por IA (`relevance_scores`). Só cria a tabela nova (IF NOT EXISTS);
+     * nenhuma tabela existente é alterada.
+     */
+    val FROM_7_TO_8 = object : Migration(7, 8) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CREATE_RELEVANCE_SCORES)
+        }
+    }
+
+    /**
+     * Versão 9: dispensas sem disputa (contratação direta). `radars.showNoDispute` (padrão 0 = ocultas) e
+     * `opportunities.noDispute` (marcação no cache offline, padrão 0). Só adiciona colunas; nenhum dado é alterado.
+     */
+    val FROM_8_TO_9 = object : Migration(8, 9) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val radarColumns = db.query("PRAGMA table_info(radars)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            if ("showNoDispute" !in radarColumns) db.execSQL("ALTER TABLE radars ADD COLUMN showNoDispute INTEGER NOT NULL DEFAULT 0")
+            val opportunityColumns = db.query("PRAGMA table_info(opportunities)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            if ("noDispute" !in opportunityColumns) db.execSQL("ALTER TABLE opportunities ADD COLUMN noDispute INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     /** Todas as migrações incrementais, na ordem. */
-    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6, FROM_6_TO_7)
+    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6, FROM_6_TO_7, FROM_7_TO_8, FROM_8_TO_9)
 }

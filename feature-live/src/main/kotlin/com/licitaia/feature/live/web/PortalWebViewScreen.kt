@@ -44,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.MoreVert
@@ -128,8 +129,10 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     val context = LocalContext.current
     val navigator = LocalAppNavigator.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    // Com sessão já aberta, volta para a última página da área logada (ou à área de trabalho); senão, à página de login.
+    // Aba sem estado: Compras.gov.br SEMPRE pela entrada oficial (nunca intro.htm/última URL); demais portais, com sessão
+    // aberta, a última página da área logada; senão, a página de login.
     val startUrl = remember(portal) { PortalWebPolicy.openUrl(portal, state.status, state.lastUrl) }
+    val sessionCheck by vm.sessionCheck.collectAsStateWithLifecycle()
     val loginUrl = remember(portal) { PortalWebPolicy.startUrl(portal) }
     val probeScript = remember(portal) { PortalWebPolicy.contentProbeScript(portal) }
     val checkContent = remember(portal) { PortalWebPolicy.hasContentMarkers(portal) }
@@ -157,6 +160,90 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     var wasOffline by remember { mutableStateOf(!state.online) }
     val latestVm by rememberUpdatedState(vm)
     val online by rememberUpdatedState(state.online)
+    val autoBanner by vm.autoLoginBanner.collectAsStateWithLifecycle()
+    val unstable by vm.unstable.collectAsStateWithLifecycle()
+    // Login automático: no máximo UMA tentativa por abertura da tela (não repete após "Sair do portal").
+    var autoArmed by remember { mutableStateOf(false) }
+
+    val autoLoginOnNow by rememberUpdatedState(state.autoLoginOn)
+
+    fun startAutoLogin(target: PortalWebViewHolder.Entry, loadStart: Boolean) {
+        val started = holder.startAutoLogin(target, state.companyCnpj, loadStart) { outcome ->
+            latestVm.onAutoLoginOutcome(outcome)
+            // 503 do portal: não é "sessão expirada" — fica o aviso "Compras.gov.br instável" (e as novas tentativas).
+            if (outcome is CertAutoLogin.Outcome.Stopped && outcome.reason != CertAutoLogin.StopReason.PORTAL_UNSTABLE) {
+                // Parou durante a entrada/reentrada sem chegar à área logada (ou a área recusou a sessão): agora sim expira.
+                val gate = target.entryGate.onAutoLoginStopped(runCatching { target.webView.url }.getOrNull())
+                if (gate == PortalWebPolicy.EntryAction.Expire || outcome.reason == CertAutoLogin.StopReason.SESSION_REJECTED) {
+                    latestVm.onEntryFailed()
+                }
+            }
+        }
+        if (started) latestVm.onAutoLoginStarted()
+    }
+
+    /**
+     * "Compras eletrônicas": clica no link "Licitação e Dispensa (novo)" do menu do Comprasnet (a SPA só recebe o token
+     * por esse link). [auto] = disparado pelo app (após o login / após "Não autorizado"), só se a aba continuar em [expectedUrl].
+     */
+    fun openElectronicPurchases(target: PortalWebViewHolder.Entry, view: WebView, auto: Boolean, expectedUrl: String? = null) {
+        val run = Runnable {
+            if (webView !== view || (expectedUrl != null && view.url != expectedUrl)) return@Runnable
+            holder.openElectronicPurchases(target) { ok ->
+                if (!ok) {
+                    latestVm.notify(
+                        if (auto) "Abra \"Compras → Licitação e Dispensa (novo)\" no menu do portal."
+                        else "Não encontrei \"Licitação e Dispensa (novo)\" nesta página. Use o menu Compras do portal.",
+                    )
+                }
+            }
+        }
+        if (auto) view.postDelayed(run, ELECTRONIC_CLICK_DELAY_MS) else run.run()
+    }
+
+    /**
+     * Executa a decisão do [PortalWebPolicy.EntryGate]: navegação (só área de trabalho/entrada — nunca o cnetmobile),
+     * clique no link de compras eletrônicas, login automático ou expirar.
+     */
+    fun applyEntryAction(target: PortalWebViewHolder.Entry, view: WebView, action: PortalWebPolicy.EntryAction, reentry: Boolean) {
+        when (action) {
+            PortalWebPolicy.EntryAction.None -> Unit
+            is PortalWebPolicy.EntryAction.Navigate -> {
+                if (reentry) latestVm.onReconnecting()
+                // Área de trabalho só se a aba já esteve na área logada (ou está no cnetmobile); senão a entrada oficial.
+                val hasState = target.entryGate.reachedLoggedArea || view.url?.let { PortalWebPolicy.isLoggedArea(portal, it) } == true
+                view.loadUrl(PortalWebPolicy.safeLoadUrl(portal, action.url, hasState))
+            }
+            PortalWebPolicy.EntryAction.OpenElectronicPurchases -> openElectronicPurchases(target, view, auto = true, expectedUrl = view.url)
+            PortalWebPolicy.EntryAction.StartAutoLogin -> {
+                if (reentry) latestVm.onReconnecting()
+                val step = view.url?.let { CertAutoLogin.detectStep(portal, it) }
+                val onLoginStep = step != null && (step in CertAutoLogin.ACTION_STEPS || step == CertAutoLogin.Step.CERTIFICATE)
+                startAutoLogin(target, loadStart = !onLoginStep)
+            }
+            PortalWebPolicy.EntryAction.Expire -> latestVm.onEntryFailed()
+            is PortalWebPolicy.EntryAction.LoginRequired -> {
+                // www.gov.br público vindo do portal: não logado → expira (se estava aberta) e UMA ida à entrada oficial.
+                latestVm.onLoginRequired()
+                action.url?.let { view.loadUrl(it) }
+            }
+        }
+    }
+
+    /** Primeira navegação de uma aba sem estado: SEMPRE a entrada oficial (Compras.gov.br); nunca intro.htm/cnetmobile. */
+    fun firstLoad(target: PortalWebViewHolder.Entry?, url: String): String =
+        target?.entryGate?.firstLoad(url, verify = latestVm.isVerifyingSession()) ?: PortalWebPolicy.firstNavigationUrl(portal, url)
+
+    // Sessão expirou com a tela aberta e o login automático ligado: uma tentativa por evento de reconexão.
+    LaunchedEffect(Unit) {
+        vm.autoReloginRequests.collect {
+            val target = entry ?: return@collect
+            val step = webView?.url?.let { CertAutoLogin.detectStep(portal, it) }
+            // Já numa etapa do login (o portal nos mandou para lá): segue dela; senão abre o login oficial.
+            val onLoginStep = step != null && (step in CertAutoLogin.ACTION_STEPS || step == CertAutoLogin.Step.CERTIFICATE)
+            startAutoLogin(target, loadStart = !onLoginStep)
+        }
+    }
 
     // Rede voltou: recarrega sozinho (ou faz a primeira carga adiada). O status da sessão nunca muda por falta de rede.
     LaunchedEffect(state.online) {
@@ -167,7 +254,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
         pageError = null
         if (initialLoadPending || view.url.isNullOrBlank()) {
             initialLoadPending = false
-            view.loadUrl(startUrl)
+            view.loadUrl(firstLoad(entry, startUrl))
         } else {
             view.reload()
         }
@@ -188,7 +275,14 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             if (webView !== view || view.url != url) return@Runnable
             runCatching {
                 view.evaluateJavascript(probeScript) { raw ->
-                    if (webView === view && PortalWebPolicy.parseProbeResult(raw)) {
+                    if (webView !== view || !PortalWebPolicy.parseProbeResult(raw)) return@evaluateJavascript
+                    val target = entry
+                    if (target != null && PortalWebPolicy.needsEntryFirst(portal, url)) {
+                        // cnetmobile "Não autorizado": NÃO expira de imediato — UMA reentrada pela entrada oficial.
+                        // Com o login automático em andamento, ele mesmo trata a etapa (navega para a entrada).
+                        if (target.autoLoginRunning || pageError != null || !online) return@evaluateJavascript
+                        applyEntryAction(target, view, target.entryGate.onUnauthorized(url, autoLoginOnNow), reentry = true)
+                    } else {
                         latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), contentExpired = true, loadFailed = pageError != null)
                     }
                 }
@@ -238,6 +332,17 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
         title = portal.displayName,
         showBack = true,
         actions = {
+            // "Compras eletrônicas": na área de trabalho logada do Comprasnet, clica no link "Licitação e Dispensa (novo)"
+            // do próprio portal (única forma de a SPA receber o token).
+            if (PortalWebPolicy.canGoToElectronicPurchases(portal, currentUrl)) {
+                IconButton(onClick = {
+                    val e = entry
+                    val v = webView
+                    if (e != null && v != null) openElectronicPurchases(e, v, auto = false)
+                }) {
+                    Icon(Icons.Outlined.Gavel, contentDescription = "Compras eletrônicas")
+                }
+            }
             if (state.requiresLogin && state.canSignOut) {
                 IconButton(onClick = { confirmSignOut = true }, enabled = !state.busy) {
                     Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = "Sair do portal")
@@ -256,6 +361,20 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 vm.forgetCertificate { webView?.reload() }
                             },
                         )
+                        if (state.autoLoginSupported) {
+                            DropdownMenuItem(
+                                text = { Text("Entrar automaticamente com certificado digital") },
+                                leadingIcon = { Icon(Icons.Outlined.VerifiedUser, contentDescription = null) },
+                                trailingIcon = {
+                                    Switch(
+                                        checked = state.autoLoginOn,
+                                        onCheckedChange = { menuOpen = false; vm.setAutoCertLogin(it) },
+                                        modifier = Modifier.semantics { contentDescription = "Entrar automaticamente com certificado digital" },
+                                    )
+                                },
+                                onClick = { menuOpen = false; vm.setAutoCertLogin(!state.autoLoginOn) },
+                            )
+                        }
                     }
                 }
             }
@@ -296,13 +415,19 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             // Status da sessão (heurística) + avisos.
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (state.requiresLogin) {
-                    val (label, tone) = sessionBadge(state.status)
-                    StatusBadge(label, tone, pulsing = state.status == PortalConnectionStatus.CONECTADO)
+                    val isUnstable = unstable != null
+                    val (label, tone) = if (isUnstable) PortalInstability.BADGE_LABEL to Tone.WARNING else sessionBadge(state.status, sessionCheck)
+                    val verifying = sessionCheck == PortalWebPolicy.SessionCheck.VERIFYING && state.status == PortalConnectionStatus.CONECTADO
+                    val loginRequired = sessionCheck == PortalWebPolicy.SessionCheck.LOGIN_REQUIRED
+                    StatusBadge(label, tone, pulsing = !isUnstable && state.status == PortalConnectionStatus.CONECTADO && !verifying && !loginRequired)
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        when (state.status) {
-                            PortalConnectionStatus.CONECTADO -> "desde ${Formatters.dateTime(state.lastLoginAt)}"
-                            PortalConnectionStatus.SESSAO_EXPIRADA -> "o portal encerrou a sessão; entre novamente"
+                        when {
+                            isUnstable -> "instabilidade do portal (erro 503), não do app"
+                            verifying -> "abrindo a entrada oficial do portal"
+                            loginRequired -> "o portal pediu login; entre novamente"
+                            state.status == PortalConnectionStatus.CONECTADO -> "desde ${Formatters.dateTime(state.lastLoginAt)}"
+                            state.status == PortalConnectionStatus.SESSAO_EXPIRADA -> "o portal encerrou a sessão; entre novamente"
                             else -> "digite usuário e senha somente na página oficial"
                         },
                         style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -332,6 +457,41 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                         modifier = Modifier.semantics { contentDescription = "Manter sessão ativa" },
                     )
                 }
+            }
+            when (val b = autoBanner) {
+                AutoLoginBanner.Running -> AlertBanner(
+                    "Entrando com o certificado digital",
+                    "O app está só clicando nas etapas do login (perfil, certificado, empresa). Se aparecer CAPTCHA ou código, ele para e você conclui.",
+                    Tone.INFO, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+                is AutoLoginBanner.NeedsUser -> AlertBanner(
+                    "Conclua o login no portal",
+                    "${b.reason} O login automático parou; continue manualmente nesta página.",
+                    Tone.WARNING, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    actionLabel = "OK", onAction = { vm.dismissAutoLoginBanner() },
+                )
+                null -> Unit
+            }
+            unstable?.let { u ->
+                // "Compras.gov.br instável": 503 do portal. "Tentar agora" abre a entrada oficial (e segue o login
+                // automático, se ligado); as novas tentativas a cada 5 min ficam com o "Manter sessão ativa".
+                AlertBanner(
+                    PortalInstability.BADGE_LABEL,
+                    PortalInstability.bannerText(u, state.keepAliveOn),
+                    Tone.WARNING, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    actionLabel = "Tentar agora",
+                    onAction = {
+                        val e = entry
+                        val v = webView
+                        if (e != null && v != null && state.online) {
+                            pageError = null
+                            if (state.autoLoginOn && !e.autoLoginRunning) startAutoLogin(e, loadStart = true)
+                            else if (!e.autoLoginRunning) v.loadUrl(loginUrl)
+                        } else if (!state.online) {
+                            navigator.showMessage("Sem internet — tente de novo quando a conexão voltar.")
+                        }
+                    },
+                )
             }
             AnimatedVisibility(!state.online) {
                 AlertBanner(
@@ -380,7 +540,10 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
                                     currentUrl = url
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
-                                    latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), loadFailed = pageError != null)
+                                    latestVm.onNavigated(
+                                        url, PortalWebSessions.hasCookies(companyId, url), loadFailed = pageError != null,
+                                        entering = retained.entryGate.entering,
+                                    )
                                     PortalWebSessions.flush(companyId)
                                     // Troca de rota da SPA (pushState) não dispara onPageFinished: checa o conteúdo depois.
                                     if (checkContent) view.postDelayed({ probeContent(view, url) }, PROBE_DELAY_MS)
@@ -390,12 +553,46 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                     super.onPageFinished(view, url)
                                     loading = false; progress = 100
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
-                                    val signal = latestVm.onNavigated(url, PortalWebSessions.hasCookies(companyId, url), loadFailed = pageError != null)
+                                    val gate = retained.entryGate
+                                    val entering = gate.entering
+                                    val signal = latestVm.onNavigated(
+                                        url, PortalWebSessions.hasCookies(companyId, url), loadFailed = pageError != null, entering = entering,
+                                    )
                                     PortalWebSessions.flush(companyId)
-                                    // Login recém-detectado: leva uma única vez à área de trabalho do fornecedor.
-                                    if (signal == PortalWebPolicy.Signal.CONNECTED) {
-                                        PortalWebPolicy.postLoginRedirect(portal, url)?.let { view.loadUrl(it) }
-                                    } else if (signal != PortalWebPolicy.Signal.BLOCKED) {
+                                    // www.gov.br público vindo do Comprasnet/cnetmobile (ex.: intro.htm sem sessão) ou com a
+                                    // sessão marcada como aberta: NÃO logado → expira + UMA ida à entrada oficial.
+                                    if (pageError == null && online && signal != PortalWebPolicy.Signal.BLOCKED) {
+                                        val landing = gate.onPublicLanding(url, sessionOpen = latestVm.sessionOpen())
+                                        if (landing is PortalWebPolicy.EntryAction.LoginRequired) {
+                                            applyEntryAction(retained, view, landing, reentry = false)
+                                            return
+                                        }
+                                    }
+                                    // Área de trabalho logada (intro.htm): clique automático no link "Licitação e Dispensa
+                                    // (novo)" (sempre 1x por abertura; após "Não autorizado": 1 repetição) — nunca
+                                    // loadUrl do cnetmobile. Página de login durante a ida à área de trabalho: só conclui
+                                    // depois de a aba assentar nela.
+                                    val entryAction = if (pageError == null && signal != PortalWebPolicy.Signal.BLOCKED) {
+                                        gate.onPage(
+                                            url, settled = false, autoLoginOn = autoLoginOnNow, autoLoginRunning = retained.autoLoginRunning,
+                                            sessionOpen = signal == PortalWebPolicy.Signal.CONNECTED || latestVm.sessionOpen(),
+                                        )
+                                    } else {
+                                        PortalWebPolicy.EntryAction.None
+                                    }
+                                    if (entering && gate.entering && pageError == null && PortalWebPolicy.isLoginPage(portal, url)) {
+                                        view.postDelayed({
+                                            if (webView !== view || view.url != url || pageError != null || !online) return@postDelayed
+                                            applyEntryAction(
+                                                retained, view,
+                                                gate.onPage(url, settled = true, autoLoginOn = autoLoginOnNow, autoLoginRunning = retained.autoLoginRunning),
+                                                reentry = false,
+                                            )
+                                        }, ENTRY_SETTLE_MS)
+                                    }
+                                    // Nada de redirecionar para o cnetmobile após o login: só o link do portal o abre.
+                                    if (entryAction != PortalWebPolicy.EntryAction.None) applyEntryAction(retained, view, entryAction, reentry = false)
+                                    if (entryAction !is PortalWebPolicy.EntryAction.Navigate && signal != PortalWebPolicy.Signal.BLOCKED) {
                                         // Aviso de sessão encerrada exibido pela própria página (SPA na área logada).
                                         probeContent(view, url)
                                     }
@@ -429,7 +626,8 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                     pageError = "Certificado HTTPS inválido em ${PortalWebPolicy.host(error.url) ?: "um domínio"}. A navegação foi interrompida por segurança."
                                 }
                             }
-                            webChromeClient = object : WebChromeClient() {
+                            // onCreateWindow (link do portal com target=_blank/window.open) → carrega nesta mesma aba.
+                            webChromeClient = object : RetainedChromeClient(holder, retained) {
                                 override fun onProgressChanged(view: WebView, newProgress: Int) { progress = newProgress }
                                 override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
                                     fileCallback?.onReceiveValue(null)
@@ -442,11 +640,24 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 startDownload(ctx, companyId, url, userAgent, contentDisposition, mimeType, ::openExternally)
                             }
                             val existing = url?.takeIf { it.isNotBlank() && it != "about:blank" }
+                            // Nova abertura: até UMA reentrada automática nesta abertura (contador por WebView).
+                            retained.entryGate.onScreenOpened()
                             val first = forcedUrl ?: startUrl
+                            // Abertura da tela sem sessão + login automático ligado: arma ANTES da primeira carga
+                            // (ou avalia a página atual, se a aba já existia). Nunca depois de "Sair do portal".
+                            if (!autoArmed && forcedUrl == null && state.autoLoginOn && state.status != PortalConnectionStatus.CONECTADO) {
+                                autoArmed = true
+                                startAutoLogin(retained, loadStart = false)
+                            }
+                            autoArmed = true
+                            val forced = forcedUrl != null
                             forcedUrl = null
                             if (existing == null) {
-                                // WebView novo: primeira carga (adiada se estiver sem internet).
-                                if (online) loadUrl(first) else initialLoadPending = true
+                                // WebView novo (sem estado): SEMPRE a entrada oficial do Comprasnet (adiada se estiver sem
+                                // internet) — nunca intro.htm, a última URL ou o cnetmobile. Status persistido CONECTADO:
+                                // selo "Verificando sessão…" até a primeira página conclusiva.
+                                val verify = !forced && latestVm.beginSessionCheck(freshTab = true)
+                                if (online) loadUrl(retained.entryGate.firstLoad(first, verify = verify)) else initialLoadPending = true
                             } else {
                                 // Voltou para a tela: mantém a página (e o estado da SPA) como estava, sem recarregar.
                                 currentUrl = existing; loading = false; progress = 100
@@ -454,6 +665,19 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                             }
                             webView = this
                             entry = retained
+                            // Reabertura com a aba na área de trabalho logada (intro.htm): vai para Compras eletrônicas
+                            // pelo link do portal (1x). Já no cnetmobile: não mexe. Nunca loadUrl do cnetmobile.
+                            if (existing != null && online && !retained.autoLoginRunning) {
+                                val reattach = retained.entryGate.onScreenReattached(
+                                    existing, loading = this.progress < 100, sessionOpen = latestVm.sessionOpen(),
+                                )
+                                if (reattach == PortalWebPolicy.EntryAction.OpenElectronicPurchases) {
+                                    openElectronicPurchases(retained, this, auto = true, expectedUrl = existing)
+                                } else if (reattach is PortalWebPolicy.EntryAction.LoginRequired) {
+                                    // Aba retida parada no www.gov.br público com a sessão marcada como aberta.
+                                    applyEntryAction(retained, this, reattach, reentry = false)
+                                }
+                            }
                         }
                         FrameLayout(ctx).apply {
                             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -480,7 +704,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                             onRetry = {
                                 pageError = null
                                 val view = webView
-                                if (initialLoadPending || view?.url.isNullOrBlank()) { initialLoadPending = false; view?.loadUrl(startUrl) } else view?.reload()
+                                if (initialLoadPending || view?.url.isNullOrBlank()) { initialLoadPending = false; view?.loadUrl(firstLoad(entry, startUrl)) } else view?.reload()
                             },
                         )
                     }
@@ -500,16 +724,29 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 /** Espera para a 2ª checagem de conteúdo (SPA termina de renderizar depois do onPageFinished). */
 private const val PROBE_DELAY_MS = 2_000L
 
+/** Espera após o onPageFinished da área de trabalho antes do clique automático no link (menu termina de montar). */
+private const val ELECTRONIC_CLICK_DELAY_MS = 1_200L
+
+/** A entrada oficial só conclui "caiu no login" se a aba ficar na página de login por este tempo (redirecionamentos). */
+private const val ENTRY_SETTLE_MS = 2_500L
+
 /** Texto honesto do "Manter sessão ativa" (tela do portal e card em Portais). */
 fun keepAliveHonestText(minutes: Int): String =
     "Mantém a sessão ativa recarregando sua página a cada $minutes min enquanto ligado. " +
         "O portal ainda pode encerrar a sessão pelo tempo máximo dele; nesse caso você recebe um alerta."
 
-private fun sessionBadge(status: PortalConnectionStatus): Pair<String, Tone> = when (status) {
-    PortalConnectionStatus.CONECTADO -> "Sessão aberta" to Tone.SUCCESS
-    PortalConnectionStatus.SESSAO_EXPIRADA -> "Sessão expirada" to Tone.WARNING
-    PortalConnectionStatus.MFA_PENDENTE -> "MFA pendente" to Tone.WARNING
-    PortalConnectionStatus.DESCONECTADO -> "Faça login no portal" to Tone.NEUTRAL
+private fun sessionBadge(status: PortalConnectionStatus, check: PortalWebPolicy.SessionCheck): Pair<String, Tone> {
+    val label = PortalWebPolicy.sessionBadgeLabel(status, check)
+    val tone = when {
+        check == PortalWebPolicy.SessionCheck.VERIFYING && status == PortalConnectionStatus.CONECTADO -> Tone.INFO
+        check == PortalWebPolicy.SessionCheck.LOGIN_REQUIRED -> Tone.WARNING
+        else -> when (status) {
+            PortalConnectionStatus.CONECTADO -> Tone.SUCCESS
+            PortalConnectionStatus.SESSAO_EXPIRADA, PortalConnectionStatus.MFA_PENDENTE -> Tone.WARNING
+            PortalConnectionStatus.DESCONECTADO -> Tone.NEUTRAL
+        }
+    }
+    return label to tone
 }
 
 /**

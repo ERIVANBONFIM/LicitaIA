@@ -35,6 +35,8 @@ private object Keys {
     // "Manter sessão ativa" dos portais (opt-in por empresa+portal) e intervalo em minutos.
     val portalKeepAliveMinutes = intPreferencesKey("portal_keep_alive_minutes")
     val portalKeepAlive = stringSetPreferencesKey("portal_keep_alive")
+    // "Entrar automaticamente com certificado digital" (opt-in por empresa+portal).
+    val portalAutoCertLogin = stringSetPreferencesKey("portal_auto_cert_login")
 
     val rememberedUser = longPreferencesKey("session_user_id")
     val rememberedCompany = longPreferencesKey("session_company_id")
@@ -62,6 +64,7 @@ private fun Preferences.toSettings(): AppSettings {
         portalKeepAliveMinutes = (this[Keys.portalKeepAliveMinutes] ?: defaults.portalKeepAliveMinutes)
             .takeIf { it in AppSettings.PORTAL_KEEP_ALIVE_OPTIONS } ?: defaults.portalKeepAliveMinutes,
         portalKeepAlive = this[Keys.portalKeepAlive] ?: defaults.portalKeepAlive,
+        portalAutoCertLogin = this[Keys.portalAutoCertLogin] ?: defaults.portalAutoCertLogin,
     )
 }
 
@@ -92,6 +95,7 @@ class SettingsRepositoryImpl @Inject constructor(
             prefs[Keys.bottomBar] = next.showBottomBar
             prefs[Keys.portalKeepAliveMinutes] = next.portalKeepAliveMinutes
             prefs[Keys.portalKeepAlive] = next.portalKeepAlive
+            prefs[Keys.portalAutoCertLogin] = next.portalAutoCertLogin
         }
     }
 }

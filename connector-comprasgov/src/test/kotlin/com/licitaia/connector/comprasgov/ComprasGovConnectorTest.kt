@@ -2,6 +2,7 @@ package com.licitaia.connector.comprasgov
 
 import com.licitaia.connector.api.BidSubmission
 import com.licitaia.connector.api.HumanConfirmation
+import com.licitaia.connector.api.OpportunityScreen
 import com.licitaia.connector.api.PortalAuthResult
 import com.licitaia.connector.api.PortalCredentials
 import com.licitaia.connector.api.ProposalPreparation
@@ -27,15 +28,19 @@ import org.junit.Test
 import java.time.LocalDateTime
 import java.time.ZoneId
 
-/** Conector Compras.gov.br contra um MockWebServer que devolve respostas REAIS capturadas da API (fixtures). */
+/**
+ * Conector Compras.gov.br contra um MockWebServer: leitura completa paginada (até `paginasRestantes = 0` ou o teto),
+ * cache de linhas, triagem e enriquecimento de prazo pelo PNCP; respostas REAIS capturadas (fixtures) nos detalhes.
+ */
 class ComprasGovConnectorTest {
 
     private lateinit var server: MockWebServer
     private lateinit var connector: ComprasGovConnector
     private val requests = mutableListOf<RecordedRequest>()
 
-    /** Relógio fixo: 06/10/2026 12:00 em Brasília → janela 2026-09-06..2026-10-06. */
+    /** Relógio: 06/10/2026 12:00 em Brasília → janela de 60 dias 2026-08-07..2026-10-06. */
     private val now = brasilia(2026, 10, 6, 12, 0)
+    private var clockNow = now
 
     private fun brasilia(y: Int, mo: Int, d: Int, h: Int, mi: Int): Long =
         LocalDateTime.of(y, mo, d, h, mi).atZone(ZoneId.of("America/Sao_Paulo")).toInstant().toEpochMilli()
@@ -49,10 +54,9 @@ class ComprasGovConnectorTest {
     /** Resultado vazio REAL da API: HTTP 200 com lista vazia. */
     private fun emptyPage() = jsonResponse("""{"resultado":[],"totalRegistros":0,"totalPaginas":0,"paginasRestantes":0}""")
 
-    private val PAGE_P1 = "contratacoes_14133_pregao_mg_p1.json" // totalRegistros 399, 10 itens (todos com propostas já encerradas em 06/10)
-    private val PAGE_P40 = "contratacoes_14133_pregao_mg_p40.json" // última página real, 9 itens com propostas abertas
+    private val fast = ComprasGovConnector.Tuning(pageDelayMs = 0, retryDelaysMs = listOf(0, 0, 0), enrichMinIntervalMs = 0)
 
-    private fun start(clock: Long = now, dispatch: (RecordedRequest) -> MockResponse) {
+    private fun start(tuning: ComprasGovConnector.Tuning = fast, clock: (() -> Long)? = null, dispatch: (RecordedRequest) -> MockResponse) {
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -61,12 +65,16 @@ class ComprasGovConnectorTest {
             }
         }
         server.start()
-        connector = ComprasGovConnector(OkHttpClient(), ComprasGovConnector.defaultJson(), server.url("/"), clock = { clock })
+        connector = ComprasGovConnector(
+            OkHttpClient(), ComprasGovConnector.defaultJson(), server.url("/"),
+            clock = clock ?: { clockNow }, pncpBaseUrl = server.url("/"), tuning = tuning,
+        )
     }
 
     @Before
     fun setUp() {
         requests.clear()
+        clockNow = now
     }
 
     @After
@@ -83,113 +91,311 @@ class ComprasGovConnectorTest {
 
     private val CONTRATACOES = "/modulo-contratacoes/1_consultarContratacoes_PNCP_14133"
     private val LEGADO = "/modulo-legado/1_consultarLicitacao"
+    private val PNCP = "/api/consulta/v1/orgaos/"
 
-    /** Despacho padrão que simula a API real para Pregão/MG: sonda e páginas 1 e 2 (tamanho 200). */
-    private fun pregaoMg(req: RecordedRequest): MockResponse = when (req.route) {
-        CONTRATACOES -> when (req.query("pagina") to req.query("tamanhoPagina")) {
-            "1" to "10" -> jsonResponse(fixture(PAGE_P1)) // sonda: só interessa totalRegistros = 399
-            "2" to "200" -> jsonResponse(fixture(PAGE_P40)) // última página (mais recentes)
-            "1" to "200" -> jsonResponse(fixture(PAGE_P1))
-            else -> emptyPage()
-        }
-        else -> emptyPage()
+    private fun listings() = synchronized(requests) { requests.filter { it.route == CONTRATACOES } }
+    private fun pncpCalls() = synchronized(requests) { requests.filter { it.route?.startsWith(PNCP) == true } }
+
+    // ------------------------------------------------------------ dados sintéticos (mesmo formato da API real)
+
+    private fun control(seq: Int, cnpj: String = "11111111000111") = "$cnpj-1-${seq.toString().padStart(6, '0')}/2026"
+
+    private fun row(
+        seq: Int,
+        objeto: String = "Aquisição de material $seq",
+        uf: String = "MG",
+        enc: String? = "2026-10-20T10:00:00",
+        pub: String = "2026-09-20T10:00:00",
+        situacao: String = "Divulgada no PNCP",
+        valor: Double = 1000.0,
+    ): String {
+        val cnpj = "11111111000111"
+        val encField = enc?.let { ""","dataEncerramentoPropostaPncp":"$it"""" } ?: ""
+        return """{"idCompra":"x$seq","numeroControlePNCP":"${control(seq)}","anoCompraPncp":2026,"sequencialCompraPncp":$seq,""" +
+            """"orgaoEntidadeCnpj":"$cnpj","orgaoEntidadeRazaoSocial":"Órgão $seq","unidadeOrgaoUfSigla":"$uf",""" +
+            """"unidadeOrgaoMunicipioNome":"Cidade","numeroCompra":"$seq","codigoModalidade":5,"modalidadeIdPncp":6,""" +
+            """"modalidadeNome":"Pregão - Eletrônico","objetoCompra":"$objeto","situacaoCompraNomePncp":"$situacao",""" +
+            """"valorTotalEstimado":$valor,"dataPublicacaoPncp":"$pub"$encField,"contratacaoExcluida":false}"""
     }
 
-    // ------------------------------------------------------------ listOpportunities
+    /** Serve [rowsByCode] paginado como a API real (tamanhoPagina, totalPaginas, paginasRestantes). */
+    private fun serve(req: RecordedRequest, rowsByCode: Map<String, List<String>>): MockResponse {
+        val rows = rowsByCode[req.query("codigoModalidade")].orEmpty()
+        val size = req.query("tamanhoPagina")!!.toInt()
+        val pagina = req.query("pagina")!!.toInt()
+        val totalPages = (rows.size + size - 1) / size
+        val slice = rows.drop((pagina - 1) * size).take(size)
+        return jsonResponse(
+            """{"resultado":[${slice.joinToString(",")}],"totalRegistros":${rows.size},"totalPaginas":$totalPages,""" +
+                """"paginasRestantes":${(totalPages - pagina).coerceAtLeast(0)}}""",
+        )
+    }
+
+    private fun pncpStatus(enc: String?, situacaoId: Int = 1, situacao: String = "Divulgada no PNCP") = jsonResponse(
+        """{"numeroControlePNCP":"x","dataAberturaProposta":null,"dataEncerramentoProposta":${enc?.let { "\"$it\"" } ?: "null"},""" +
+            """"situacaoCompraId":$situacaoId,"situacaoCompraNome":"$situacao","modalidadeId":8}""",
+    )
+
+    // ------------------------------------------------------------ leitura completa
 
     @Test
-    fun `busca sonda o total e le as ultimas paginas (mais recentes) com os parametros documentados`() = runBlocking {
-        start(dispatch = ::pregaoMg)
+    fun `le todas as paginas da janela de 60 dias ate paginasRestantes zero`() = runBlocking {
+        val pregao = (1..25).map { row(it) }
+        start(fast.copy(pageSize = 10)) { req -> if (req.route == CONTRATACOES) serve(req, mapOf("5" to pregao)) else emptyPage() }
 
+        val listing = connector.listScreened(OpportunityFilter(), OpportunityScreen.ACCEPT_ALL)
+
+        val pregaoPages = listings().filter { it.query("codigoModalidade") == "5" }.map { it.query("pagina") }
+        assertEquals(listOf("1", "2", "3"), pregaoPages)
+        // Pregão, Dispensa e Concorrência (códigos do Compras.gov.br), sem UF, janela de 60 dias, sem parâmetro de texto
+        assertEquals(setOf("5", "6", "3"), listings().map { it.query("codigoModalidade") }.toSet())
+        listings().forEach { r ->
+            assertEquals("2026-08-07", r.query("dataPublicacaoPncpInicial"))
+            assertEquals("2026-10-06", r.query("dataPublicacaoPncpFinal"))
+            assertEquals("10", r.query("tamanhoPagina"))
+            assertNull(r.query("unidadeOrgaoUfSigla"))
+            assertNull(r.query("q"))
+        }
+        assertEquals(25, listing.diagnostics.read)
+        assertEquals(25, listing.diagnostics.candidates)
+        assertEquals(25, listing.opportunities.size)
+        assertFalse(listing.diagnostics.truncated)
+        assertTrue(requests.none { it.route == LEGADO })
+    }
+
+    @Test
+    fun `teto de linhas le as paginas mais recentes primeiro e marca truncado`() = runBlocking {
+        // 100 linhas em 10 páginas; teto 30 → página 1 (sonda/total) + as duas últimas (mais recentes).
+        val pregao = (1..100).map { row(it) }
+        start(fast.copy(pageSize = 10, maxRows = 30)) { req -> serve(req, mapOf("5" to pregao)) }
+
+        val listing = connector.listScreened(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO), OpportunityScreen.ACCEPT_ALL)
+
+        assertEquals(listOf("1", "10", "9"), listings().map { it.query("pagina") })
+        assertEquals(30, listing.diagnostics.read)
+        assertTrue(listing.diagnostics.truncated)
+        assertTrue(listing.opportunities.any { it.id == "COMPRAS_GOV:${control(100)}" })
+        assertTrue(listing.opportunities.none { it.id == "COMPRAS_GOV:${control(50)}" })
+    }
+
+    @Test
+    fun `teto e dividido entre modalidades e a menor e lida inteira`() = runBlocking {
+        val pregao = (1..60).map { row(it) }
+        val concorrencia = (1001..1015).map { row(it) }
+        start(fast.copy(pageSize = 10, maxRows = 45)) { req -> serve(req, mapOf("5" to pregao, "3" to concorrencia)) }
+
+        val listing = connector.listScreened(OpportunityFilter(), OpportunityScreen.ACCEPT_ALL)
+
+        // Concorrência (15) inteira; Pregão fica com o restante do teto (45 − 15 = 30), mais recentes primeiro.
+        assertEquals(listOf("1", "2"), listings().filter { it.query("codigoModalidade") == "3" }.map { it.query("pagina") })
+        assertEquals(listOf("1", "6", "5"), listings().filter { it.query("codigoModalidade") == "5" }.map { it.query("pagina") })
+        assertEquals(45, listing.diagnostics.read)
+    }
+
+    @Test
+    fun `cache de linhas por 10 minutos evita reler nas atualizacoes`() = runBlocking {
+        val pregao = (1..15).map { row(it) }
+        start(fast.copy(pageSize = 10)) { req -> serve(req, mapOf("5" to pregao)) }
+        val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
+
+        connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(2, listings().size)
+
+        clockNow = now + 2 * 60_000L // atualização automática de 2 min
+        val again = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals("não relê dentro do cache", 2, listings().size)
+        assertEquals(15, again.diagnostics.read)
+
+        clockNow = now + 11 * 60_000L
+        connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals("cache expirado relê tudo", 4, listings().size)
+    }
+
+    @Test
+    fun `429 e repetido com backoff e a leitura continua`() = runBlocking {
+        val pregao = (1..15).map { row(it) }
+        var throttled = 0
+        start(fast.copy(pageSize = 10)) { req ->
+            if (req.query("pagina") == "2" && throttled < 2) {
+                throttled++
+                MockResponse().setResponseCode(429)
+            } else {
+                serve(req, mapOf("5" to pregao))
+            }
+        }
+        val listing = connector.listScreened(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO), OpportunityScreen.ACCEPT_ALL)
+        assertEquals(listOf("1", "2", "2", "2"), listings().map { it.query("pagina") })
+        assertEquals(15, listing.diagnostics.read)
+    }
+
+    @Test
+    fun `429 persistente depois de ja ter linhas devolve o parcial`() = runBlocking {
+        start(fast.copy(pageSize = 10)) { req ->
+            when (req.query("codigoModalidade")) {
+                "5" -> serve(req, mapOf("5" to (1..5).map { row(it) }))
+                else -> MockResponse().setResponseCode(429)
+            }
+        }
+        val result = connector.listOpportunities(OpportunityFilter(ufs = setOf("MG")))
+        assertEquals(5, result.size)
+    }
+
+    @Test
+    fun `filtro triagem e prazo vencido reduzem as candidatas`() = runBlocking {
+        val rows = listOf(
+            row(1, objeto = "Contratação de link dedicado de internet", uf = "MG"),
+            row(2, objeto = "Link de internet fibra óptica", uf = "SP"),
+            row(3, objeto = "Aquisição de pneus", uf = "MG"),
+            row(4, objeto = "Link de internet", uf = "MG", enc = "2026-09-01T10:00:00"), // encerrada
+            row(5, objeto = "Link de internet", uf = "MG", situacao = "Revogada"),
+        )
+        start { req -> if (req.route == CONTRATACOES) serve(req, mapOf("5" to rows)) else emptyPage() }
+
+        val screen = OpportunityScreen { it.objectDescription.contains("internet", ignoreCase = true) }
+        val listing = connector.listScreened(OpportunityFilter(ufs = setOf("MG")), screen)
+
+        assertEquals(listOf("COMPRAS_GOV:${control(1)}"), listing.opportunities.map { it.id })
+        assertEquals(5, listing.diagnostics.read)
+        assertEquals(1, listing.diagnostics.candidates)
+        assertEquals(1, listing.diagnostics.open)
+        assertTrue("UF enviada à API", listings().all { it.query("unidadeOrgaoUfSigla") == "MG" })
+        assertTrue(pncpCalls().isEmpty())
+    }
+
+    // ------------------------------------------------------------ enriquecimento pelo PNCP
+
+    @Test
+    fun `candidatas sem prazo sao conferidas no PNCP - aberta, encerrada, revogada e sem resposta`() = runBlocking {
+        val rows = listOf(
+            row(1, objeto = "Link de internet A", enc = null), // PNCP: aberta até 20/10
+            row(2, objeto = "Link de internet B", enc = null), // PNCP: encerrada
+            row(3, objeto = "Link de internet C", enc = null), // PNCP: revogada
+            row(4, objeto = "Link de internet D", enc = null), // PNCP: 404
+            row(5, objeto = "Link de internet E", enc = null), // PNCP: 500
+            row(6, objeto = "Link de internet F", enc = "2026-10-15T10:00:00"), // já tem prazo: não consulta
+            row(7, objeto = "Pneus", enc = null), // não é candidata: não consulta
+        )
+        start { req ->
+            when {
+                req.route == CONTRATACOES -> serve(req, mapOf("5" to rows))
+                req.route == "${PNCP}11111111000111/compras/2026/1" -> pncpStatus("2026-10-20T09:00:00")
+                req.route == "${PNCP}11111111000111/compras/2026/2" -> pncpStatus("2026-09-30T09:00:00")
+                req.route == "${PNCP}11111111000111/compras/2026/3" -> pncpStatus("2026-10-30T09:00:00", 2, "Revogada")
+                req.route == "${PNCP}11111111000111/compras/2026/4" -> MockResponse().setResponseCode(404)
+                req.route == "${PNCP}11111111000111/compras/2026/5" -> MockResponse().setResponseCode(500)
+                else -> emptyPage()
+            }
+        }
+        val screen = OpportunityScreen { it.objectDescription.contains("internet", ignoreCase = true) }
+
+        val listing = connector.listScreened(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO), screen)
+
+        val byId = listing.opportunities.associateBy { it.id.substringAfter("-1-").substringBefore("/").toInt() }
+        assertEquals(setOf(1, 4, 5, 6), byId.keys)
+        assertEquals(brasilia(2026, 10, 20, 9, 0), byId.getValue(1).proposalDeadline)
+        assertFalse("sem resposta → prazo não informado", byId.getValue(4).hasProposalDeadline)
+        assertFalse(byId.getValue(5).hasProposalDeadline)
+        assertEquals(6, listing.diagnostics.candidates)
+        assertEquals(4, listing.diagnostics.open)
+        assertEquals(2, listing.diagnostics.unknownDeadline)
+        val consulted = pncpCalls().map { it.route!!.substringAfterLast('/') }.toSet()
+        assertEquals(setOf("1", "2", "3", "4", "5"), consulted)
+        assertEquals("500 é repetido com backoff", 4, pncpCalls().count { it.route!!.endsWith("/5") })
+
+        // Segunda execução: linhas e situações conhecidas vêm do cache; só as sem resposta são consultadas de novo.
+        requests.clear()
+        val again = connector.listScreened(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO), screen)
+        assertTrue(listings().isEmpty())
+        assertEquals(setOf("4", "5"), pncpCalls().map { it.route!!.substringAfterLast('/') }.toSet())
+        assertEquals(listing.opportunities.map { it.id }.toSet(), again.opportunities.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `enriquecimento respeita o maximo por execucao priorizando as publicacoes recentes`() = runBlocking {
+        val rows = (1..4).map { row(it, objeto = "Link de internet $it", enc = null, pub = "2026-09-0${it}T10:00:00") }
+        start(fast.copy(maxEnrichPerRun = 2)) { req ->
+            when {
+                req.route == CONTRATACOES -> serve(req, mapOf("5" to rows))
+                req.route?.startsWith(PNCP) == true -> pncpStatus("2026-10-20T09:00:00")
+                else -> emptyPage()
+            }
+        }
+        val listing = connector.listScreened(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO), OpportunityScreen.ACCEPT_ALL)
+        assertEquals(setOf("3", "4"), pncpCalls().map { it.route!!.substringAfterLast('/') }.toSet())
+        assertEquals(4, listing.opportunities.size)
+        assertEquals(2, listing.diagnostics.unknownDeadline)
+    }
+
+    @Test
+    fun `429 persistente do PNCP interrompe o enriquecimento e mantem as candidatas sem prazo`() = runBlocking {
+        val rows = (1..6).map { row(it, objeto = "Link de internet $it", enc = null) }
+        start { req ->
+            when {
+                req.route == CONTRATACOES -> serve(req, mapOf("5" to rows))
+                req.route?.startsWith(PNCP) == true -> MockResponse().setResponseCode(429)
+                else -> emptyPage()
+            }
+        }
+        val listing = connector.listScreened(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO), OpportunityScreen.ACCEPT_ALL)
+        assertEquals(6, listing.opportunities.size)
+        assertEquals(6, listing.diagnostics.unknownDeadline)
+        // no máximo as duas vias paralelas esgotam as retentativas (1 + 3 cada); as demais nem são consultadas
+        assertTrue("${pncpCalls().size} consultas", pncpCalls().size <= 8)
+        assertTrue(connector.lastEnrichment!!.throttled)
+    }
+
+    // ------------------------------------------------------------ respostas reais (fixtures)
+
+    @Test
+    fun `paginas reais com propostas encerradas sao descartadas e as abertas mantidas`() = runBlocking {
+        val p1 = fixture("contratacoes_14133_pregao_mg_p1.json")
+            .replace("\"totalRegistros\":399", "\"totalRegistros\":19")
+            .replace("\"totalPaginas\":40", "\"totalPaginas\":2")
+            .replace("\"paginasRestantes\":39", "\"paginasRestantes\":1")
+        start { req ->
+            when {
+                req.route != CONTRATACOES -> emptyPage()
+                req.query("pagina") == "1" -> jsonResponse(p1)
+                req.query("pagina") == "2" -> jsonResponse(fixture("contratacoes_14133_pregao_mg_p40.json"))
+                else -> emptyPage()
+            }
+        }
         val result = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("mg")))
 
-        val contratacoes = requests.filter { it.route == CONTRATACOES }
-        assertEquals(3, contratacoes.size)
-        contratacoes.forEach { r ->
-            assertEquals("2026-09-06", r.query("dataPublicacaoPncpInicial"))
-            assertEquals("2026-10-06", r.query("dataPublicacaoPncpFinal"))
-            assertEquals("5", r.query("codigoModalidade"))
-            assertEquals("MG", r.query("unidadeOrgaoUfSigla"))
-            assertNull("não há parâmetro de texto na API", r.query("q"))
-        }
-        // sonda (10 itens) → última página de 200 → página anterior; a ordem ASC da API exige ler de trás para a frente
-        assertEquals(listOf("1" to "10", "2" to "200", "1" to "200"), contratacoes.map { it.query("pagina") to it.query("tamanhoPagina") })
+        assertEquals(listOf("1", "2"), listings().map { it.query("pagina") })
+        assertTrue(listings().all { it.query("codigoModalidade") == "5" && it.query("unidadeOrgaoUfSigla") == "MG" && it.query("tamanhoPagina") == "500" })
         // Pregão é compatível com o legado (Lei 8.666): uma consulta complementar com modalidade=5
-        val legado = requests.filter { it.route == LEGADO }
-        assertEquals(1, legado.size)
-        assertEquals("5", legado.single().query("modalidade"))
-        assertEquals("2026-09-06", legado.single().query("data_publicacao_inicial"))
-        assertEquals("2026-10-06", legado.single().query("data_publicacao_final"))
-
+        val legado = requests.single { it.route == LEGADO }
+        assertEquals("5", legado.query("modalidade"))
+        assertEquals("2026-08-07", legado.query("data_publicacao_inicial"))
         // só os 9 da última página estão com propostas abertas em 06/10; os 10 da página 1 já encerraram
         assertEquals(9, result.size)
         assertTrue(result.all { it.portal == Portal.COMPRAS_GOV && it.id.startsWith("COMPRAS_GOV:") && it.uf == "MG" })
         assertTrue(result.all { it.proposalDeadline >= now })
         assertEquals(result.sortedBy { it.proposalDeadline }, result)
+        assertTrue(pncpCalls().isEmpty())
+
+        // filtros sem suporte na API (texto e valor) são aplicados localmente
+        val byText = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG"), query = "backup imutável"))
+        assertEquals(listOf("COMPRAS_GOV:23664303000104-1-000045/2026"), byText.map { it.id })
+        val byValue = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG"), minValue = 1_000_000.0))
+        assertEquals(listOf("COMPRAS_GOV:00399857000126-1-000334/2026"), byValue.map { it.id })
     }
 
     @Test
-    fun `contratacoes com prazo de propostas encerrado nao sao listadas`() = runBlocking {
-        start { req ->
-            if (req.route == CONTRATACOES) jsonResponse(fixture(PAGE_P1).replace("\"totalRegistros\":399", "\"totalRegistros\":10")) else emptyPage()
-        }
-        val result = connector.listOpportunities(OpportunityFilter(modality = Modality.DISPENSA_ELETRONICA))
-        assertTrue(result.isEmpty())
-        // sonda + única página (10 cabe em uma página de 200); Dispensa não tem legado
-        assertEquals(listOf("1" to "10", "1" to "200"), requests.map { it.query("pagina") to it.query("tamanhoPagina") })
-        assertTrue(requests.none { it.route == LEGADO })
-    }
-
-    @Test
-    fun `sem modalidade consulta Pregao, Dispensa e Concorrencia, sem UF e sem legado`() = runBlocking {
+    fun `sem resultados consulta Pregao, Dispensa e Concorrencia uma vez cada`() = runBlocking {
         start { emptyPage() }
-
-        val result = connector.listOpportunities(OpportunityFilter())
-
-        assertTrue(result.isEmpty())
-        // Cada sonda vazia (30 dias) é repetida uma vez com a janela ampliada (60 dias).
-        assertEquals(listOf("5", "5", "6", "6", "3", "3"), requests.map { it.query("codigoModalidade") })
-        assertTrue(requests.all { it.route == CONTRATACOES && it.query("unidadeOrgaoUfSigla") == null && it.query("tamanhoPagina") == "10" })
+        assertTrue(connector.listOpportunities(OpportunityFilter()).isEmpty())
+        assertEquals(listOf("5", "6", "3"), requests.map { it.query("codigoModalidade") })
+        assertTrue(requests.all { it.route == CONTRATACOES && it.query("pagina") == "1" })
     }
 
     @Test
-    fun `sonda com total zero ou 204 amplia a janela uma vez e encerra sem pedir paginas`() = runBlocking {
+    fun `204 sem corpo e tratado como vazio`() = runBlocking {
         start { MockResponse().setResponseCode(204) }
         assertTrue(connector.listOpportunities(OpportunityFilter(modality = Modality.CONCORRENCIA, ufs = setOf("SP"))).isEmpty())
-        val probes = requests.filter { it.route == CONTRATACOES }
-        assertEquals(listOf("2026-09-06", "2026-08-07"), probes.map { it.query("dataPublicacaoPncpInicial") })
-        assertTrue(probes.all { it.query("tamanhoPagina") == "10" })
-        assertEquals("3", requests.first().query("codigoModalidade"))
-        assertEquals("SP", requests.first().query("unidadeOrgaoUfSigla"))
-    }
-
-    @Test
-    fun `chip so Compras gov br le paginas maiores que a busca geral`() = runBlocking {
-        start { req ->
-            if (req.route == CONTRATACOES) jsonResponse(fixture(PAGE_P1)) else emptyPage() // total 399
-        }
-        connector.listOpportunities(OpportunityFilter(portals = setOf(Portal.COMPRAS_GOV)))
-        val focusedSizes = requests.filter { it.query("tamanhoPagina") != "10" }.map { it.query("tamanhoPagina") }.toSet()
-        assertEquals(setOf("300"), focusedSizes) // 900 itens / 3 modalidades
-
-        requests.clear()
-        connector.listOpportunities(OpportunityFilter())
-        val generalSizes = requests.filter { it.query("tamanhoPagina") != "10" }.map { it.query("tamanhoPagina") }.toSet()
-        assertEquals(setOf("66"), generalSizes) // 200 itens / 3 modalidades
-    }
-
-    @Test
-    fun `429 depois de ja ter resultados devolve o parcial`() = runBlocking {
-        start { req ->
-            when {
-                req.route != CONTRATACOES -> emptyPage()
-                req.query("codigoModalidade") == "5" ->
-                    jsonResponse(fixture(if (req.query("tamanhoPagina") == "10") PAGE_P1 else PAGE_P40))
-                else -> MockResponse().setResponseCode(429)
-            }
-        }
-        val result = connector.listOpportunities(OpportunityFilter(ufs = setOf("MG")))
-        assertEquals(9, result.size)
+        assertEquals("3", listings().first().query("codigoModalidade"))
+        assertEquals("SP", listings().first().query("unidadeOrgaoUfSigla"))
     }
 
     @Test
@@ -201,29 +407,11 @@ class ComprasGovConnectorTest {
 
     @Test
     fun `mais de tres UFs nao sao enviadas a API e o filtro e aplicado localmente`() = runBlocking {
-        start(dispatch = ::pregaoMg)
-        val result = connector.listOpportunities(
-            OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG", "SP", "RJ", "ES")),
-        )
-        assertTrue(requests.all { it.query("unidadeOrgaoUfSigla") == null })
-        assertEquals(9, result.size) // fixture é toda MG
-        // UF não contemplada → filtro local descarta tudo
-        requests.clear()
-        val none = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("SP", "RJ", "ES", "BA")))
-        assertTrue(none.isEmpty())
-    }
-
-    @Test
-    fun `filtros sem suporte na API (texto e valor) sao aplicados localmente`() = runBlocking {
-        start(dispatch = ::pregaoMg)
-
-        val byText = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG"), query = "backup imutável"))
-        assertEquals(listOf("COMPRAS_GOV:23664303000104-1-000045/2026"), byText.map { it.id })
-
-        requests.clear()
-        val byValue = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG"), minValue = 1_000_000.0))
-        assertEquals(listOf("COMPRAS_GOV:00399857000126-1-000334/2026"), byValue.map { it.id })
-        assertTrue(byValue.all { it.estimatedValue >= 1_000_000.0 })
+        val rows = listOf(row(1, uf = "MG"), row(2, uf = "BA"))
+        start { req -> if (req.route == CONTRATACOES) serve(req, mapOf("5" to rows)) else emptyPage() }
+        val result = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG", "SP", "RJ", "ES")))
+        assertTrue(listings().all { it.query("unidadeOrgaoUfSigla") == null })
+        assertEquals(listOf("COMPRAS_GOV:${control(1)}"), result.map { it.id })
     }
 
     @Test
@@ -236,7 +424,7 @@ class ComprasGovConnectorTest {
     @Test
     fun `legado complementa Pregao com licitacoes 8666 abertas e descarta as pertence14133`() = runBlocking {
         // relógio em 10/11/2023: as licitações da fixture legada (abertura 14..21/11/2023) ainda estão abertas
-        start(clock = brasilia(2023, 11, 10, 12, 0)) { req ->
+        start(clock = { brasilia(2023, 11, 10, 12, 0) }) { req ->
             when (req.route) {
                 LEGADO -> jsonResponse(fixture("legado_licitacao_pregao_2023-11_p1.json"))
                 else -> emptyPage()
@@ -245,7 +433,7 @@ class ComprasGovConnectorTest {
         val result = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO))
 
         val legado = requests.single { it.route == LEGADO }
-        assertEquals("2023-10-11", legado.query("data_publicacao_inicial"))
+        assertEquals("2023-09-11", legado.query("data_publicacao_inicial"))
         assertEquals("2023-11-10", legado.query("data_publicacao_final"))
         assertEquals("5", legado.query("modalidade"))
         assertEquals("50", legado.query("tamanhoPagina"))
@@ -257,13 +445,18 @@ class ComprasGovConnectorTest {
 
     @Test
     fun `falha no legado nao derruba a busca principal`() = runBlocking {
-        start { req -> if (req.route == LEGADO) MockResponse().setResponseCode(500) else pregaoMg(req) }
-        val result = connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG")))
-        assertEquals(9, result.size)
+        start { req ->
+            when (req.route) {
+                LEGADO -> MockResponse().setResponseCode(500)
+                CONTRATACOES -> serve(req, mapOf("5" to (1..3).map { row(it) }))
+                else -> emptyPage()
+            }
+        }
+        assertEquals(3, connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO, ufs = setOf("MG"))).size)
     }
 
     @Test
-    fun `erro HTTP vira ComprasGovException com mensagem em portugues`() = runBlocking {
+    fun `erro HTTP persistente vira ComprasGovException com mensagem em portugues`() = runBlocking {
         start { MockResponse().setResponseCode(503).setBody("indisponível") }
         try {
             connector.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO))
@@ -273,10 +466,11 @@ class ComprasGovConnectorTest {
             assertEquals(503, e.httpStatus)
             assertTrue(e.message!!, e.message!!.contains("indisponível"))
         }
+        assertEquals("1 + 3 retentativas", 4, listings().size)
     }
 
     @Test
-    fun `erro de validacao 400 (problem json real) expoe o detalhe da API`() = runBlocking {
+    fun `erro de validacao 400 (problem json real) expoe o detalhe da API sem retentar`() = runBlocking {
         val problem = """{"type":"about:blank","title":"Erro de Validação","status":400,"detail":"tamanhoPagina: O tamanho da página deve ser no mínimo 10","instance":"$CONTRATACOES","timestamp":"2026-10-06T06:25:24.081646532Z"}"""
         start { jsonResponse(problem, 400) }
         try {
@@ -286,6 +480,7 @@ class ComprasGovConnectorTest {
             assertEquals(400, e.httpStatus)
             assertTrue(e.message!!, e.message!!.contains("O tamanho da página deve ser no mínimo 10"))
         }
+        assertEquals(1, requests.size)
     }
 
     @Test
@@ -314,7 +509,7 @@ class ComprasGovConnectorTest {
         start { emptyPage() }
         val url = server.url("/")
         server.shutdown()
-        val offline = ComprasGovConnector(OkHttpClient(), ComprasGovConnector.defaultJson(), url, clock = { now })
+        val offline = ComprasGovConnector(OkHttpClient(), ComprasGovConnector.defaultJson(), url, clock = { now }, tuning = fast)
         try {
             offline.listOpportunities(OpportunityFilter(modality = Modality.PREGAO_ELETRONICO))
             fail("deveria falhar")

@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Balance
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DocumentScanner
 import androidx.compose.material.icons.outlined.EmojiEvents
@@ -79,6 +80,7 @@ import com.licitaia.domain.model.Tender
 import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
 import com.licitaia.domain.model.UserRole
+import com.licitaia.domain.model.pncpControlNumber
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompetitionRepository
 import com.licitaia.domain.repository.ProposalRepository
@@ -127,6 +129,8 @@ data class TenderDetailState(
     val savingResult: Boolean = false,
     /** Sessão assistida ABERTA vinculada a esta licitação (Pregões ao Vivo), se houver. */
     val liveSessionId: String? = null,
+    /** Motivo da última falha ao baixar o edital oficial do PNCP (inclusive o disparo automático do "Tenho Interesse"). */
+    val officialEditalError: String? = null,
 ) {
     val canAnalyze: Boolean get() = role?.let { Rbac.can(it, Permission.ANALISAR) } ?: false
     /** Pode criar/operar sessões assistidas (mesma regra do FAB "Acompanhar pregão" em Pregões ao Vivo). */
@@ -196,13 +200,48 @@ class TenderDetailViewModel @Inject constructor(
         .distinctUntilChanged()
         .catch { emit(null) }
 
-    val state: StateFlow<TenderDetailState> = combine(remote, flags, progress, liveSessionId) { s, f, p, live ->
+    private val officialError = tenders.observeOfficialEditalError(tenderId).catch { emit(null) }
+
+    val state: StateFlow<TenderDetailState> = combine(remote, flags, progress, liveSessionId, officialError) { s, f, p, live, official ->
         s.copy(
             // Uma importação/OCR que continua em segundo plano (após sair e voltar à tela) também conta como "importando".
             importing = f.importing || p != null, analyzing = f.analyzing, editalError = f.editalError,
-            importProgress = p, savingResult = f.savingResult, liveSessionId = live,
+            importProgress = p, savingResult = f.savingResult, liveSessionId = live, officialEditalError = official,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderDetailState())
+
+    /** Baixa o edital oficial publicado no PNCP (com anexos relevantes) e extrai o texto; o erro fica no card. */
+    fun fetchOfficialEdital() {
+        if (state.value.importing || tenderId <= 0) return
+        flags.update { it.copy(importing = true, editalError = null) }
+        viewModelScope.launch {
+            val result = try {
+                tenders.fetchOfficialEdital(tenderId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            result.fold(
+                onSuccess = { r ->
+                    flags.update { it.copy(importing = false, editalError = if (r.scanned && !r.ocr) SCANNED_NO_TEXT else null) }
+                    _messages.tryEmit(
+                        when {
+                            r.ocr -> "Edital oficial baixado; texto obtido por OCR (${r.pages ?: 0} página(s), ${r.chars} caracteres) — confira trechos importantes."
+                            r.scanned -> SCANNED_NO_TEXT
+                            else -> "Edital oficial baixado: ${r.pages ?: 0} página(s), ${r.chars} caracteres. Pronto para analisar com IA."
+                        },
+                    )
+                },
+                // O motivo aparece no card via observeOfficialEditalError ("Não foi possível baixar o edital… — Tentar de novo").
+                onFailure = { flags.update { it.copy(importing = false) } },
+            )
+        }
+    }
+
+    private companion object {
+        const val SCANNED_NO_TEXT = "PDF sem texto (escaneado): o OCR não reconheceu texto suficiente — cole o texto do edital manualmente."
+    }
 
     fun toggleChecklist(index: Int) {
         viewModelScope.launch {
@@ -415,6 +454,7 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 tender = tender,
                 state = state,
                 onImportPdf = { pickPdf.launch(arrayOf("application/pdf")) },
+                onDownloadOfficial = viewModel::fetchOfficialEdital,
                 onPaste = { pasteOpen = true },
                 onOcr = viewModel::recognizeText,
                 onOpenPdf = {
@@ -497,7 +537,13 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 InfoRow("Segmento", tender.segment.label)
                 InfoRow("Local", "${tender.city}/${tender.uf}")
                 InfoRow("Valor estimado", Formatters.brl(tender.estimatedValue), valueColor = LicitaColors.GreenBright)
-                InfoRow("Edital registrado", if (tender.editalRegistered) "Sim" else "Pendente", valueColor = if (tender.editalRegistered) LicitaColors.GreenBright else LicitaColors.Yellow)
+                val (editalLabel, editalColor) = when {
+                    tender.editalPdfPath != null -> "baixado (${tender.editalPages ?: 0} páginas)" to LicitaColors.GreenBright
+                    tender.hasEditalText -> "texto colado (${tender.editalChars} caracteres)" to LicitaColors.GreenBright
+                    tender.pncpControlNumber != null || tender.editalRegistered -> "link disponível" to LicitaColors.Yellow
+                    else -> "não disponível" to LicitaColors.TextMuted
+                }
+                InfoRow("Edital", editalLabel, valueColor = editalColor)
             }
         }
         item(key = "dates") {
@@ -580,12 +626,14 @@ private fun EditalCard(
     tender: Tender,
     state: TenderDetailState,
     onImportPdf: () -> Unit,
+    onDownloadOfficial: () -> Unit,
     onPaste: () -> Unit,
     onOcr: () -> Unit,
     onOpenPdf: () -> Unit,
     onAnalyze: () -> Unit,
 ) {
     val busy = state.importing || state.analyzing
+    val canDownloadOfficial = tender.pncpControlNumber != null && tender.editalPdfPath == null
     val ocrText = tender.editalScanned && tender.hasEditalText
     val statusText = when {
         tender.editalScanned && !tender.hasEditalText -> "PDF escaneado (sem camada de texto) — reconheça o texto (OCR) ou cole manualmente"
@@ -626,7 +674,7 @@ private fun EditalCard(
             Spacer(Modifier.height(10.dp))
             when (progress?.stage) {
                 EditalImportProgress.Stage.OCR -> {
-                    val label = if (progress.totalPages > 0) "Reconhecendo texto… ${progress.page}/${progress.totalPages}" else "Reconhecendo texto…"
+                    val label = if (progress.totalPages > 0) "OCR página ${progress.page} de ${progress.totalPages}" else "Reconhecendo texto (OCR)…"
                     AlertBanner(
                         label,
                         "OCR no aparelho (sem enviar o PDF para fora). Páginas digitalizadas levam alguns segundos cada; você pode sair da tela que o processo continua.",
@@ -640,6 +688,18 @@ private fun EditalCard(
                     } else {
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
                     }
+                }
+                EditalImportProgress.Stage.BAIXANDO -> {
+                    AlertBanner(
+                        "Baixando…",
+                        "Baixando o edital oficial (e anexos relevantes) publicado no PNCP. Você pode sair da tela que o download continua.",
+                        Tone.INFO, pulsing = true,
+                    )
+                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
+                }
+                EditalImportProgress.Stage.EXTRAINDO -> {
+                    AlertBanner("Extraindo texto…", "Lendo o texto do PDF do edital. Editais grandes podem levar alguns segundos.", Tone.INFO, pulsing = true)
+                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
                 }
                 else -> {
                     AlertBanner(
@@ -661,6 +721,25 @@ private fun EditalCard(
         if (error != null && !busy) {
             Spacer(Modifier.height(10.dp))
             AlertBanner(if (tender.editalScanned && !tender.hasEditalText) "PDF sem texto" else "Falha", error, if (tender.editalScanned && !tender.hasEditalText) Tone.WARNING else Tone.DANGER)
+        }
+        val officialError = state.officialEditalError
+        if (officialError != null && !busy && tender.pncpControlNumber != null) {
+            Spacer(Modifier.height(10.dp))
+            AlertBanner(
+                if (tender.editalPdfPath == null) "Não foi possível baixar o edital" else "Falha ao processar o edital oficial",
+                officialError,
+                Tone.WARNING,
+                actionLabel = if (state.canAnalyze) "Tentar de novo" else null,
+                onAction = if (state.canAnalyze) onDownloadOfficial else null,
+            )
+        }
+        if (canDownloadOfficial) {
+            Spacer(Modifier.height(12.dp))
+            PrimaryButton(
+                if (state.importing) "Baixando…" else "Baixar edital oficial (PNCP)",
+                onDownloadOfficial, Modifier.fillMaxWidth(),
+                enabled = state.canAnalyze && !busy, loading = state.importing, icon = Icons.Outlined.CloudDownload,
+            )
         }
         Spacer(Modifier.height(12.dp))
         ButtonRow {
@@ -693,7 +772,8 @@ private fun EditalCard(
         if (!tender.hasEditalText) {
             Spacer(Modifier.height(6.dp))
             Text(
-                "A análise com IA exige o texto do edital. Importe o PDF ou cole o texto.",
+                if (tender.pncpControlNumber != null) "A análise com IA exige o texto do edital. Baixe o edital oficial, importe o PDF ou cole o texto."
+                else "A análise com IA exige o texto do edital. Importe o PDF ou cole o texto.",
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
             )
         }

@@ -10,6 +10,7 @@ import javax.inject.Inject
 class LicitaApplication : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
+        if (BuildConfig.WEBVIEW_DEBUG) runCatching { android.webkit.WebView.setWebContentsDebuggingEnabled(true) }
         PersonalAlertsWorker.schedule(this)
     }
 
