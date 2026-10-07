@@ -14,7 +14,16 @@ import com.licitaia.domain.model.ProposalStatus
 import com.licitaia.domain.model.Tender
 import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
+import com.licitaia.domain.model.pncpControlNumber
+import com.licitaia.domain.portal.PortalRobotPlan
+import com.licitaia.domain.portal.PortalRobotRepository
+import com.licitaia.domain.portal.ProposalRobotMapping
+import com.licitaia.domain.portal.RobotProposalStatus
+import com.licitaia.domain.proposal.OfficialProposalBuilder
 import com.licitaia.domain.repository.AuditRepository
+import com.licitaia.domain.repository.ProposalDraftOutcome
+import com.licitaia.domain.util.Formatters
+import com.licitaia.domain.util.missingProposalData
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompanyRepository
 import com.licitaia.domain.repository.ProposalPdfGenerator
@@ -44,7 +53,25 @@ data class ItemDraft(
     val unit: String = "un",
     val quantity: String = "1",
     val unitPrice: String = "",
+    /** Nº do item no edital (texto do campo; vazio = item livre). */
+    val itemNumber: String = "",
+    val brand: String = "",
+    val manufacturer: String = "",
+    val model: String = "",
+    /** Valor unitário estimado pelo órgão (teto), só leitura; null = sigiloso/desconhecido. */
+    val estimatedUnitPrice: Double? = null,
+    val confidentialBudget: Boolean = false,
 ) {
+    /** Preço digitado acima do estimado pelo órgão (aviso, não bloqueia). */
+    val aboveEstimate: Boolean
+        get() {
+            val p = parseNumber(unitPrice) ?: return false
+            return estimatedUnitPrice != null && p > estimatedUnitPrice + 1e-9
+        }
+
+    /** Sem preço definido (ex.: orçamento sigiloso). */
+    val priceMissing: Boolean get() = (parseNumber(unitPrice) ?: 0.0).let { it.isNaN() || it <= 0.0 }
+
     val total: Double
         get() {
             val q = parseNumber(quantity) ?: return 0.0
@@ -63,7 +90,14 @@ data class ProposalDraft(
 
     companion object {
         fun from(p: Proposal) = ProposalDraft(
-            items = p.items.map { ItemDraft(it.description, it.unit, numberText(it.quantity), numberText(it.unitPrice)) }.ifEmpty { listOf(ItemDraft()) },
+            items = p.items.map {
+                ItemDraft(
+                    description = it.description, unit = it.unit, quantity = numberText(it.quantity),
+                    unitPrice = if (it.unitPrice > 0.0) numberText(it.unitPrice) else "",
+                    itemNumber = it.itemNumber?.toString().orEmpty(), brand = it.brand, manufacturer = it.manufacturer, model = it.model,
+                    estimatedUnitPrice = it.estimatedUnitPrice, confidentialBudget = it.confidentialBudget,
+                )
+            }.ifEmpty { listOf(ItemDraft()) },
             deliveryDays = p.deliveryDays.toString(),
             validityDays = p.validityDays.toString(),
             notes = p.notes,
@@ -114,7 +148,15 @@ data class ProposalUiState(
     val canApprove: Boolean = false,
     val canSubmit: Boolean = false,
     val companyName: String = "",
-)
+    /** Dados essenciais do PDF que faltam no cadastro da empresa (ex.: "endereço", "representante legal"). */
+    val missingCompanyData: List<String> = emptyList(),
+) {
+    /** Dono/Admin: pode preparar, aprovar e liberar → atalho "Aprovar e liberar para o portal". */
+    val canFastTrack: Boolean get() = canPrepare && canApprove && canSubmit
+
+    /** A licitação tem número de controle PNCP (itens oficiais consultáveis). */
+    val hasOfficialItems: Boolean get() = tender?.pncpControlNumber != null
+}
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -126,6 +168,7 @@ class ProposalViewModel @Inject constructor(
     private val companies: CompanyRepository,
     private val pdfGenerator: ProposalPdfGenerator,
     private val audit: AuditRepository,
+    private val robots: PortalRobotRepository,
 ) : ViewModel() {
 
     private val tenderId: Long = savedStateHandle.longArg("tenderId") ?: -1L
@@ -173,6 +216,7 @@ class ProposalViewModel @Inject constructor(
             canApprove = role?.let { Rbac.can(it, Permission.APROVAR_PROPOSTA) } ?: false,
             canSubmit = role?.let { Rbac.can(it, Permission.APROVAR_ENVIO) } ?: false,
             companyName = r.session?.activeCompany?.let { it.tradeName.ifBlank { it.name } }.orEmpty(),
+            missingCompanyData = r.session?.activeCompany?.missingProposalData().orEmpty(),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ProposalUiState())
 
@@ -207,7 +251,10 @@ class ProposalViewModel @Inject constructor(
         d.copy(items = d.items.mapIndexed { i, item -> if (i == index) transform(item) else item })
     }
 
-    fun addItem() = editDraft { it.copy(items = it.items + ItemDraft()) }
+    fun addItem() = editDraft { d ->
+        val next = d.items.mapNotNull { it.itemNumber.trim().toIntOrNull() }.maxOrNull()?.plus(1)
+        d.copy(items = d.items + ItemDraft(itemNumber = next?.toString().orEmpty()))
+    }
 
     fun removeItem(index: Int) = editDraft { d ->
         if (d.items.size <= 1) d else d.copy(items = d.items.filterIndexed { i, _ -> i != index })
@@ -220,11 +267,33 @@ class ProposalViewModel @Inject constructor(
 
     // ------------------------------------------------------------------ ações
 
-    fun generateWithAi() = run("Gerando proposta com a IA…") {
-        val result = proposals.generateDraft(tenderId).getOrThrow()
+    fun generateWithAi() = run("Gerando proposta com os itens do edital…") {
+        val outcome = proposals.generateDraft(tenderId).getOrThrow()
+        val result = outcome.proposal
         local.update { it.copy(selectedId = result.id, draft = ProposalDraft.from(result), dirty = false) }
         advanceTender(TenderStatus.PROPOSTA_EM_ELABORACAO)
-        message("Rascunho v${result.version} gerado pela IA. Revise itens, prazo e observações.")
+        message(outcomeMessage(outcome, "Rascunho v${result.version}"))
+    }
+
+    /** Relê os itens oficiais do edital e recalcula os valores do rascunho selecionado. */
+    fun refreshOfficialValues() = withSelected("Atualizando valores do edital…") { p ->
+        check(!local.value.dirty) { "Salve ou descarte as alterações antes de atualizar os valores." }
+        val outcome = proposals.refreshOfficialValues(p.id).getOrThrow()
+        local.update { it.copy(selectedId = outcome.proposal.id, draft = ProposalDraft.from(outcome.proposal), dirty = false) }
+        message(outcomeMessage(outcome, "Valores da v${p.version} atualizados"))
+    }
+
+    private fun outcomeMessage(outcome: ProposalDraftOutcome, prefix: String): String = buildString {
+        val p = outcome.proposal
+        if (outcome.officialSource != null) {
+            append("$prefix com ${p.items.size} item(ns) oficiais do edital (${outcome.officialSource}). ")
+            append(if (outcome.pricedByAnalysis) "Preços pela faixa da análise da IA, nunca acima do estimado. " else "Preços ${Formatters.percent(OfficialProposalBuilder.DEFAULT_DISCOUNT_PCT)} abaixo do estimado. ")
+            if (outcome.confidentialItems.isNotEmpty()) append("Orçamento sigiloso nos itens ${outcome.confidentialItems.joinToString()}: defina o preço. ")
+        } else {
+            append("$prefix gerado pela IA. ")
+        }
+        outcome.warning?.let { append(it).append(' ') }
+        append("Revise e edite antes de enviar.")
     }
 
     fun startBlank() = run("Criando rascunho…") {
@@ -232,7 +301,7 @@ class ProposalViewModel @Inject constructor(
         val tender = s.tender ?: error("Licitação não carregada")
         val blank = Proposal(
             tenderId = tenderId, companyId = tender.companyId,
-            items = listOf(ProposalItem(tender.objectDescription.take(120), "un", 1.0, s.analysis?.priceRange?.suggested ?: 0.0)),
+            items = listOf(ProposalItem(OfficialProposalBuilder.summarize(tender.objectDescription, 200), "un", 1.0, s.analysis?.priceRange?.suggested ?: 0.0, itemNumber = 1)),
             deliveryDays = 30, validityDays = 60, createdBy = s.userName.ifBlank { "Usuário" },
         )
         val id = proposals.saveNewVersion(blank)
@@ -280,11 +349,63 @@ class ProposalViewModel @Inject constructor(
         message("Proposta v${p.version} rejeitada. O responsável pode gerar uma nova versão.")
     }
 
-    /** Envio SIMULADO — chamado somente após o BindingConfirmDialog. */
-    fun simulateSubmission() = withSelected("Preparando envio simulado…") { p ->
+    /** Liberação ao portal — chamada somente após o BindingConfirmDialog. */
+    fun simulateSubmission() = withSelected("Liberando proposta…") { p -> release(p) }
+
+    /**
+     * Atalho do dono (perfil que pode preparar, aprovar e liberar): revisão + aprovação + liberação de uma vez,
+     * chamado somente após a mesma confirmação explícita (BindingConfirmDialog). Outros perfis seguem o fluxo completo.
+     */
+    fun approveAndRelease() = withSelected("Aprovando e liberando…") { p ->
+        val s = state.value
+        check(s.canFastTrack) { "Seu perfil não pode aprovar e liberar sozinho: use o fluxo de revisão." }
+        check(!s.dirty) { "Salve as alterações antes de aprovar." }
+        check(p.pendingPriceItems.isEmpty()) { "Defina o preço de todos os itens antes de aprovar." }
+        if (p.status == ProposalStatus.RASCUNHO || p.status == ProposalStatus.REJEITADA) proposals.submitForReview(p.id)
+        if (p.status != ProposalStatus.APROVADA) proposals.approve(p.id)
+        val approved = proposals.getProposal(p.id)
+        check(approved?.status == ProposalStatus.APROVADA) { "Não foi possível aprovar a proposta (verifique o perfil)." }
+        advanceTender(TenderStatus.APROVADA)
+        release(approved!!)
+    }
+
+    private suspend fun release(p: Proposal) {
         proposals.simulateSubmission(p.id).getOrThrow()
         advanceTender(TenderStatus.ENVIADA_SIMULADA)
-        message("Envio SIMULADO registrado. Nenhum dado foi enviado ao portal.")
+        val prefilled = try {
+            prefillRobotPlan(p)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+        message(
+            if (prefilled) "Proposta liberada. Itens e valores já estão no plano do robô: revise e toque em “Soltar robô”."
+            else "Proposta liberada. Abrindo o robô: os itens da proposta preenchem o plano para você revisar.",
+        )
+        _events.tryEmit(ProposalEvent.Navigate("robotproposal/$tenderId"))
+    }
+
+    /**
+     * Grava os itens da proposta liberada no plano do robô quando a licitação já tem vínculo em "Minhas licitações"
+     * (sem vínculo, o plano lê a proposta liberada ao abrir). Não mexe em cadastro em andamento.
+     */
+    private suspend fun prefillRobotPlan(p: Proposal): Boolean {
+        val tender = state.value.tender ?: return false
+        val mine = robots.getMyTenders(tender.companyId).firstOrNull { it.matchedTenderId == tender.id } ?: return false
+        val existing = robots.getPlan(tender.companyId, mine.tenderKey)
+        if (existing?.proposalStatus == RobotProposalStatus.EXECUTANDO || existing?.proposalStatus == RobotProposalStatus.AGUARDANDO_USUARIO) return false
+        val items = ProposalRobotMapping.mergeFloors(ProposalRobotMapping.toPlanItems(p), existing?.items.orEmpty())
+        val base = existing ?: PortalRobotPlan(
+            companyId = tender.companyId, tenderKey = mine.tenderKey,
+            sessionAt = mine.openingAt ?: tender.sessionAt.takeIf { it > 0 },
+        )
+        val status = when (base.proposalStatus) {
+            RobotProposalStatus.NAO_CONFIGURADA, RobotProposalStatus.FALHOU, RobotProposalStatus.PRONTA -> RobotProposalStatus.PRONTA
+            else -> base.proposalStatus
+        }
+        robots.savePlan(base.copy(items = items, proposalStatus = status))
+        return true
     }
 
     fun generatePdf(openAfter: Boolean = true) = withSelected("Gerando PDF…") { p ->
@@ -293,7 +414,7 @@ class ProposalViewModel @Inject constructor(
     }
 
     fun sharePdf() = withSelected("Preparando compartilhamento…") { p ->
-        val path = p.pdfPath?.takeIf { java.io.File(it).exists() } ?: buildPdf(p)
+        val path = p.pdfPath?.takeIf { java.io.File(it).let { f -> f.exists() && f.length() > 0 && f.name.startsWith("Proposta_") } } ?: buildPdf(p)
         _events.tryEmit(ProposalEvent.Share(path, "Proposta ${state.value.tender?.number.orEmpty()} v${p.version}"))
     }
 
@@ -333,16 +454,26 @@ class ProposalViewModel @Inject constructor(
         val d = s.draft
         val items = d.items.mapIndexed { index, item ->
             val q = parseNumber(item.quantity)
-            val p = parseNumber(item.unitPrice)
+            // preço vazio = a definir (ex.: orçamento sigiloso); bloqueado só ao enviar para revisão
+            val p = if (item.unitPrice.isBlank()) 0.0 else parseNumber(item.unitPrice)
+            val number = item.itemNumber.trim().takeIf { it.isNotEmpty() }?.let { it.toIntOrNull() ?: -1 }
             when {
                 item.description.isBlank() -> return invalid("Item ${index + 1}: informe a descrição.")
                 item.unit.isBlank() -> return invalid("Item ${index + 1}: informe a unidade.")
+                number != null && number <= 0 -> return invalid("Item ${index + 1}: nº do item do edital inválido.")
                 q == null || q.isNaN() || q <= 0 -> return invalid("Item ${index + 1}: quantidade inválida.")
                 p == null || p.isNaN() || p < 0 -> return invalid("Item ${index + 1}: preço unitário inválido.")
-                else -> ProposalItem(item.description.trim(), item.unit.trim(), q, p)
+                else -> ProposalItem(
+                    description = item.description.trim(), unit = item.unit.trim(), quantity = q, unitPrice = p,
+                    itemNumber = number, brand = item.brand.trim(), manufacturer = item.manufacturer.trim(), model = item.model.trim(),
+                    estimatedUnitPrice = item.estimatedUnitPrice, confidentialBudget = item.confidentialBudget,
+                )
             }
         }
         if (items.isEmpty()) return invalid("Inclua ao menos um item.")
+        items.mapNotNull { it.itemNumber }.groupBy { it }.filter { it.value.size > 1 }.keys.firstOrNull()?.let {
+            return invalid("O item $it do edital aparece mais de uma vez.")
+        }
         val delivery = d.deliveryDays.trim().toIntOrNull() ?: return invalid("Prazo de entrega inválido.")
         if (delivery <= 0) return invalid("O prazo de entrega deve ser maior que zero.")
         val validity = d.validityDays.trim().toIntOrNull() ?: return invalid("Validade inválida.")

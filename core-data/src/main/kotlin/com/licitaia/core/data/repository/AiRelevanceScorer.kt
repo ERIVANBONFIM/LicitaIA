@@ -15,6 +15,8 @@ import com.licitaia.domain.network.ConnectivityMonitor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import com.licitaia.core.ai.AiCompanyScope
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -60,7 +62,10 @@ class AiRelevanceScorer @Inject constructor(
     }
 
     /** Avalia os candidatos do pedido em lotes, salvando cada nota; falha/sem rede → emite [AiScoreUpdate.failure] e para. */
-    fun rate(request: AiScoringRequest, company: Company): Flow<AiScoreUpdate> = flow {
+    fun rate(request: AiScoringRequest, company: Company): Flow<AiScoreUpdate> = rateInScope(request, company)
+        .let { if (request.companyId > 0) it.flowOn(AiCompanyScope(request.companyId)) else it }
+
+    private fun rateInScope(request: AiScoringRequest, company: Company): Flow<AiScoreUpdate> = flow {
         val pending = request.candidates.filter { it.scoreSource == ScoreSource.HEURISTIC }
         if (pending.isEmpty()) return@flow
         val provider: AIProvider = runCatching { gateway.current() }.getOrNull()

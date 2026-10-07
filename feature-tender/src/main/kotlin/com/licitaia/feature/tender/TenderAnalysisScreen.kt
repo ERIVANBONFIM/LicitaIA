@@ -22,12 +22,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,178 +69,223 @@ import com.licitaia.domain.model.Tender
 import com.licitaia.domain.util.Formatters
 import kotlinx.coroutines.delay
 
+/** Abas da tela: Análise (padrão), Perguntas ("Pergunte ao edital") e Itens (itens oficiais). */
+private enum class AnalysisTab(val route: String, val label: String, val title: String) {
+    ANALISE(Routes.TAB_ANALYSIS, "Análise", "Análise do Edital"),
+    PERGUNTAS(Routes.TAB_QUESTIONS, "Perguntas", "Pergunte ao edital"),
+    ITENS(Routes.TAB_ITEMS, "Itens", "Itens da licitação"),
+    ;
+
+    companion object {
+        fun fromRoute(value: String?): AnalysisTab = entries.firstOrNull { it.route == value } ?: ANALISE
+    }
+}
+
 @Composable
 fun TenderAnalysisScreen(viewModel: TenderAnalysisViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val navigator = LocalAppNavigator.current
     val tender = state.tender
+    var tabIndex by rememberSaveable { mutableIntStateOf(AnalysisTab.fromRoute(viewModel.initialTab).ordinal) }
+    val tab = AnalysisTab.entries[tabIndex]
 
     LicitaScaffold(
-        title = "Análise do Edital",
+        title = tab.title,
         subtitle = tender?.number,
         showBack = true,
         actions = {
-            if (state.analysis != null) {
+            if (tab == AnalysisTab.ANALISE && state.analysis != null) {
                 IconButton(onClick = viewModel::analyze, enabled = state.canAnalyze && !state.analyzing) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Reanalisar")
                 }
             }
         },
     ) { padding ->
-        val analysis = state.analysis
         when {
             state.loading -> SkeletonList(Modifier.padding(padding))
             state.notFound || tender == null -> ErrorState("Esta licitação não existe ou pertence a outra empresa.", Modifier.padding(padding), title = "Licitação não encontrada")
-            analysis == null && tender.isManual && !state.analyzing && state.error == null -> IdleManualState(
-                tender = tender, canAnalyze = state.canAnalyze, onAnalyze = viewModel::analyze,
-                onOpenTender = { navigator.navigate(Routes.tender(tender.id)) }, modifier = Modifier.padding(padding),
-            )
-            analysis == null -> AnalyzingState(
-                tender = tender, error = state.error, analyzing = state.analyzing, canAnalyze = state.canAnalyze,
-                onAnalyze = viewModel::analyze, modifier = Modifier.padding(padding),
-            )
-            else -> LazyColumn(
-                Modifier.fillMaxSize().padding(padding),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                item(key = "reanalyzing") {
-                    AnimatedVisibility(state.analyzing, enter = fadeIn(), exit = fadeOut()) {
-                        Column {
-                            AlertBanner("Reanalisando com a IA…", "Os dados abaixo serão substituídos ao concluir.", Tone.INFO, pulsing = true)
-                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
-                        }
-                    }
-                    val error = state.error
-                    if (error != null && !state.analyzing) {
-                        AlertBanner("Falha na reanálise", error, Tone.DANGER, actionLabel = "Repetir", onAction = viewModel::analyze)
-                    }
-                }
-                if (analysis.heuristicOnly) {
-                    item(key = "heuristic") {
-                        AlertBanner(
-                            "Análise heurística — configure um provedor de IA para analisar o edital",
-                            "Os dados abaixo vêm de regras locais e da presunção do segmento, não da leitura do edital. Documentos, riscos e preços são estimativas.",
-                            Tone.WARNING, actionLabel = "Configurar", onAction = { navigator.navigate(Routes.AI_SETTINGS) },
-                        )
-                    }
-                } else if (!tender.hasEditalText) {
-                    item(key = "no-edital") {
-                        AlertBanner(
-                            "Análise sem o texto do edital",
-                            "A IA recebeu apenas os metadados da licitação. Importe o PDF do edital na tela da licitação e reanalise para resultados reais.",
-                            Tone.WARNING, actionLabel = "Licitação", onAction = { navigator.navigate(Routes.tender(tender.id)) },
+            else -> Column(Modifier.fillMaxSize().padding(padding)) {
+                TabRow(
+                    selectedTabIndex = tabIndex,
+                    containerColor = LicitaColors.Background,
+                    contentColor = LicitaColors.Blue,
+                ) {
+                    AnalysisTab.entries.forEach { entry ->
+                        Tab(
+                            selected = entry == tab,
+                            onClick = { tabIndex = entry.ordinal },
+                            text = { Text(entry.label, maxLines = 1) },
+                            selectedContentColor = LicitaColors.Blue,
+                            unselectedContentColor = LicitaColors.TextSecondary,
                         )
                     }
                 }
-                item(key = "summary") {
-                    GradientCard(Modifier.fillMaxWidth()) {
-                        TenderHeadline(tender, analysis)
-                        Spacer(Modifier.height(12.dp))
-                        Text(analysis.summary, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
-                        Spacer(Modifier.height(12.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            StatusBadge(analysis.recommendation.label, analysis.recommendation.tone())
-                            Text(
-                                "Provedor: ${analysis.providerName} · ${Formatters.dateTime(analysis.generatedAt)}",
-                                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary,
-                            )
-                        }
-                        if (analysis.aiFields.isNotEmpty()) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                "Campos preenchidos pela IA: ${analysis.aiFields.sorted().joinToString(", ")}. Os demais são cálculo local (cofre, prazos, geografia).",
-                                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
-                            )
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        SecondaryButton("Vale a pena participar?", { navigator.navigate(Routes.tenderWorth(tender.id)) }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Balance, tone = Tone.WARNING)
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    when (tab) {
+                        AnalysisTab.PERGUNTAS -> EditalQuestionsTab(tender = tender, canAsk = state.canAnalyze)
+                        AnalysisTab.ITENS -> TenderItemsTab(tender = tender, canAsk = state.canAnalyze)
+                        AnalysisTab.ANALISE -> AnalysisContent(state, tender, viewModel)
                     }
                 }
-                item(key = "extracted-h") { SectionHeader("Dados extraídos do edital") }
-                item(key = "extracted") { ExtractedCard(analysis.extracted) }
-                item(key = "requirements-h") { SectionHeader("Exigências técnicas") }
-                item(key = "requirements") { BulletCard(analysis.extracted.technicalRequirements, "Nenhuma exigência técnica específica identificada.") }
-                item(key = "docs-h") {
-                    val ok = state.documents.count { it.status == DocumentStatus.VALIDO }
-                    SectionHeader("Documentos exigidos × cofre · $ok/${state.documents.size}", actionLabel = "Cofre", onAction = { navigator.navigateTop(Routes.DOCUMENTS) })
+            }
+        }
+    }
+}
+
+/** Conteúdo da aba "Análise" (comportamento anterior da tela). */
+@Composable
+private fun AnalysisContent(state: TenderAnalysisState, tender: Tender, viewModel: TenderAnalysisViewModel) {
+    val navigator = LocalAppNavigator.current
+    val analysis = state.analysis
+    when {
+    analysis == null && tender.isManual && !state.analyzing && state.error == null -> IdleManualState(
+        tender = tender, canAnalyze = state.canAnalyze, onAnalyze = viewModel::analyze,
+        onOpenTender = { navigator.navigate(Routes.tender(tender.id)) }, modifier = Modifier,
+    )
+    analysis == null -> AnalyzingState(
+        tender = tender, error = state.error, analyzing = state.analyzing, canAnalyze = state.canAnalyze,
+        onAnalyze = viewModel::analyze, modifier = Modifier,
+    )
+    else -> LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item(key = "reanalyzing") {
+            AnimatedVisibility(state.analyzing, enter = fadeIn(), exit = fadeOut()) {
+                Column {
+                    AlertBanner("Reanalisando com a IA…", "Os dados abaixo serão substituídos ao concluir.", Tone.INFO, pulsing = true)
+                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
                 }
-                item(key = "docs") {
-                    if (state.documents.isEmpty()) {
-                        LicitaCard(Modifier.fillMaxWidth()) {
-                            Text("O edital não lista documentos específicos além da habilitação padrão.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-                        }
-                    } else {
-                        LicitaCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)) {
-                            state.documents.forEach { row ->
-                                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    IconBubble(Icons.Outlined.Description, row.status.tone().color(), size = 32.dp)
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(row.type.label, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
-                                        val doc = row.document
-                                        Text(
-                                            when {
-                                                doc == null -> "Não cadastrado no cofre"
-                                                doc.expiresAt != null -> "${doc.title} · vence ${Formatters.date(doc.expiresAt)}"
-                                                else -> doc.title
-                                            },
-                                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
-                                        )
-                                    }
-                                    StatusBadge(row.status.label, row.status.tone())
-                                }
+            }
+            val error = state.error
+            if (error != null && !state.analyzing) {
+                AlertBanner("Falha na reanálise", error, Tone.DANGER, actionLabel = "Repetir", onAction = viewModel::analyze)
+            }
+        }
+        if (analysis.heuristicOnly) {
+            item(key = "heuristic") {
+                HeuristicAnalysisBanner(
+                    activeAi = state.activeAi, canAnalyze = state.canAnalyze, analyzing = state.analyzing,
+                    onReanalyze = viewModel::analyze, onConfigure = { navigator.navigate(Routes.AI_SETTINGS) },
+                    detail = "Os dados abaixo vêm de regras locais e da presunção do segmento, não da leitura do edital.",
+                )
+            }
+        } else if (!tender.hasEditalText) {
+            item(key = "no-edital") {
+                AlertBanner(
+                    "Análise sem o texto do edital",
+                    "A IA recebeu apenas os metadados da licitação. Importe o PDF do edital na tela da licitação e reanalise para resultados reais.",
+                    Tone.WARNING, actionLabel = "Licitação", onAction = { navigator.navigate(Routes.tender(tender.id)) },
+                )
+            }
+        }
+        item(key = "summary") {
+            GradientCard(Modifier.fillMaxWidth()) {
+                TenderHeadline(tender, analysis)
+                Spacer(Modifier.height(12.dp))
+                Text(analysis.summary, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusBadge(analysis.recommendation.label, analysis.recommendation.tone())
+                    Text(
+                        "Provedor: ${analysis.providerName} · ${Formatters.dateTime(analysis.generatedAt)}",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary,
+                    )
+                }
+                if (analysis.aiFields.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Campos preenchidos pela IA: ${analysis.aiFields.sorted().joinToString(", ")}. Os demais são cálculo local (cofre, prazos, geografia).",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                SecondaryButton("Vale a pena participar?", { navigator.navigate(Routes.tenderWorth(tender.id)) }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Balance, tone = Tone.WARNING)
+            }
+        }
+        item(key = "extracted-h") { SectionHeader("Dados extraídos do edital") }
+        item(key = "extracted") { ExtractedCard(analysis.extracted) }
+        item(key = "requirements-h") { SectionHeader("Exigências técnicas") }
+        item(key = "requirements") { BulletCard(analysis.extracted.technicalRequirements, "Nenhuma exigência técnica específica identificada.") }
+        item(key = "docs-h") {
+            val ok = state.documents.count { it.status == DocumentStatus.VALIDO }
+            SectionHeader("Documentos exigidos × cofre · $ok/${state.documents.size}", actionLabel = "Cofre", onAction = { navigator.navigateTop(Routes.DOCUMENTS) })
+        }
+        item(key = "docs") {
+            if (state.documents.isEmpty()) {
+                LicitaCard(Modifier.fillMaxWidth()) {
+                    Text("O edital não lista documentos específicos além da habilitação padrão.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                }
+            } else {
+                LicitaCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)) {
+                    state.documents.forEach { row ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            IconBubble(Icons.Outlined.Description, row.status.tone().color(), size = 32.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(row.type.label, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
+                                val doc = row.document
+                                Text(
+                                    when {
+                                        doc == null -> "Não cadastrado no cofre"
+                                        doc.expiresAt != null -> "${doc.title} · vence ${Formatters.date(doc.expiresAt)}"
+                                        else -> doc.title
+                                    },
+                                    style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                                )
                             }
-                        }
-                    }
-                }
-                item(key = "guarantees-h") { SectionHeader("Garantias e penalidades") }
-                item(key = "guarantees") {
-                    LicitaCard(Modifier.fillMaxWidth()) {
-                        Text("Garantias", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                        Bullets(analysis.extracted.guarantees, "Sem exigência de garantia.")
-                        Spacer(Modifier.height(10.dp))
-                        Text("Penalidades", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                        Bullets(analysis.extracted.penalties, "Penalidades padrão da Lei 14.133/2021.", color = LicitaColors.RedBright)
-                    }
-                }
-                item(key = "attest-h") { SectionHeader("Atestados e certificações") }
-                item(key = "attest") {
-                    LicitaCard(Modifier.fillMaxWidth()) {
-                        Text("Atestados de capacidade", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                        Bullets(analysis.extracted.attestationRequirements, "Não exigidos.")
-                        Spacer(Modifier.height(10.dp))
-                        Text("Certificações", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                        Bullets(analysis.extracted.certificationRequirements, "Não exigidas.")
-                    }
-                }
-                item(key = "risk-h") { SectionHeader("Análise de risco") }
-                item(key = "risk") {
-                    LicitaCard(Modifier.fillMaxWidth()) {
-                        RiskRow("Risco operacional", analysis.fit.operationalRisk)
-                        RiskRow("Risco documental", analysis.fit.documentaryRisk)
-                        RiskRow("Risco contratual", analysis.fit.contractualRisk)
-                        if (analysis.criticalPoints.isNotEmpty()) {
-                            Spacer(Modifier.height(10.dp))
-                            Text("Pontos críticos", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                            Bullets(analysis.criticalPoints, "", color = LicitaColors.Yellow)
-                        }
-                    }
-                }
-                item(key = "actions") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PrimaryButton("Gerar proposta comercial", { navigator.navigate(Routes.tenderProposal(tender.id)) }, Modifier.fillMaxWidth(), tone = Tone.SUCCESS)
-                        SecondaryButton(
-                            if (state.analyzing) "Reanalisando…" else "Reanalisar com a IA", viewModel::analyze, Modifier.fillMaxWidth(),
-                            enabled = state.canAnalyze && !state.analyzing, icon = Icons.Outlined.Refresh, tone = Tone.NEUTRAL,
-                        )
-                        if (!state.canAnalyze) {
-                            Text("Seu perfil (${state.role?.label ?: "—"}) não pode iniciar análises.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                            StatusBadge(row.status.label, row.status.tone())
                         }
                     }
                 }
             }
         }
+        item(key = "guarantees-h") { SectionHeader("Garantias e penalidades") }
+        item(key = "guarantees") {
+            LicitaCard(Modifier.fillMaxWidth()) {
+                Text("Garantias", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                Bullets(analysis.extracted.guarantees, "Sem exigência de garantia.")
+                Spacer(Modifier.height(10.dp))
+                Text("Penalidades", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                Bullets(analysis.extracted.penalties, "Penalidades padrão da Lei 14.133/2021.", color = LicitaColors.RedBright)
+            }
+        }
+        item(key = "attest-h") { SectionHeader("Atestados e certificações") }
+        item(key = "attest") {
+            LicitaCard(Modifier.fillMaxWidth()) {
+                Text("Atestados de capacidade", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                Bullets(analysis.extracted.attestationRequirements, "Não exigidos.")
+                Spacer(Modifier.height(10.dp))
+                Text("Certificações", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                Bullets(analysis.extracted.certificationRequirements, "Não exigidas.")
+            }
+        }
+        item(key = "risk-h") { SectionHeader("Análise de risco") }
+        item(key = "risk") {
+            LicitaCard(Modifier.fillMaxWidth()) {
+                RiskRow("Risco operacional", analysis.fit.operationalRisk)
+                RiskRow("Risco documental", analysis.fit.documentaryRisk)
+                RiskRow("Risco contratual", analysis.fit.contractualRisk)
+                if (analysis.criticalPoints.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("Pontos críticos", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                    Bullets(analysis.criticalPoints, "", color = LicitaColors.Yellow)
+                }
+            }
+        }
+        item(key = "actions") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                PrimaryButton("Gerar proposta comercial", { navigator.navigate(Routes.tenderProposal(tender.id)) }, Modifier.fillMaxWidth(), tone = Tone.SUCCESS)
+                SecondaryButton(
+                    if (state.analyzing) "Reanalisando…" else "Reanalisar com a IA", viewModel::analyze, Modifier.fillMaxWidth(),
+                    enabled = state.canAnalyze && !state.analyzing, icon = Icons.Outlined.Refresh, tone = Tone.NEUTRAL,
+                )
+                if (!state.canAnalyze) {
+                    Text("Seu perfil (${state.role?.label ?: "—"}) não pode iniciar análises.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                }
+            }
+        }
+    }
     }
 }
 

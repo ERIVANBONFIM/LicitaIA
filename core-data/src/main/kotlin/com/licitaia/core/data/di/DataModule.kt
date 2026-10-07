@@ -111,6 +111,9 @@ object DataProvidersModule {
     @Provides fun messageDao(db: LicitaDatabase): MessageDao = db.messageDao()
     @Provides fun competitionDao(db: LicitaDatabase): CompetitionDao = db.competitionDao()
     @Provides fun relevanceScoreDao(db: LicitaDatabase): com.licitaia.core.data.db.RelevanceScoreDao = db.relevanceScoreDao()
+    @Provides fun comprasGovCacheDao(db: LicitaDatabase): com.licitaia.core.data.db.ComprasGovCacheDao = db.comprasGovCacheDao()
+    @Provides fun portalRobotDao(db: LicitaDatabase): com.licitaia.core.data.db.PortalRobotDao = db.portalRobotDao()
+    @Provides fun editalQuestionDao(db: LicitaDatabase): com.licitaia.core.data.db.EditalQuestionDao = db.editalQuestionDao()
 }
 
 @Module
@@ -133,4 +136,11 @@ abstract class DataBindingsModule {
     @Binds abstract fun aiConfigRepository(impl: AiConfigRepositoryImpl): AiConfigRepository
     @Binds abstract fun liveSessionStore(impl: LiveSessionStoreImpl): LiveSessionStore
     @Binds abstract fun aiSettingsSource(impl: AiSettingsSourceImpl): AiSettingsSource
+    /** v11: "Minhas licitações" do Comprasnet e planos do robô de proposta/lance. */
+    @Binds abstract fun portalRobotRepository(impl: com.licitaia.core.data.repository.PortalRobotRepositoryImpl): com.licitaia.domain.portal.PortalRobotRepository
+    /** Cache persistente do Compras.gov.br usado pelo conector (connector-comprasgov não depende de core-data). */
+    /** v13: "Pergunte ao edital" (histórico gravado) e aba "Itens" (itens oficiais com cache em memória). */
+    @Binds abstract fun editalQuestionRepository(impl: com.licitaia.core.data.repository.EditalQuestionRepositoryImpl): com.licitaia.domain.repository.EditalQuestionRepository
+    @Binds abstract fun tenderItemsRepository(impl: com.licitaia.core.data.repository.TenderItemsRepositoryImpl): com.licitaia.domain.repository.TenderItemsRepository
+    @Binds abstract fun listingRowStore(impl: com.licitaia.core.data.repository.RoomListingRowStore): com.licitaia.connector.api.ListingRowStore
 }

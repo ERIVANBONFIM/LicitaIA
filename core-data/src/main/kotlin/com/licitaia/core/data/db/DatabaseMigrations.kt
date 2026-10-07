@@ -136,6 +136,110 @@ object DatabaseMigrations {
         }
     }
 
+    /** DDL das tabelas da v10 exatamente como o Room as gera (schemas/.../10.json). */
+    internal const val CREATE_COMPRASGOV_ROWS =
+        "CREATE TABLE IF NOT EXISTS `comprasgov_rows` (`id` TEXT NOT NULL, `modalityCode` INTEGER NOT NULL, `uf` TEXT NOT NULL, " +
+            "`publishedAt` INTEGER NOT NULL, `proposalDeadline` INTEGER NOT NULL, `sessionAt` INTEGER NOT NULL, `number` TEXT NOT NULL, " +
+            "`agency` TEXT NOT NULL, `objectDescription` TEXT NOT NULL, `modality` TEXT NOT NULL, `segment` TEXT NOT NULL, " +
+            "`city` TEXT NOT NULL, `estimatedValue` REAL NOT NULL, `keywords` TEXT NOT NULL, `editalUrl` TEXT, " +
+            "`noDispute` INTEGER NOT NULL, `fetchedAt` INTEGER NOT NULL, `proposalOpening` INTEGER, PRIMARY KEY(`id`))"
+    internal const val CREATE_COMPRASGOV_ROWS_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_comprasgov_rows_modalityCode_uf_publishedAt` ON `comprasgov_rows` (`modalityCode`, `uf`, `publishedAt`)"
+    internal const val CREATE_COMPRASGOV_SYNC =
+        "CREATE TABLE IF NOT EXISTS `comprasgov_sync` (`modalityCode` INTEGER NOT NULL, `uf` TEXT NOT NULL, " +
+            "`lastFullSyncAt` INTEGER NOT NULL, `lastSyncAt` INTEGER NOT NULL, `truncated` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`modalityCode`, `uf`))"
+
+    /**
+     * Versão 10: cache persistente do Compras.gov.br (`comprasgov_rows`) e marcas de sincronização por modalidade/UF
+     * (`comprasgov_sync`), criadas com IF NOT EXISTS e fora do backup; e `opportunities.proposalOpening` (início do
+     * recebimento de propostas, anulável). Nenhum dado existente é alterado ou apagado.
+     */
+    val FROM_9_TO_10 = object : Migration(9, 10) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CREATE_COMPRASGOV_ROWS)
+            db.execSQL(CREATE_COMPRASGOV_ROWS_INDEX)
+            db.execSQL(CREATE_COMPRASGOV_SYNC)
+            val columns = db.query("PRAGMA table_info(opportunities)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            if ("proposalOpening" !in columns) db.execSQL("ALTER TABLE opportunities ADD COLUMN proposalOpening INTEGER DEFAULT NULL")
+        }
+    }
+
+    /** DDL das tabelas da v11 exatamente como o Room as gera (schemas/.../11.json). */
+    internal const val CREATE_PORTAL_MY_TENDERS =
+        "CREATE TABLE IF NOT EXISTS `portal_my_tenders` (`companyId` INTEGER NOT NULL, `tenderKey` TEXT NOT NULL, `portal` TEXT NOT NULL, " +
+            "`uasg` TEXT NOT NULL, `number` TEXT NOT NULL, `year` INTEGER NOT NULL, `modality` TEXT NOT NULL, `objectDescription` TEXT NOT NULL, " +
+            "`openingAt` INTEGER, `situation` TEXT NOT NULL, `hasProposal` INTEGER NOT NULL, `sources` TEXT NOT NULL, `pncpControl` TEXT, " +
+            "`matchedOpportunityId` TEXT, `matchedTenderId` INTEGER, `firstSeenAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`companyId`, `tenderKey`))"
+    internal const val CREATE_PORTAL_MY_TENDERS_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_portal_my_tenders_companyId` ON `portal_my_tenders` (`companyId`)"
+    internal const val CREATE_PORTAL_ROBOT_PLANS =
+        "CREATE TABLE IF NOT EXISTS `portal_robot_plans` (`companyId` INTEGER NOT NULL, `tenderKey` TEXT NOT NULL, `itemsJson` TEXT NOT NULL, " +
+            "`proposalStatus` TEXT NOT NULL, `proposalLogJson` TEXT NOT NULL, `bidJson` TEXT NOT NULL, `bidArmedAt` INTEGER, `sessionAt` INTEGER, " +
+            "`liveSessionId` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`companyId`, `tenderKey`))"
+    internal const val CREATE_PORTAL_ROBOT_PLANS_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_portal_robot_plans_companyId` ON `portal_robot_plans` (`companyId`)"
+
+    /**
+     * Versão 11: "Minhas licitações" do Comprasnet (`portal_my_tenders`) e planos do robô de proposta/lance
+     * (`portal_robot_plans`). Só cria tabelas novas (IF NOT EXISTS); nenhuma tabela existente é alterada ou apagada.
+     */
+    val FROM_10_TO_11 = object : Migration(10, 11) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CREATE_PORTAL_MY_TENDERS)
+            db.execSQL(CREATE_PORTAL_MY_TENDERS_INDEX)
+            db.execSQL(CREATE_PORTAL_ROBOT_PLANS)
+            db.execSQL(CREATE_PORTAL_ROBOT_PLANS_INDEX)
+        }
+    }
+
+    /** Colunas da v12 em `companies` (dados da proposta em PDF), na ordem da entidade. */
+    internal val COMPANY_PROPOSAL_COLUMNS = listOf(
+        "street", "complement", "district", "zipCode", "phone", "email",
+        "legalRepName", "legalRepCpf", "legalRepRole", "bankName", "bankAgency", "bankAccount",
+    )
+
+    /**
+     * Versão 12: endereço, contato, representante legal e dados bancários da empresa (`companies`), usados na proposta
+     * comercial em PDF. Só adiciona colunas TEXT NOT NULL DEFAULT '' (idempotente); nenhum dado é alterado ou apagado.
+     */
+    val FROM_11_TO_12 = object : Migration(11, 12) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val columns = db.query("PRAGMA table_info(companies)").use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            COMPANY_PROPOSAL_COLUMNS.filter { it !in columns }.forEach { column ->
+                db.execSQL("ALTER TABLE companies ADD COLUMN $column TEXT NOT NULL DEFAULT ''")
+            }
+        }
+    }
+
+    /** DDL da tabela da v13 exatamente como o Room a gera (schemas/.../13.json). */
+    internal const val CREATE_EDITAL_QUESTIONS =
+        "CREATE TABLE IF NOT EXISTS `edital_questions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `companyId` INTEGER NOT NULL, " +
+            "`tenderId` INTEGER NOT NULL, `question` TEXT NOT NULL, `answer` TEXT NOT NULL, `provider` TEXT NOT NULL, `model` TEXT, " +
+            "`sources` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `status` TEXT NOT NULL, " +
+            "FOREIGN KEY(`tenderId`) REFERENCES `tenders`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )"
+    internal const val CREATE_EDITAL_QUESTIONS_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_edital_questions_tenderId` ON `edital_questions` (`tenderId`)"
+
+    /**
+     * Versão 13: histórico do "Pergunte ao edital" (`edital_questions`, FK para `tenders` com ON DELETE CASCADE).
+     * Só cria a tabela nova e o índice (IF NOT EXISTS); nenhuma tabela existente é alterada ou apagada.
+     */
+    val FROM_12_TO_13 = object : Migration(12, 13) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CREATE_EDITAL_QUESTIONS)
+            db.execSQL(CREATE_EDITAL_QUESTIONS_INDEX)
+        }
+    }
+
     /** Todas as migrações incrementais, na ordem. */
-    val ALL: Array<Migration> get() = arrayOf(FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6, FROM_6_TO_7, FROM_7_TO_8, FROM_8_TO_9)
+    val ALL: Array<Migration> get() = arrayOf(
+        FROM_1_TO_2, FROM_2_TO_3, FROM_3_TO_4, FROM_4_TO_5, FROM_5_TO_6, FROM_6_TO_7, FROM_7_TO_8, FROM_8_TO_9, FROM_9_TO_10,
+        FROM_10_TO_11, FROM_11_TO_12, FROM_12_TO_13,
+    )
 }

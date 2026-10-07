@@ -1,2 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Anexos do cofre de documentos (filesDir/documents/<empresa>/) e fotos temporárias da câmera. -->
+        <provider
+            android:name="com.licitaia.feature.documents.files.DocumentFileProvider"
+            android:authorities="${applicationId}.documents.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/licitaia_document_paths" />
+        </provider>
+    </application>
+
+</manifest>

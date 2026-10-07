@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Balance
 import androidx.compose.material.icons.outlined.Checklist
@@ -16,6 +17,8 @@ import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DocumentScanner
 import androidx.compose.material.icons.outlined.EmojiEvents
+import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.QuestionAnswer
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PictureAsPdf
@@ -72,6 +75,7 @@ import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
 import com.licitaia.domain.live.LiveSessionManager
+import com.licitaia.domain.model.AiProviderType
 import com.licitaia.domain.model.EditalImportProgress
 import com.licitaia.domain.model.EditalImportResult
 import com.licitaia.domain.model.EditalSource
@@ -81,6 +85,7 @@ import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.model.pncpControlNumber
+import com.licitaia.domain.repository.AiConfigRepository
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompetitionRepository
 import com.licitaia.domain.repository.ProposalRepository
@@ -131,6 +136,8 @@ data class TenderDetailState(
     val liveSessionId: String? = null,
     /** Motivo da última falha ao baixar o edital oficial do PNCP (inclusive o disparo automático do "Tenho Interesse"). */
     val officialEditalError: String? = null,
+    /** Provedor de IA que o app usa agora (MOCK = nenhum provedor real disponível). */
+    val activeAi: AiProviderType = AiProviderType.MOCK,
 ) {
     val canAnalyze: Boolean get() = role?.let { Rbac.can(it, Permission.ANALISAR) } ?: false
     /** Pode criar/operar sessões assistidas (mesma regra do FAB "Acompanhar pregão" em Pregões ao Vivo). */
@@ -153,6 +160,7 @@ class TenderDetailViewModel @Inject constructor(
     proposals: ProposalRepository,
     private val competition: CompetitionRepository,
     private val liveSessions: LiveSessionManager,
+    aiConfig: AiConfigRepository,
 ) : ViewModel() {
 
     private val tenderId: Long = savedStateHandle.longArg("tenderId") ?: -1L
@@ -202,13 +210,16 @@ class TenderDetailViewModel @Inject constructor(
 
     private val officialError = tenders.observeOfficialEditalError(tenderId).catch { emit(null) }
 
+    private val activeAi = aiConfig.observeEffective().catch { emit(AiProviderType.MOCK) }
+
     val state: StateFlow<TenderDetailState> = combine(remote, flags, progress, liveSessionId, officialError) { s, f, p, live, official ->
         s.copy(
             // Uma importação/OCR que continua em segundo plano (após sair e voltar à tela) também conta como "importando".
             importing = f.importing || p != null, analyzing = f.analyzing, editalError = f.editalError,
             importProgress = p, savingResult = f.savingResult, liveSessionId = live, officialEditalError = official,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderDetailState())
+    }.combine(activeAi) { s, ai -> s.copy(activeAi = ai) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderDetailState())
 
     /** Baixa o edital oficial publicado no PNCP (com anexos relevantes) e extrai o texto; o erro fica no card. */
     fun fetchOfficialEdital() {
@@ -495,10 +506,10 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 }
             } else {
                 if (analysis.heuristicOnly) {
-                    AlertBanner(
-                        "Análise heurística — configure um provedor de IA para analisar o edital",
-                        "Esta recomendação foi calculada por regras locais (sem modelo de IA). Nenhum documento, risco ou preço foi lido do edital.",
-                        Tone.WARNING, actionLabel = "Configurar", onAction = { navigator.navigate(Routes.AI_SETTINGS) },
+                    HeuristicAnalysisBanner(
+                        activeAi = state.activeAi, canAnalyze = state.canAnalyze, analyzing = state.analyzing,
+                        onReanalyze = viewModel::analyze, onConfigure = { navigator.navigate(Routes.AI_SETTINGS) },
+                        detail = "Esta recomendação foi calculada por regras locais (sem modelo de IA); nada foi lido do edital.",
                     )
                     Spacer(Modifier.height(12.dp))
                 }
@@ -594,6 +605,13 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                 ActionTile(Icons.Outlined.Analytics, LicitaColors.Blue, "Análise do edital", if (analysis == null) "Acompanhar a análise da IA" else "Exigências, documentos e riscos extraídos") {
                     navigator.navigate(Routes.tenderAnalysis(tender.id))
                 }
+                ActionTile(
+                    Icons.Outlined.QuestionAnswer, LicitaColors.Purple, "Pergunte ao edital",
+                    if (tender.hasEditalText) "Tire dúvidas com a IA citando o item do edital; histórico gravado" else "Obtenha o edital e pergunte o que quiser sobre ele",
+                ) { navigator.navigate(Routes.tenderQuestions(tender.id)) }
+                ActionTile(Icons.Outlined.Inventory2, LicitaColors.Green, "Ver itens", "Itens oficiais: quantidades, unidades e valores estimados") {
+                    navigator.navigate(Routes.tenderItems(tender.id))
+                }
                 ActionTile(Icons.Outlined.Balance, LicitaColors.Yellow, "Vale a pena participar?", "Veredito executivo com todos os indicadores") {
                     navigator.navigate(Routes.tenderWorth(tender.id))
                 }
@@ -601,6 +619,11 @@ private fun TenderDetailContent(state: TenderDetailState, tender: Tender, paddin
                     Icons.Outlined.RequestQuote, LicitaColors.Green, "Proposta comercial",
                     if (state.proposals.isEmpty()) "Gerar com IA, revisar, aprovar e preparar envio" else "${state.proposals.size} versão(ões) · ${state.proposals.first().status.label}",
                 ) { navigator.navigate(Routes.tenderProposal(tender.id)) }
+                if (tender.portal == com.licitaia.domain.model.Portal.COMPRAS_GOV) {
+                    ActionTile(Icons.Outlined.SmartToy, LicitaColors.Yellow, "Robô do Comprasnet", "Cadastrar a proposta no portal e armar o robô de lance") {
+                        navigator.navigate("robotproposal/${tender.id}")
+                    }
+                }
                 val liveId = state.liveSessionId
                 when {
                     liveId != null -> ActionTile(Icons.Outlined.LiveTv, LicitaColors.Red, "Abrir acompanhamento", "Sessão assistida em andamento para esta licitação") {

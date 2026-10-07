@@ -24,5 +24,15 @@
                 android:name="com.licitaia.feature.live.keepalive.PortalKeepAliveInitializer"
                 android:value="androidx.startup" />
         </provider>
+        <!-- Exportação do "mapa das telas" (modo mapear do robô): só a pasta files/portal_map. -->
+        <provider
+            android:name="com.licitaia.feature.live.automation.PortalMapFileProvider"
+            android:authorities="${applicationId}.portalmap.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/portal_map_paths" />
+        </provider>
     </application>
 </manifest>

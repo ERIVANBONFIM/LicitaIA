@@ -1,0 +1,52 @@
+{
+  "data": [
+    {
+      "numeroControlePNCP": "11111111000111-1-000010/2026",
+      "numeroCompra": "10",
+      "anoCompra": 2026,
+      "sequencialCompra": 10,
+      "objetoCompra": "Contratação de link dedicado de internet para as secretarias",
+      "orgaoEntidade": { "cnpj": "11111111000111", "razaoSocial": "MUNICIPIO DE EXEMPLO" },
+      "unidadeOrgao": { "ufSigla": "MG", "municipioNome": "Exemplo" },
+      "modalidadeId": 6,
+      "modalidadeNome": "Pregão - Eletrônico",
+      "valorTotalEstimado": 120000.0,
+      "valorTotalHomologado": 98000.0,
+      "situacaoCompraNome": "Divulgada no PNCP"
+    },
+    {
+      "numeroControlePNCP": "22222222000122-1-000020/2026",
+      "objetoCompra": "Link dedicado de internet para escolas",
+      "orgaoEntidade": { "cnpj": "22222222000122", "razaoSocial": "MUNICIPIO SEM RESULTADO" },
+      "unidadeOrgao": { "ufSigla": "MG" },
+      "modalidadeId": 6,
+      "valorTotalEstimado": 80000.0,
+      "valorTotalHomologado": null,
+      "situacaoCompraNome": "Divulgada no PNCP"
+    },
+    {
+      "numeroControlePNCP": "33333333000133-1-000030/2026",
+      "objetoCompra": "Aquisição de gêneros alimentícios",
+      "orgaoEntidade": { "cnpj": "33333333000133", "razaoSocial": "MUNICIPIO ALIMENTOS" },
+      "unidadeOrgao": { "ufSigla": "MG" },
+      "modalidadeId": 6,
+      "valorTotalEstimado": 50000.0,
+      "valorTotalHomologado": 45000.0,
+      "situacaoCompraNome": "Divulgada no PNCP"
+    },
+    {
+      "numeroControlePNCP": "44444444000144-1-000040/2026",
+      "objetoCompra": "Link de internet via fibra óptica",
+      "orgaoEntidade": { "cnpj": "44444444000144", "razaoSocial": "CAMARA REVOGADA" },
+      "unidadeOrgao": { "ufSigla": "MG" },
+      "modalidadeId": 6,
+      "valorTotalHomologado": 10000.0,
+      "situacaoCompraNome": "Revogada"
+    }
+  ],
+  "totalRegistros": 4,
+  "totalPaginas": 1,
+  "numeroPagina": 1,
+  "paginasRestantes": 0,
+  "empty": false
+}

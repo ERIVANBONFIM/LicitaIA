@@ -260,10 +260,162 @@ class DatabaseMigrationsTest {
         assertTrue(text.contains("`noDispute` INTEGER NOT NULL DEFAULT 0"))
     }
 
+    @Test fun version10OnlyCreatesComprasGovCacheTables() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val opportunities = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(opportunities)") } returns opportunities
+        every { opportunities.moveToNext() } returnsMany listOf(true, true, false)
+        every { opportunities.getColumnIndexOrThrow("name") } returns 0
+        every { opportunities.getString(0) } returnsMany listOf("id", "noDispute")
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_9_TO_10.migrate(db)
+        assertEquals(9, DatabaseMigrations.FROM_9_TO_10.startVersion)
+        assertEquals(10, DatabaseMigrations.FROM_9_TO_10.endVersion)
+        assertEquals(4, sql.size)
+        assertEquals("ALTER TABLE opportunities ADD COLUMN proposalOpening INTEGER DEFAULT NULL", sql[3])
+        sql.removeAt(3)
+        assertTrue(sql[0].startsWith("CREATE TABLE IF NOT EXISTS `comprasgov_rows`"))
+        assertTrue(sql[0].contains("PRIMARY KEY(`id`)"))
+        assertTrue(sql[1].startsWith("CREATE INDEX IF NOT EXISTS `index_comprasgov_rows_modalityCode_uf_publishedAt`"))
+        assertTrue(sql[2].startsWith("CREATE TABLE IF NOT EXISTS `comprasgov_sync`"))
+        assertTrue(sql[2].contains("PRIMARY KEY(`modalityCode`, `uf`)"))
+        // Nenhuma tabela existente é tocada.
+        assertTrue(sql.none { it.contains("DROP", true) || it.contains("DELETE", true) || it.contains("ALTER", true) || it.contains("UPDATE", true) })
+    }
+
+    /** A DDL da v10 precisa ser idêntica à exportada pelo Room (senão a validação do schema falha ao abrir o banco). */
+    @Test fun version10DdlMatchesExportedSchema() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/10.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/10.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val text = schema.readText()
+        assertTrue(text.contains("\"version\": 10"))
+        listOf(
+            DatabaseMigrations.CREATE_COMPRASGOV_ROWS.replace("`comprasgov_rows`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_COMPRASGOV_ROWS_INDEX.replace("`comprasgov_rows`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_COMPRASGOV_SYNC.replace("`comprasgov_sync`", "`\${TABLE_NAME}`"),
+        ).forEach { assertTrue("10.json sem: $it", text.contains(it)) }
+        assertTrue(text.contains("`proposalOpening` INTEGER DEFAULT NULL"))
+    }
+
+    @Test fun version10IsIdempotentForOpportunityColumn() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val opportunities = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(opportunities)") } returns opportunities
+        every { opportunities.moveToNext() } returnsMany listOf(true, false)
+        every { opportunities.getColumnIndexOrThrow("name") } returns 0
+        every { opportunities.getString(0) } returns "proposalOpening"
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_9_TO_10.migrate(db)
+        assertTrue(sql.none { it.startsWith("ALTER") })
+    }
+
+    @Test fun version11OnlyCreatesPortalRobotTables() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_10_TO_11.migrate(db)
+        assertEquals(10, DatabaseMigrations.FROM_10_TO_11.startVersion)
+        assertEquals(11, DatabaseMigrations.FROM_10_TO_11.endVersion)
+        assertEquals(4, sql.size)
+        assertTrue(sql[0].startsWith("CREATE TABLE IF NOT EXISTS `portal_my_tenders`"))
+        assertTrue(sql[0].contains("PRIMARY KEY(`companyId`, `tenderKey`)"))
+        assertTrue(sql[1].startsWith("CREATE INDEX IF NOT EXISTS `index_portal_my_tenders_companyId`"))
+        assertTrue(sql[2].startsWith("CREATE TABLE IF NOT EXISTS `portal_robot_plans`"))
+        assertTrue(sql[3].startsWith("CREATE INDEX IF NOT EXISTS `index_portal_robot_plans_companyId`"))
+        // Incremental e não destrutiva: só CREATE (a coluna `updatedAt` não conta como UPDATE).
+        assertTrue(sql.all { it.startsWith("CREATE ") })
+        assertTrue(sql.none { s -> listOf("DROP", "DELETE", "ALTER", "UPDATE", "INSERT").any { Regex("\\b$it\\s", RegexOption.IGNORE_CASE).containsMatchIn(s) } })
+    }
+
+    /** A DDL da v11 precisa ser idêntica à exportada pelo Room (senão a validação do schema falha ao abrir o banco). */
+    @Test fun version11DdlMatchesExportedSchema() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/11.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/11.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val text = schema.readText()
+        assertTrue(text.contains("\"version\": 11"))
+        listOf(
+            DatabaseMigrations.CREATE_PORTAL_MY_TENDERS.replace("`portal_my_tenders`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_PORTAL_MY_TENDERS_INDEX.replace("`portal_my_tenders`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_PORTAL_ROBOT_PLANS.replace("`portal_robot_plans`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_PORTAL_ROBOT_PLANS_INDEX.replace("`portal_robot_plans`", "`\${TABLE_NAME}`"),
+        ).forEach { assertTrue("11.json sem: $it", text.contains(it)) }
+    }
+
+    @Test fun version12AddsCompanyProposalColumnsWithEmptyDefault() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val companies = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(companies)") } returns companies
+        every { companies.moveToNext() } returnsMany listOf(true, true, true, false)
+        every { companies.getColumnIndexOrThrow("name") } returns 0
+        every { companies.getString(0) } returnsMany listOf("id", "name", "demo")
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_11_TO_12.migrate(db)
+        assertEquals(11, DatabaseMigrations.FROM_11_TO_12.startVersion)
+        assertEquals(12, DatabaseMigrations.FROM_11_TO_12.endVersion)
+        val expected = listOf(
+            "street", "complement", "district", "zipCode", "phone", "email",
+            "legalRepName", "legalRepCpf", "legalRepRole", "bankName", "bankAgency", "bankAccount",
+        ).map { "ALTER TABLE companies ADD COLUMN $it TEXT NOT NULL DEFAULT ''" }
+        assertEquals(expected, sql)
+        // Incremental e não destrutiva: só ALTER TABLE ... ADD COLUMN.
+        assertTrue(sql.none { s -> listOf("DROP", "DELETE", "UPDATE", "INSERT").any { Regex("\\b$it\\b", RegexOption.IGNORE_CASE).containsMatchIn(s) } })
+    }
+
+    @Test fun version12IsIdempotent() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val companies = mockk<Cursor>(relaxed = true)
+        every { db.query("PRAGMA table_info(companies)") } returns companies
+        every { companies.moveToNext() } returnsMany List(12) { true } + false
+        every { companies.getColumnIndexOrThrow("name") } returns 0
+        every { companies.getString(0) } returnsMany DatabaseMigrations.COMPANY_PROPOSAL_COLUMNS
+        DatabaseMigrations.FROM_11_TO_12.migrate(db)
+        verify(exactly = 0) { db.execSQL(any()) }
+    }
+
+    /** As colunas da v12 no schema exportado pelo Room têm o mesmo default da migração (senão a validação falha). */
+    @Test fun version12SchemaMatchesMigration() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/12.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/12.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val text = schema.readText()
+        assertTrue(text.contains("\"version\": 12"))
+        DatabaseMigrations.COMPANY_PROPOSAL_COLUMNS.forEach { assertTrue("12.json sem: $it", text.contains("`$it` TEXT NOT NULL DEFAULT ''")) }
+    }
+
+    @Test fun version13OnlyCreatesEditalQuestionsTable() {
+        val db = mockk<SupportSQLiteDatabase>(relaxed = true)
+        val sql = mutableListOf<String>()
+        every { db.execSQL(capture(sql)) } returns Unit
+        DatabaseMigrations.FROM_12_TO_13.migrate(db)
+        assertEquals(12, DatabaseMigrations.FROM_12_TO_13.startVersion)
+        assertEquals(13, DatabaseMigrations.FROM_12_TO_13.endVersion)
+        assertEquals(2, sql.size)
+        assertTrue(sql[0].startsWith("CREATE TABLE IF NOT EXISTS `edital_questions`"))
+        assertTrue(sql[0].contains("FOREIGN KEY(`tenderId`) REFERENCES `tenders`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE"))
+        assertTrue(sql[1].startsWith("CREATE INDEX IF NOT EXISTS `index_edital_questions_tenderId`"))
+        // Incremental e não destrutiva: só CREATE.
+        assertTrue(sql.all { it.startsWith("CREATE ") })
+        assertTrue(sql.none { s -> listOf("DROP", "DELETE FROM", "ALTER", "UPDATE `", "INSERT").any { s.contains(it, ignoreCase = true) } })
+    }
+
+    /** A DDL da v13 precisa ser idêntica à exportada pelo Room (senão a validação do schema falha ao abrir o banco). */
+    @Test fun version13DdlMatchesExportedSchema() {
+        val schema = listOf("schemas/com.licitaia.core.data.db.LicitaDatabase/13.json", "core-data/schemas/com.licitaia.core.data.db.LicitaDatabase/13.json")
+            .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
+        val text = schema.readText()
+        assertTrue(text.contains("\"version\": 13"))
+        listOf(
+            DatabaseMigrations.CREATE_EDITAL_QUESTIONS.replace("`edital_questions`", "`\${TABLE_NAME}`"),
+            DatabaseMigrations.CREATE_EDITAL_QUESTIONS_INDEX.replace("`edital_questions`", "`\${TABLE_NAME}`"),
+        ).forEach { assertTrue("13.json sem: $it", text.contains(it)) }
+    }
+
     @Test fun allMigrationsAreOrderedAndContiguous() {
         val all = DatabaseMigrations.ALL.toList()
         assertEquals(1, all.first().startVersion)
-        assertEquals(9, all.last().endVersion)
+        assertEquals(13, all.last().endVersion)
         all.zipWithNext().forEach { (a, b) -> assertEquals(a.endVersion, b.startVersion) }
     }
 }

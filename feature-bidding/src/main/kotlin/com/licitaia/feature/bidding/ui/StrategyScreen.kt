@@ -1,7 +1,5 @@
 package com.licitaia.feature.bidding.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,23 +11,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.EmojiEvents
-import androidx.compose.material.icons.outlined.RemoveCircleOutline
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -37,10 +39,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.components.AlertBanner
 import com.licitaia.core.ui.components.ConfirmDialog
-import com.licitaia.core.ui.components.InfoRow
 import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
-import com.licitaia.core.ui.components.PortalChip
+import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SectionHeader
 import com.licitaia.core.ui.components.SelectChip
@@ -48,132 +49,210 @@ import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
-import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
-import com.licitaia.domain.bidding.AuctionSimulator
-import com.licitaia.domain.bidding.CompetitorBehavior
-import com.licitaia.domain.bidding.SimulationParams
-import com.licitaia.domain.bidding.SimulationResult
+import com.licitaia.domain.bidding.BidStrategyConfig
+import com.licitaia.domain.bidding.BidStrategyConfigRepository
+import com.licitaia.domain.bidding.DecrementMode
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.model.BidStrategy
 import com.licitaia.domain.model.LiveSession
-import com.licitaia.domain.model.LiveStatus
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
 import com.licitaia.domain.util.Formatters
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import java.util.Locale
 import javax.inject.Inject
 
-data class StrategyInfo(
-    val strategy: BidStrategy,
-    val summary: String,
-    val pros: List<String>,
-    val cons: List<String>,
-    val bestFor: String,
-)
+/** Explicação curta de cada estratégia (sem números de simulação). */
+data class StrategyInfo(val strategy: BidStrategy, val summary: String, val bestFor: String)
 
 val strategyInfos: List<StrategyInfo> = listOf(
     StrategyInfo(
         BidStrategy.CONSERVADORA,
-        "Só reage quando perdemos a 1ª posição e cobre o melhor lance com metade da redução configurada.",
-        listOf("Preserva margem ao máximo", "Poucos lances: baixa exposição", "Ideal com piso apertado"),
-        listOf("Pode perder para concorrentes rápidos", "Chega devagar ao preço de equilíbrio"),
-        "Itens de margem baixa ou quando o piso está próximo do preço de mercado.",
+        "Só reage quando perdemos a 1ª posição e cobre o melhor lance com o decremento mínimo. Preserva margem com poucos lances.",
+        "Itens de margem baixa ou piso próximo do preço de mercado.",
     ),
     StrategyInfo(
         BidStrategy.AGRESSIVA,
-        "Cobre o concorrente com o dobro da redução para abrir distância e desencorajar novos lances.",
-        listOf("Desencoraja concorrentes", "Resolve disputas curtas rapidamente"),
-        listOf("Consome margem mais rápido", "Chega ao piso cedo e para", "Pode 'deixar dinheiro na mesa'"),
-        "Disputas com poucos concorrentes e margem folgada, quando ganhar vale mais do que a última fatia de margem.",
+        "Cobre o melhor lance com o dobro do decremento para abrir distância e desencorajar novos lances. Consome margem mais rápido.",
+        "Disputas com poucos concorrentes e margem folgada.",
     ),
     StrategyInfo(
         BidStrategy.ACOMPANHAR_CONCORRENTE,
-        "Cobre o melhor lance pelo decremento mínimo do portal, sempre respeitando o intervalo mínimo.",
-        listOf("Menor custo por lance", "Fica em 1º gastando o mínimo", "Preserva margem em disputas longas"),
-        listOf("Muitos lances (depende do intervalo)", "Concorrentes agressivos forçam a sugestão ao piso"),
+        "Acompanha cada lance do concorrente pelo decremento mínimo, respeitando o intervalo entre lances.",
         "Pregões longos com vários concorrentes conservadores.",
     ),
     StrategyInfo(
         BidStrategy.PERSONALIZADA,
-        "Usa exatamente a redução e o intervalo configurados pela equipe.",
-        listOf("Previsível e auditável", "Ajustável ao histórico do órgão"),
-        listOf("Exige calibrar a redução", "Não se adapta sozinha ao ritmo da disputa"),
-        "Quando há histórico do órgão/concorrência (ver Concorrência) para calibrar o passo.",
+        "Usa exatamente o decremento e o intervalo definidos abaixo, sem adaptação automática.",
+        "Quando a equipe já conhece o órgão e os concorrentes (veja Concorrência).",
     ),
 )
 
+/** Formulário em texto (o usuário digita com vírgula); convertido em [BidStrategyConfig] ao salvar. */
+data class StrategyForm(
+    val strategy: BidStrategy = BidStrategy.CONSERVADORA,
+    val decrementMode: DecrementMode = DecrementMode.VALOR,
+    val decrementValue: String = "",
+    val decrementPct: String = "",
+    val minMarginPct: String = "",
+    val reactOnlyWhenLosingFirst: Boolean = true,
+    val finalBidEnabled: Boolean = false,
+    val finalBidSecondsBefore: String = "",
+    val minIntervalSeconds: String = "",
+    val authorizationThresholdPct: String = "",
+) {
+    fun toConfig(): Result<BidStrategyConfig> {
+        fun num(text: String, label: String): Double = parseDecimal(text) ?: throw IllegalArgumentException("Valor inválido em \"$label\".")
+        fun numPct(text: String, label: String): Double =
+            text.trim().replace(',', '.').toDoubleOrNull()?.takeIf { !it.isNaN() } ?: throw IllegalArgumentException("Valor inválido em \"$label\".")
+        fun int(text: String, label: String): Int = text.trim().toIntOrNull() ?: throw IllegalArgumentException("Valor inválido em \"$label\".")
+        return runCatching {
+            val c = BidStrategyConfig(
+                strategy = strategy,
+                decrementMode = decrementMode,
+                decrementValue = if (decrementMode == DecrementMode.VALOR) num(decrementValue, "Decremento (R$)") else decrementValue.toMoneyOr(1.0),
+                decrementPct = if (decrementMode == DecrementMode.PERCENTUAL) numPct(decrementPct, "Decremento (%)") else decrementPct.toPctOr(0.5),
+                minMarginPct = numPct(minMarginPct, "Margem mínima"),
+                reactOnlyWhenLosingFirst = reactOnlyWhenLosingFirst,
+                finalBidEnabled = finalBidEnabled,
+                finalBidSecondsBefore = if (finalBidEnabled) int(finalBidSecondsBefore, "Segundos antes do fim") else finalBidSecondsBefore.trim().toIntOrNull() ?: 10,
+                minIntervalSeconds = int(minIntervalSeconds, "Intervalo entre lances"),
+                authorizationThresholdPct = numPct(authorizationThresholdPct, "Pedir autorização perto do piso"),
+            )
+            val errors = c.validate()
+            require(errors.isEmpty()) { errors.first() }
+            c
+        }
+    }
+
+    companion object {
+        fun from(c: BidStrategyConfig) = StrategyForm(
+            strategy = c.strategy,
+            decrementMode = c.decrementMode,
+            decrementValue = String.format(PT, "%.2f", c.decrementValue),
+            decrementPct = c.decrementPct.plain(),
+            minMarginPct = c.minMarginPct.plain(),
+            reactOnlyWhenLosingFirst = c.reactOnlyWhenLosingFirst,
+            finalBidEnabled = c.finalBidEnabled,
+            finalBidSecondsBefore = c.finalBidSecondsBefore.toString(),
+            minIntervalSeconds = c.minIntervalSeconds.toString(),
+            authorizationThresholdPct = c.authorizationThresholdPct.plain(),
+        )
+
+        private val PT = Locale("pt", "BR")
+        private fun Double.plain(): String = if (this % 1.0 == 0.0) toLong().toString() else toString().replace('.', ',')
+        private fun String.toMoneyOr(def: Double) = parseDecimal(this)?.takeIf { it > 0 } ?: def
+
+        /** "1.234,56" / "1234,56" / "1.5" → número; com vírgula, o ponto é separador de milhar. */
+        internal fun parseDecimal(text: String): Double? {
+            val t = text.trim()
+            val normalized = if (t.contains(',')) t.replace(".", "").replace(',', '.') else t
+            return normalized.toDoubleOrNull()?.takeIf { !it.isNaN() }
+        }
+        private fun String.toPctOr(def: Double) = trim().replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 } ?: def
+    }
+}
+
 data class StrategyUiState(
     val loading: Boolean = true,
-    val sessions: List<LiveSession> = emptyList(),
+    val companyId: Long = 0,
     val role: UserRole? = null,
-    val scenario: SimulationParams = defaultScenario,
-    val comparison: Map<BidStrategy, SimulationResult> = emptyMap(),
+    val saved: BidStrategyConfig = BidStrategyConfig(),
+    val openSessions: List<LiveSession> = emptyList(),
 ) {
     val canChangeRules get() = role?.let { Rbac.can(it, Permission.ALTERAR_REGRAS) } ?: false
 }
 
-private val defaultScenario = SimulationParams(
-    competitors = 5, initialPrice = 200_000.0, floorPrice = 162_000.0, costPrice = 140_000.0, reductionValue = 600.0,
-    durationSeconds = 600, strategy = BidStrategy.CONSERVADORA, behavior = CompetitorBehavior.MISTO, minIntervalSeconds = 6, seed = 2026,
-)
-
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class StrategyViewModel @Inject constructor(
     private val manager: LiveSessionManager,
-    auth: AuthRepository,
+    private val auth: AuthRepository,
+    private val configs: BidStrategyConfigRepository,
 ) : ViewModel() {
 
-    private val scenario = MutableStateFlow(defaultScenario)
-    private val comparison = MutableStateFlow<Map<BidStrategy, SimulationResult>>(emptyMap())
-    private val loading = MutableStateFlow(true)
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messages = _messages.asSharedFlow()
+    val saving = MutableStateFlow(false)
 
-    val state: StateFlow<StrategyUiState> = combine(manager.sessions, auth.session, scenario, comparison, loading) { s, a, sc, cmp, l ->
-        StrategyUiState(l, s, a?.user?.role, sc, cmp)
+    val state: StateFlow<StrategyUiState> = auth.session.flatMapLatest { s ->
+        if (s == null) flowOf(StrategyUiState(loading = false))
+        else combine(configs.observe(s.activeCompany.id), manager.sessions) { cfg, sessions ->
+            StrategyUiState(
+                loading = false, companyId = s.activeCompany.id, role = s.user.role, saved = cfg,
+                openSessions = sessions.filter { it.isOpen && it.companyId == s.activeCompany.id },
+            )
+        }.catch { emit(StrategyUiState(loading = false, role = s.user.role, companyId = s.activeCompany.id)) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StrategyUiState())
 
-    init { compare(defaultScenario) }
-
-    fun useSessionScenario(session: LiveSession) {
-        val r = session.rule
-        compare(
-            scenario.value.copy(
-                initialPrice = r.initialPrice, floorPrice = r.floorPrice, costPrice = r.costPrice,
-                reductionValue = r.reductionValue, minIntervalSeconds = r.minIntervalSeconds, competitors = session.competitors.coerceIn(1, 30),
-            ),
-        )
-    }
-
-    fun setBehavior(behavior: CompetitorBehavior) = compare(scenario.value.copy(behavior = behavior))
-
-    fun reseed() = compare(scenario.value.copy(seed = scenario.value.seed + 1))
-
-    private fun compare(params: SimulationParams) {
-        scenario.value = params
+    fun save(form: StrategyForm) {
+        val companyId = state.value.companyId
+        if (companyId <= 0 || saving.value) return
+        val config = form.toConfig().getOrElse { _messages.tryEmit(it.message ?: "Dados inválidos."); return }
+        saving.value = true
         viewModelScope.launch {
-            loading.value = true
-            comparison.value = withContext(Dispatchers.Default) {
-                BidStrategy.entries.associateWith { AuctionSimulator.run(params.copy(strategy = it)) }
+            try {
+                configs.save(companyId, config)
+                _messages.tryEmit("Configuração do robô salva. Vale para as próximas sessões.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.tryEmit(e.message ?: "Não foi possível salvar a configuração.")
+            } finally {
+                saving.value = false
             }
-            loading.value = false
         }
     }
 
-    /** Aplica a estratégia a uma sessão acompanhada; [onDone] recebe null em sucesso ou o motivo da recusa (RBAC/validação). */
-    fun apply(session: LiveSession, strategy: BidStrategy, onDone: (String?) -> Unit) {
+    /** Aplica a configuração salva (estratégia, decremento, margem, intervalo, autorização) às sessões abertas. */
+    fun applyToOpenSessions() {
+        val s = state.value
+        if (s.openSessions.isEmpty() || saving.value) return
+        saving.value = true
         viewModelScope.launch {
-            val result = runCatching { manager.updateRule(session.id, session.rule.copy(strategy = strategy)) }
-            onDone(result.exceptionOrNull()?.let { it.message ?: "Não foi possível aplicar a estratégia." })
+            var ok = 0
+            var firstError: String? = null
+            for (session in s.openSessions) {
+                val c = s.saved
+                val reference = session.ourLastBid ?: session.rule.initialPrice
+                val rule = session.rule.copy(
+                    strategy = c.strategy,
+                    reductionValue = c.decrementFor(reference).takeIf { it > 0.0 } ?: session.rule.reductionValue,
+                    minMarginPct = c.minMarginPct,
+                    minIntervalSeconds = c.minIntervalSeconds,
+                    authorizationThresholdPct = c.authorizationThresholdPct,
+                )
+                try {
+                    manager.updateRule(session.id, rule)
+                    ok++
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (firstError == null) firstError = e.message
+                }
+            }
+            saving.value = false
+            _messages.tryEmit(
+                if (firstError == null) "Configuração aplicada em $ok sessão(ões) aberta(s)."
+                else "Aplicada em $ok sessão(ões). Falha: $firstError",
+            )
         }
     }
 }
@@ -181,67 +260,107 @@ class StrategyViewModel @Inject constructor(
 @Composable
 fun StrategyScreen(vm: StrategyViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val saving by vm.saving.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
-    var applyTarget by remember { mutableStateOf<Pair<LiveSession, BidStrategy>?>(null) }
-    var pickSessionFor by remember { mutableStateOf<BidStrategy?>(null) }
-    val openSessions = state.sessions.filter { it.status != LiveStatus.ENCERRADA && it.status != LiveStatus.ERRO }
+    LaunchedEffect(vm) { vm.messages.collect(navigator::showMessage) }
 
-    LicitaScaffold(title = "Estratégias", showBack = false, actions = {
-        SecondaryButton("Simulador", { navigator.navigate(Routes.SIMULATOR) }, Modifier.padding(end = 4.dp))
-    }) { padding ->
+    var form by remember { mutableStateOf<StrategyForm?>(null) }
+    // Carrega o formulário a partir da configuração salva (e recarrega ao trocar de empresa).
+    LaunchedEffect(state.loading, state.companyId, state.saved.updatedAt) {
+        if (!state.loading) form = StrategyForm.from(state.saved)
+    }
+    var confirmApply by remember { mutableStateOf(false) }
+    val editable = state.canChangeRules && !saving
+
+    LicitaScaffold(title = "Estratégias", subtitle = "Configuração do robô de lances", showBack = false) { padding ->
+        val f = form
+        if (state.loading || f == null) {
+            SkeletonList(Modifier.padding(padding))
+            return@LicitaScaffold
+        }
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item("intro") {
                 LicitaCard(Modifier.fillMaxWidth()) {
-                    Text("Compare as 4 estratégias no mesmo cenário", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
+                    Text("Estratégia padrão da empresa", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Mesmo pregão simulado (${state.scenario.competitors} concorrentes, inicial ${Formatters.brlCompact(state.scenario.initialPrice)}, piso ${Formatters.brlCompact(state.scenario.floorPrice)}, ${state.scenario.durationSeconds / 60} min) com a mesma semente para cada estratégia.",
+                        "O robô de lances usa esta configuração em toda sessão nova. O piso e o custo continuam definidos por licitação, " +
+                            "e o robô nunca envia lance abaixo do piso.",
                         style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                     )
-                    Spacer(Modifier.height(10.dp))
-                    Text("Comportamento dos concorrentes", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                    if (state.saved.updatedAt > 0L) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Salva em ${Formatters.dateTime(state.saved.updatedAt)}" + (state.saved.updatedBy.takeIf { it.isNotBlank() }?.let { " por $it" } ?: ""),
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                        )
+                    }
+                }
+            }
+            if (!state.canChangeRules) {
+                item("rbac") {
+                    AlertBanner("Somente leitura", "Somente Diretoria ou Administrador podem alterar as regras do robô (“Alterar regras do robô”).", Tone.WARNING)
+                }
+            }
+
+            item("strategyHeader") { SectionHeader("Estratégia") }
+            strategyInfos.forEach { info ->
+                item("s-${info.strategy.name}") {
+                    StrategyOption(info, selected = f.strategy == info.strategy, enabled = editable) { form = f.copy(strategy = info.strategy) }
+                }
+            }
+
+            item("paramsHeader") { SectionHeader("Parâmetros") }
+            item("params") {
+                LicitaCard(Modifier.fillMaxWidth()) {
+                    Text("Decremento mínimo por lance", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CompetitorBehavior.entries.forEach { b -> SelectChip(b.label, state.scenario.behavior == b, { vm.setBehavior(b) }) }
-                    }
-                    if (openSessions.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
-                        Text("Usar os números de uma sessão", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                        Spacer(Modifier.height(6.dp))
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(openSessions, key = { it.id }) { s ->
-                                SelectChip(
-                                    "${s.portal.shortName} ${s.tenderNumber}",
-                                    state.scenario.initialPrice == s.rule.initialPrice && state.scenario.floorPrice == s.rule.floorPrice,
-                                    { vm.useSessionScenario(s) },
-                                )
-                            }
+                        DecrementMode.entries.forEach { mode ->
+                            SelectChip(mode.label, f.decrementMode == mode, { if (editable) form = f.copy(decrementMode = mode) })
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    SecondaryButton("Nova rodada (outra semente)", { vm.reseed() }, Modifier.fillMaxWidth(), tone = Tone.NEUTRAL)
+                    if (f.decrementMode == DecrementMode.VALOR) {
+                        NumberField("Decremento (R$)", f.decrementValue, editable, "Mínimo exigido pelo edital/portal.") { form = f.copy(decrementValue = it) }
+                    } else {
+                        NumberField("Decremento (% do lance atual)", f.decrementPct, editable, "Calculado sobre o nosso último lance.") { form = f.copy(decrementPct = it) }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    NumberField("Margem mínima (%)", f.minMarginPct, editable, "O robô não propõe lance com margem menor sobre o custo.") { form = f.copy(minMarginPct = it) }
+                    Spacer(Modifier.height(8.dp))
+                    NumberField("Intervalo mínimo entre lances (s)", f.minIntervalSeconds, editable, "Compras.gov.br: 20 s entre lances do mesmo fornecedor.", integer = true) { form = f.copy(minIntervalSeconds = it) }
+                    Spacer(Modifier.height(8.dp))
+                    NumberField("Pedir autorização perto do piso (%)", f.authorizationThresholdPct, editable, "Pede sua confirmação quando o próximo lance ficar a menos disso do piso.") { form = f.copy(authorizationThresholdPct = it) }
+                    Spacer(Modifier.height(12.dp))
+                    ToggleRow(
+                        "Reagir só quando perder o 1º lugar", "Enquanto estivermos em 1º, o robô não cobre o próprio lance.",
+                        f.reactOnlyWhenLosingFirst, editable,
+                    ) { form = f.copy(reactOnlyWhenLosingFirst = it) }
+                    Spacer(Modifier.height(8.dp))
+                    ToggleRow(
+                        "Lance final nos últimos segundos", "Na fase final (tempo aleatório/iminência), dá um último lance perto do encerramento.",
+                        f.finalBidEnabled, editable,
+                    ) { form = f.copy(finalBidEnabled = it) }
+                    if (f.finalBidEnabled) {
+                        Spacer(Modifier.height(8.dp))
+                        NumberField("Segundos antes do fim", f.finalBidSecondsBefore, editable, null, integer = true) { form = f.copy(finalBidSecondsBefore = it) }
+                    }
                 }
             }
-            if (state.loading && state.comparison.isEmpty()) {
-                item("skeleton") { SkeletonList(items = 2) }
-            } else {
-                val bestStrategy = state.comparison.entries
-                    .filter { it.value.won }
-                    .maxByOrNull { it.value.marginPct }?.key
-                items(strategyInfos, key = { it.strategy.name }) { info ->
-                    StrategyCard(
-                        info = info,
-                        result = state.comparison[info.strategy],
-                        best = info.strategy == bestStrategy,
-                        canApply = state.canChangeRules && openSessions.isNotEmpty(),
-                        onApply = {
-                            if (openSessions.size == 1) applyTarget = openSessions.first() to info.strategy else pickSessionFor = info.strategy
-                        },
-                    )
-                }
-                if (!state.canChangeRules) {
-                    item("rbac") {
-                        AlertBanner("Aplicar a uma sessão exige permissão", "Somente Diretoria ou Administrador podem alterar a estratégia de uma sessão acompanhada (“Alterar regras do robô”).", Tone.WARNING)
+
+            item("actions") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrimaryButton("Salvar configuração", { vm.save(f) }, Modifier.fillMaxWidth(), enabled = editable, loading = saving, icon = Icons.Outlined.Save)
+                    if (state.openSessions.isNotEmpty()) {
+                        SecondaryButton(
+                            "Aplicar às ${state.openSessions.size} sessão(ões) aberta(s)", { confirmApply = true }, Modifier.fillMaxWidth(),
+                            enabled = editable, icon = Icons.Outlined.SyncAlt,
+                        )
+                        Text(
+                            "Sessões já abertas mantêm a regra atual até você aplicar. Piso e custo de cada sessão não mudam.",
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                        )
                     }
                 }
             }
@@ -249,112 +368,67 @@ fun StrategyScreen(vm: StrategyViewModel = hiltViewModel()) {
         }
     }
 
-    pickSessionFor?.let { strategy ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { pickSessionFor = null },
-            containerColor = LicitaColors.SurfaceElevated,
-            title = { Text("Aplicar ${strategy.label} em…", color = LicitaColors.TextPrimary) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    openSessions.forEach { s ->
-                        LicitaCard(Modifier.fillMaxWidth(), onClick = { pickSessionFor = null; applyTarget = s to strategy }, contentPadding = PaddingValues(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                PortalChip(s.portal)
-                                Spacer(Modifier.width(8.dp))
-                                Column {
-                                    Text(s.tenderNumber, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
-                                    Text("Atual: ${s.rule.strategy.label}", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = { androidx.compose.material3.TextButton(onClick = { pickSessionFor = null }) { Text("Cancelar") } },
-        )
-    }
-
-    applyTarget?.let { (session, strategy) ->
+    if (confirmApply) {
         ConfirmDialog(
-            title = "Aplicar estratégia ${strategy.label}?",
-            message = "Sessão ${session.portal.shortName} · ${session.tenderNumber}\nEstratégia atual: ${session.rule.strategy.label}\n\nA mudança vale a partir da próxima sugestão de lance e fica registrada na auditoria.",
-            onConfirm = {
-                applyTarget = null
-                vm.apply(session, strategy) { error ->
-                    navigator.showMessage(error ?: "Estratégia ${strategy.label} aplicada em ${session.tenderNumber}.")
-                }
-            },
-            onDismiss = { applyTarget = null },
+            title = "Aplicar a configuração salva?",
+            message = "Estratégia ${state.saved.strategy.label}, decremento, margem mínima, intervalo e alerta de autorização passam a valer nas " +
+                "${state.openSessions.size} sessão(ões) aberta(s) a partir da próxima sugestão de lance. Fica registrado na auditoria.",
+            onConfirm = { confirmApply = false; vm.applyToOpenSessions() },
+            onDismiss = { confirmApply = false },
             confirmLabel = "Aplicar",
         )
     }
 }
 
+private fun BidStrategy.tint(): Color = when (this) {
+    BidStrategy.CONSERVADORA -> LicitaColors.BlueBright
+    BidStrategy.AGRESSIVA -> LicitaColors.RedBright
+    BidStrategy.ACOMPANHAR_CONCORRENTE -> LicitaColors.Yellow
+    BidStrategy.PERSONALIZADA -> LicitaColors.Purple
+}
+
 @Composable
-private fun StrategyCard(info: StrategyInfo, result: SimulationResult?, best: Boolean, canApply: Boolean, onApply: () -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    val color = info.strategy.color()
-    LicitaCard(Modifier.fillMaxWidth().animateContentSize(), onClick = { expanded = !expanded }, accent = if (best) LicitaColors.Green else null) {
+private fun StrategyOption(info: StrategyInfo, selected: Boolean, enabled: Boolean, onSelect: () -> Unit) {
+    val color = info.strategy.tint()
+    LicitaCard(Modifier.fillMaxWidth(), onClick = if (enabled) onSelect else null, accent = if (selected) color else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(info.strategy.label, style = MaterialTheme.typography.titleMedium, color = color, modifier = Modifier.weight(1f))
-            if (best) {
-                Icon(Icons.Outlined.EmojiEvents, contentDescription = null, tint = LicitaColors.GreenBright)
-                Spacer(Modifier.width(6.dp))
-                StatusBadge("Melhor no cenário", Tone.SUCCESS)
-            }
+            Icon(
+                if (selected) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked, contentDescription = null,
+                tint = if (selected) color else LicitaColors.TextMuted,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(info.strategy.label, style = MaterialTheme.typography.titleMedium, color = if (selected) color else LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
+            if (selected) StatusBadge("Padrão", Tone.SUCCESS)
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
         Text(info.summary, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-        Spacer(Modifier.height(10.dp))
-        if (result != null) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Metric("Resultado", if (result.won) "Venceu" else if (result.position == 0) "Sem lance" else "${result.position}º", if (result.won) LicitaColors.GreenBright else LicitaColors.RedBright)
-                Metric("Lance final", Formatters.brlCompact(result.ourFinalBid ?: 0.0), LicitaColors.TextPrimary)
-                Metric("Margem", Formatters.percent(result.marginPct), if (result.marginPct >= 10) LicitaColors.GreenBright else LicitaColors.Yellow)
-                Metric("Lances", "${result.ourBids}", LicitaColors.TextPrimary)
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(result.stopReason.label, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-        }
-        AnimatedVisibility(expanded) {
-            Column {
-                Spacer(Modifier.height(10.dp))
-                info.pros.forEach { ProCon(it, true) }
-                info.cons.forEach { ProCon(it, false) }
-                Spacer(Modifier.height(6.dp))
-                InfoRow("Indicada para", info.bestFor)
-                result?.let {
-                    Spacer(Modifier.height(6.dp))
-                    BidChart(it.series, it.params.floorPrice, it.params.initialPrice, it.params.durationSeconds, ourColor = color)
-                    Spacer(Modifier.height(6.dp))
-                    Text(it.recommendation, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SecondaryButton(if (expanded) "Menos detalhes" else "Detalhes e gráfico", { expanded = !expanded }, Modifier.weight(1f), tone = Tone.NEUTRAL)
-            SecondaryButton("Aplicar a sessão", onApply, Modifier.weight(1f), enabled = canApply, icon = Icons.Outlined.CheckCircle)
-        }
+        Spacer(Modifier.height(4.dp))
+        Text("Indicada para: ${info.bestFor}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
     }
 }
 
 @Composable
-private fun Metric(label: String, value: String, color: androidx.compose.ui.graphics.Color) {
-    Column {
-        Text(value, style = MaterialTheme.typography.titleSmall, color = color, fontWeight = FontWeight.Bold)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-    }
+private fun NumberField(label: String, value: String, enabled: Boolean, supporting: String?, integer: Boolean = false, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { text -> onChange(text.filter { it.isDigit() || (!integer && (it == ',' || it == '.')) }.take(12)) },
+        label = { Text(label) },
+        singleLine = true,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(keyboardType = if (integer) KeyboardType.Number else KeyboardType.Decimal),
+        supportingText = supporting?.let { { Text(it) } },
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
-private fun ProCon(text: String, pro: Boolean) {
-    Row(Modifier.padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
-        Icon(
-            if (pro) Icons.Outlined.CheckCircle else Icons.Outlined.RemoveCircleOutline, contentDescription = null,
-            tint = if (pro) LicitaColors.GreenBright else LicitaColors.RedBright, modifier = Modifier.padding(top = 2.dp).height(16.dp),
-        )
+private fun ToggleRow(title: String, description: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
+            Text(description, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+        }
         Spacer(Modifier.width(8.dp))
-        Text(text, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }

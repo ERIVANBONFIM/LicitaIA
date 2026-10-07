@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PictureAsPdf
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.ThumbDown
@@ -55,6 +56,7 @@ import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.components.color
 import com.licitaia.core.ui.components.tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
+import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
 import com.licitaia.domain.model.Proposal
 import com.licitaia.domain.model.ProposalStatus
@@ -68,6 +70,8 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
     val context = LocalContext.current
     var showReject by rememberSaveable { mutableStateOf(false) }
     var showBinding by rememberSaveable { mutableStateOf(false) }
+    /** true = confirmação do atalho "Aprovar e liberar" (revisão + aprovação + liberação). */
+    var fastTrack by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
@@ -107,7 +111,6 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
                                 }
                                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     if (selected != null) StatusBadge(selected.status.label, selected.status.tone(), pulsing = selected.status == ProposalStatus.EM_REVISAO)
-                                    SimulationBadge()
                                 }
                             }
                             state.analysis?.let { a ->
@@ -137,8 +140,15 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
                                     Column(Modifier.weight(1f)) {
                                         Text("Nenhuma proposta ainda", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
                                         Text(
-                                            if (state.analysis == null) "A IA usa a análise do edital para montar os itens. Você pode gerar agora ou começar em branco."
-                                            else "A IA monta itens, quantidades e preços a partir da análise e da faixa sugerida. Tudo pode ser editado antes da revisão.",
+                                            if (state.hasOfficialItems) {
+                                                "O app lê os itens oficiais atuais do edital (nº, descrição, unidade, quantidade e valor estimado) e calcula o preço " +
+                                                    (if (state.analysis != null) "pela faixa sugerida na análise" else "com um pequeno desconto sobre o estimado") +
+                                                    ", nunca acima do estimado. A IA sugere prazo, validade e observações. Tudo pode ser editado."
+                                            } else if (state.analysis == null) {
+                                                "A IA usa a análise do edital para montar os itens. Você pode gerar agora ou começar em branco."
+                                            } else {
+                                                "A IA monta itens, quantidades e preços a partir da análise e da faixa sugerida. Tudo pode ser editado antes da revisão."
+                                            },
                                             style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                                         )
                                     }
@@ -169,8 +179,36 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
                             }
                         }
 
+                        val editableStatus = selected.status == ProposalStatus.RASCUNHO || selected.status == ProposalStatus.REJEITADA
                         item(key = "items-h") {
                             SectionHeader("Itens · ${state.draft.items.size}", actionLabel = "Adicionar", onAction = if (editing && state.canPrepare) viewModel::addItem else null)
+                        }
+                        item(key = "official") {
+                            LicitaCard(Modifier.fillMaxWidth()) {
+                                val pending = state.draft.items.count { it.priceMissing }
+                                Text(
+                                    if (editableStatus) "Edite qualquer campo do rascunho; o total é recalculado na hora. Valores acima do estimado pelo órgão ficam em destaque."
+                                    else "Versão ${selected.status.label.lowercase()}: para alterar, edite e salve como nova versão.",
+                                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                                )
+                                if (pending > 0) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Text("$pending item(ns) sem preço (orçamento sigiloso): defina antes de enviar.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+                                }
+                                Spacer(Modifier.height(10.dp))
+                                ButtonRow {
+                                    if (state.hasOfficialItems && editableStatus) {
+                                        SecondaryButton(
+                                            "Atualizar valores do edital", viewModel::refreshOfficialValues, Modifier.weight(1f),
+                                            enabled = editing && state.canPrepare && !state.dirty, icon = Icons.Outlined.Refresh,
+                                        )
+                                    }
+                                    SecondaryButton(
+                                        "Nova versão pela IA", viewModel::generateWithAi, Modifier.weight(1f),
+                                        enabled = editing && state.canPrepare && !state.dirty, icon = Icons.Outlined.AutoAwesome, tone = Tone.NEUTRAL,
+                                    )
+                                }
+                            }
                         }
                         itemsIndexed(state.draft.items, key = { index, _ -> "item-$index" }) { index, item ->
                             ItemEditor(
@@ -200,7 +238,7 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(
                                     value = state.draft.notes, onValueChange = { v -> viewModel.editDraft { it.copy(notes = v) } },
-                                    label = { Text("Observações") }, placeholder = { Text("Condições comerciais, impostos inclusos, garantias…") },
+                                    label = { Text("Notas internas (não saem no PDF)") }, placeholder = { Text("Pendências, conferências, lembretes da equipe…") },
                                     minLines = 3, maxLines = 6, enabled = editing && state.canPrepare,
                                     shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth(),
                                 )
@@ -233,7 +271,8 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
                             WorkflowCard(
                                 state = state, selected = selected, editing = editing,
                                 onSubmitReview = viewModel::submitForReview, onApprove = viewModel::approve,
-                                onReject = { showReject = true }, onPrepareSubmission = { showBinding = true },
+                                onReject = { showReject = true }, onPrepareSubmission = { fastTrack = false; showBinding = true },
+                                onFastTrack = { fastTrack = true; showBinding = true },
                             )
                         }
                         item(key = "pdf-h") { SectionHeader("Documento") }
@@ -255,6 +294,18 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
                                     Spacer(Modifier.height(8.dp))
                                     Text("Salve as alterações antes de gerar o PDF.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
                                 }
+                                if (state.missingCompanyData.isNotEmpty()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            "Complete o cadastro da empresa para o PDF (falta: ${state.missingCompanyData.joinToString(" e ")}).",
+                                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f),
+                                        )
+                                        TextButton(onClick = { navigator.navigate(Routes.COMPANIES) }) {
+                                            Text("Empresas", color = LicitaColors.BlueBright, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
                                 Spacer(Modifier.height(12.dp))
                                 ButtonRow {
                                     PrimaryButton(
@@ -275,22 +326,28 @@ fun ProposalScreen(viewModel: ProposalViewModel = hiltViewModel()) {
                     )
                 }
                 if (showBinding && selected != null) {
+                    val numbers = selected.items.mapNotNull { it.itemNumber }
                     BindingConfirmDialog(
-                        title = "Preparar envio ao portal",
+                        title = if (fastTrack) "Aprovar e liberar para o portal" else "Preparar envio ao portal",
                         details = listOf(
                             "Portal" to tender.portal.displayName,
                             "Licitação" to tender.number,
                             "Órgão" to tender.agency,
-                            "Lote/Item" to "Lote único · ${selected.items.size} item(ns)",
+                            "Itens" to if (numbers.isNotEmpty()) "${selected.items.size} item(ns) · nº ${numbers.joinToString(limit = 12)}" else "${selected.items.size} item(ns)",
                             "Valor total" to Formatters.brl(selected.totalValue),
-                            "Versão" to "v${selected.version} (aprovada${selected.approvedBy?.let { " por $it" } ?: ""})",
+                            "Versão" to if (fastTrack) "v${selected.version} (${selected.status.label.lowercase()} → revisada e aprovada por ${state.userName.ifBlank { "você" }} agora)"
+                            else "v${selected.version} (aprovada${selected.approvedBy?.let { " por $it" } ?: ""})",
                             "Empresa" to state.companyName,
                             "Usuário responsável" to state.userName,
                             "Data/hora" to Formatters.dateTime(System.currentTimeMillis()),
                         ),
-                        acknowledgeText = "Confirmo que revisei os valores, o lote/item e a empresa, e autorizo o envio SIMULADO desta proposta.",
-                        confirmLabel = "Confirmar envio simulado",
-                        onConfirm = { showBinding = false; viewModel.simulateSubmission() },
+                        acknowledgeText = (if (fastTrack) "Confirmo que revisei e aprovo esta proposta. " else "") +
+                            "Confirmo que revisei os valores, os itens e a empresa, e autorizo cadastrá-la no portal (o robô preenche e salva item por item no Compras.gov.br depois da minha confirmação no plano do robô).",
+                        confirmLabel = "Confirmar e soltar o robô",
+                        onConfirm = {
+                            showBinding = false
+                            if (fastTrack) viewModel.approveAndRelease() else viewModel.simulateSubmission()
+                        },
                         onDismiss = { showBinding = false },
                     )
                 }
@@ -367,26 +424,52 @@ private fun ItemEditor(
     onChange: ((ItemDraft) -> ItemDraft) -> Unit,
     onRemove: () -> Unit,
 ) {
-    LicitaCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
+    LicitaCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp), accent = if (item.priceMissing || item.aboveEstimate) LicitaColors.Yellow else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Item ${index + 1}", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
+            Text(
+                item.itemNumber.trim().takeIf { it.isNotEmpty() }?.let { "Item $it do edital" } ?: "Item ${index + 1}",
+                style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f),
+            )
             Text(Formatters.brl(item.total), style = MaterialTheme.typography.titleSmall, color = LicitaColors.GreenBright, fontWeight = FontWeight.Bold)
             if (removable) {
                 IconButton(onClick = onRemove, enabled = enabled) { Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remover item", tint = LicitaColors.TextMuted) }
             }
         }
+        when {
+            item.confidentialBudget && item.priceMissing ->
+                Text("Orçamento sigiloso: definir o preço unitário.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+            item.priceMissing -> Text("Preço a definir.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+            item.aboveEstimate -> Text(
+                "Acima do estimado pelo órgão (${Formatters.brl(item.estimatedUnitPrice)}).",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow,
+            )
+            item.estimatedUnitPrice != null -> Text(
+                "Estimado pelo órgão: ${Formatters.brl(item.estimatedUnitPrice)} / ${item.unit.ifBlank { "un" }}",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
         OutlinedTextField(
             value = item.description, onValueChange = { v -> onChange { it.copy(description = v) } },
-            label = { Text("Descrição") }, minLines = 1, maxLines = 3, enabled = enabled,
+            label = { Text("Descrição") }, minLines = 1, maxLines = 8, enabled = enabled,
             shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
-                value = item.unit, onValueChange = { v -> onChange { it.copy(unit = v.take(8)) } },
-                label = { Text("Un.") }, singleLine = true, enabled = enabled,
+                value = item.itemNumber, onValueChange = { v -> onChange { it.copy(itemNumber = v.filter(Char::isDigit).take(5)) } },
+                label = { Text("Nº item") }, singleLine = true, enabled = enabled,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
                 shape = MaterialTheme.shapes.medium, modifier = Modifier.weight(0.7f),
             )
+            OutlinedTextField(
+                value = item.unit, onValueChange = { v -> onChange { it.copy(unit = v.take(24)) } },
+                label = { Text("Un.") }, singleLine = true, enabled = enabled,
+                shape = MaterialTheme.shapes.medium, modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = item.quantity, onValueChange = { v -> onChange { it.copy(quantity = v) } },
                 label = { Text("Qtd.") }, singleLine = true, enabled = enabled,
@@ -396,10 +479,30 @@ private fun ItemEditor(
             OutlinedTextField(
                 value = item.unitPrice, onValueChange = { v -> onChange { it.copy(unitPrice = v) } },
                 label = { Text("Preço unit. (R$)") }, singleLine = true, enabled = enabled,
+                placeholder = { if (item.confidentialBudget) Text("definir") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
                 shape = MaterialTheme.shapes.medium, modifier = Modifier.weight(1.3f),
             )
         }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = item.brand, onValueChange = { v -> onChange { it.copy(brand = v.take(80)) } },
+                label = { Text("Marca") }, singleLine = true, enabled = enabled,
+                shape = MaterialTheme.shapes.medium, modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                value = item.manufacturer, onValueChange = { v -> onChange { it.copy(manufacturer = v.take(80)) } },
+                label = { Text("Fabricante") }, singleLine = true, enabled = enabled,
+                shape = MaterialTheme.shapes.medium, modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = item.model, onValueChange = { v -> onChange { it.copy(model = v.take(120)) } },
+            label = { Text("Modelo / versão") }, singleLine = true, enabled = enabled,
+            shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -412,8 +515,24 @@ private fun WorkflowCard(
     onApprove: () -> Unit,
     onReject: () -> Unit,
     onPrepareSubmission: () -> Unit,
+    onFastTrack: () -> Unit,
 ) {
     val locked = !editing || state.dirty
+    val pendingPrices = selected.pendingPriceItems.isNotEmpty()
+    // Dono/Admin: um toque (com a confirmação explícita) em vez de revisão → aprovação → liberação.
+    val fastTrack: @Composable () -> Unit = {
+        if (state.canFastTrack) {
+            Spacer(Modifier.height(8.dp))
+            PrimaryButton(
+                "Aprovar e liberar para o portal", onFastTrack, Modifier.fillMaxWidth(),
+                enabled = !locked && !pendingPrices, icon = Icons.AutoMirrored.Outlined.Send, tone = Tone.WARNING,
+            )
+            Text(
+                "Seu perfil (${state.roleLabel}) pode revisar, aprovar e liberar de uma vez. Você confirma os dados antes.",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
     LicitaCard(Modifier.fillMaxWidth(), accent = selected.status.tone().takeIf { it != Tone.NEUTRAL }?.color()) {
         WorkflowSteps(selected.status)
         Spacer(Modifier.height(12.dp))
@@ -428,10 +547,22 @@ private fun WorkflowCard(
                     style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                 )
                 Spacer(Modifier.height(10.dp))
-                PrimaryButton(
-                    if (selected.status == ProposalStatus.REJEITADA) "Enviar para nova revisão" else "Enviar para revisão",
-                    onSubmitReview, Modifier.fillMaxWidth(), enabled = !locked && state.canPrepare, icon = Icons.AutoMirrored.Outlined.Send,
-                )
+                if (pendingPrices) {
+                    Text("Defina o preço de todos os itens antes de enviar.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
+                    Spacer(Modifier.height(6.dp))
+                }
+                if (state.canFastTrack) {
+                    SecondaryButton(
+                        if (selected.status == ProposalStatus.REJEITADA) "Enviar para nova revisão" else "Enviar para revisão",
+                        onSubmitReview, Modifier.fillMaxWidth(), enabled = !locked && !pendingPrices, icon = Icons.AutoMirrored.Outlined.Send, tone = Tone.NEUTRAL,
+                    )
+                    fastTrack()
+                } else {
+                    PrimaryButton(
+                        if (selected.status == ProposalStatus.REJEITADA) "Enviar para nova revisão" else "Enviar para revisão",
+                        onSubmitReview, Modifier.fillMaxWidth(), enabled = !locked && state.canPrepare && !pendingPrices, icon = Icons.AutoMirrored.Outlined.Send,
+                    )
+                }
                 RbacHint(state.canPrepare, state.roleLabel, "enviar propostas para revisão")
             }
             ProposalStatus.EM_REVISAO -> {
@@ -441,11 +572,12 @@ private fun WorkflowCard(
                     SecondaryButton("Rejeitar", onReject, Modifier.weight(1f), enabled = !locked && state.canApprove, icon = Icons.Outlined.ThumbDown, tone = Tone.DANGER)
                     PrimaryButton("Aprovar", onApprove, Modifier.weight(1f), enabled = !locked && state.canApprove, icon = Icons.Outlined.ThumbUp, tone = Tone.SUCCESS)
                 }
+                fastTrack()
                 RbacHint(state.canApprove, state.roleLabel, "aprovar propostas")
             }
             ProposalStatus.APROVADA -> {
                 Text(
-                    "Aprovada${selected.approvedBy?.let { " por $it" } ?: ""} em ${Formatters.dateTime(selected.approvedAt)}. O envio ao portal exige confirmação final humana e é SIMULADO neste MVP.",
+                    "Aprovada${selected.approvedBy?.let { " por $it" } ?: ""} em ${Formatters.dateTime(selected.approvedAt)}. O cadastro no portal é feito pelo robô após a sua confirmação final.",
                     style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -454,11 +586,13 @@ private fun WorkflowCard(
             }
             ProposalStatus.ENVIADA_SIMULADA -> {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusBadge("Enviada (simulação)", Tone.SUCCESS)
-                    SimulationBadge()
+                    StatusBadge("Liberada para o portal", Tone.SUCCESS)
                 }
                 Spacer(Modifier.height(6.dp))
-                Text("Envio simulado registrado na auditoria. Nenhum dado saiu do aparelho. Para alterar a proposta, crie uma nova versão.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                Text("Proposta liberada e registrada na auditoria. Acompanhe o cadastro no Comprasnet pelo Robô. Para alterar a proposta, crie uma nova versão.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                Spacer(Modifier.height(10.dp))
+                val navigator = LocalAppNavigator.current
+                SecondaryButton("Abrir o robô desta licitação", { navigator.navigate("robotproposal/${selected.tenderId}") }, Modifier.fillMaxWidth(), enabled = editing, icon = Icons.AutoMirrored.Outlined.Send)
             }
         }
     }
@@ -466,7 +600,7 @@ private fun WorkflowCard(
 
 @Composable
 private fun WorkflowSteps(status: ProposalStatus) {
-    val steps = listOf("Rascunho", "Revisão", "Aprovação", "Envio simulado")
+    val steps = listOf("Rascunho", "Revisão", "Aprovação", "Portal")
     val reached = when (status) {
         ProposalStatus.RASCUNHO -> 1
         ProposalStatus.EM_REVISAO -> 2

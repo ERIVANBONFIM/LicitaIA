@@ -131,6 +131,16 @@ interface OpportunityRepository {
         runRadar(radarId).map { SearchOutcome(it) }
 
     /**
+     * Igual a [searchWithSources], mas só com o que já está salvo no aparelho (abertura da tela: nenhuma consulta às
+     * fontes; a atualização diária baixa as novas). Sem nada salvo, consulta as fontes. Padrão: [searchWithSources].
+     */
+    suspend fun searchCached(companyId: Long, filter: OpportunityFilter): Result<SearchOutcome> =
+        searchWithSources(companyId, filter)
+
+    /** Igual a [runRadarWithSources], só com o que já está salvo no aparelho. Padrão: [runRadarWithSources]. */
+    suspend fun runRadarCached(radarId: Long): Result<SearchOutcome> = runRadarWithSources(radarId)
+
+    /**
      * Notas por IA para os candidatos de [request] (lotes de até 25, um de cada vez, cancelável). Cada emissão traz os
      * itens já avaliados (score = nota da IA). Sem rede ou com falha do provedor, emite [AiScoreUpdate.failure] e para:
      * os demais itens continuam com a nota heurística. Padrão: nada a avaliar.
@@ -147,6 +157,12 @@ interface OpportunityRepository {
     suspend fun getOpportunity(id: String): Opportunity?
     /** Total de oportunidades encontradas pelos radares ativos da empresa. */
     fun observeRadarMatchCount(companyId: Long): Flow<Int>
+
+    /**
+     * Andamento da sincronização das fontes de leitura completa (ex.: "Sincronizando Compras.gov.br… 4.500 linhas");
+     * null quando nenhuma está em andamento. Padrão: nunca sincroniza.
+     */
+    fun observeSourceSync(): Flow<String?> = kotlinx.coroutines.flow.flowOf(null)
 }
 
 interface TenderRepository {
@@ -184,9 +200,10 @@ interface TenderRepository {
     suspend fun attachEdital(tenderId: Long, source: EditalSource): Result<EditalImportResult>
 
     /**
-     * Baixa o EDITAL OFICIAL publicado no PNCP (licitações com número de controle PNCP): consulta a lista de
-     * arquivos da contratação, escolhe o documento do tipo "Edital" e anexa também Termo de Referência/anexos
-     * relevantes (texto concatenado com "--- Anexo: <título> ---"). Segue o fluxo de extração + OCR de [attachEdital].
+     * Baixa TODOS os documentos publicados no PNCP para a contratação (edital, termo de referência, anexos, ETP...) e
+     * monta a base de perguntas/análise: texto único com `=== DOCUMENTO: <tipo — título> (página N) ===` em cada
+     * página, na ordem Edital → TR → Anexos → Minuta → ETP (ver `EditalDocumentBase`). O primeiro documento fica como
+     * PDF do edital. Extração + OCR local quando escaneado, com limites de documentos, tamanho e páginas.
      */
     suspend fun fetchOfficialEdital(tenderId: Long): Result<EditalImportResult>
 
@@ -218,8 +235,15 @@ interface ProposalRepository {
     fun observeProposal(id: Long): Flow<Proposal?>
     suspend fun getProposal(id: Long): Proposal?
 
-    /** Gera um rascunho com a IA (versão 1 ou próxima versão). */
-    suspend fun generateDraft(tenderId: Long): Result<Proposal>
+    /**
+     * Gera um rascunho (versão 1 ou próxima versão) a partir dos ITENS OFICIAIS atuais da licitação (PNCP; fallback
+     * dados abertos do Compras.gov.br) com preços calculados; a IA sugere prazo, validade e observações. Sem itens
+     * oficiais, os itens vêm da IA (comportamento anterior).
+     */
+    suspend fun generateDraft(tenderId: Long): Result<ProposalDraftOutcome>
+
+    /** Relê os itens oficiais do edital e recalcula os valores de um rascunho (preserva marca/fabricante/modelo). */
+    suspend fun refreshOfficialValues(id: Long): Result<ProposalDraftOutcome>
     /** Salva [proposal] como NOVA versão (version + 1, status RASCUNHO). Retorna o id. */
     suspend fun saveNewVersion(proposal: Proposal): Long
     suspend fun update(proposal: Proposal)
@@ -234,6 +258,64 @@ interface ProposalRepository {
      */
     suspend fun simulateSubmission(id: Long): Result<Unit>
     fun observePendingApprovals(companyId: Long): Flow<Int>
+}
+
+/** Resultado da montagem/atualização da proposta pelos itens oficiais. */
+data class ProposalDraftOutcome(
+    val proposal: Proposal,
+    /** Fonte dos itens oficiais ("PNCP", "Compras.gov.br"); null = itens montados pela IA (sem itens oficiais). */
+    val officialSource: String? = null,
+    /** Nº dos itens com orçamento sigiloso (preço a definir). */
+    val confidentialItems: List<Int> = emptyList(),
+    /** true = preços pela faixa da análise da IA; false = desconto padrão sobre o estimado. */
+    val pricedByAnalysis: Boolean = false,
+    /** Aviso para o usuário (ex.: "itens oficiais indisponíveis: montado pela IA"). */
+    val warning: String? = null,
+)
+
+/**
+ * "Pergunte ao edital": perguntas livres respondidas pela IA ativa SÓ com base no texto do edital da licitação (e nos
+ * itens oficiais quando ajudam). Toda pergunta é gravada — inclusive as que falham (status ERRO, com "Tentar de novo").
+ * Leitura exige a empresa ativa; perguntar, refazer e apagar exigem a permissão de analisar editais.
+ */
+interface EditalQuestionRepository {
+    /** Histórico da licitação, mais antiga primeiro. Vazio para licitação de outra empresa. */
+    fun observeQuestions(tenderId: Long): Flow<List<com.licitaia.domain.edital.EditalQuestion>>
+
+    /** Ids das perguntas sendo respondidas agora (só em memória; o resto com status PENDENTE foi interrompido). */
+    fun observeAnswering(): Flow<Set<Long>> = kotlinx.coroutines.flow.flowOf(emptySet())
+
+    /** Grava a pergunta e pede a resposta à IA; a falha também fica gravada (status ERRO). */
+    suspend fun ask(tenderId: Long, question: String): Result<com.licitaia.domain.edital.EditalQuestion>
+
+    /** Pede de novo a resposta de uma pergunta já gravada (erro ou interrompida), sobrescrevendo a resposta. */
+    suspend fun retry(questionId: Long): Result<com.licitaia.domain.edital.EditalQuestion>
+
+    suspend fun delete(questionId: Long): Result<Unit>
+}
+
+/** Itens oficiais da licitação (aba "Itens"), com cache em memória por sessão do app. */
+interface TenderItemsRepository {
+    /** [refresh] = true ignora o cache e consulta as fontes oficiais de novo. */
+    suspend fun officialItems(tenderId: Long, refresh: Boolean = false): Result<TenderItems>
+}
+
+/** Resultado da consulta dos itens oficiais. */
+data class TenderItems(
+    val items: List<com.licitaia.domain.proposal.OfficialTenderItem>,
+    /** Fonte dos itens ("PNCP", "Compras.gov.br"); null quando não há itens. */
+    val source: String?,
+    val fetchedAt: Long,
+    /** Explicação quando não há itens (sem número PNCP, nada publicado...). */
+    val message: String? = null,
+    /** true = devolvido do cache desta sessão, sem nova consulta. */
+    val fromCache: Boolean = false,
+    /** Órgão e unidade compradora (fonte oficial; senão os dados do cadastro da licitação). */
+    val buyer: com.licitaia.domain.proposal.OfficialBuyer? = null,
+) {
+    /** Soma dos totais estimados conhecidos (itens sigilosos ficam de fora). */
+    val knownTotal: Double get() = items.filterNot { it.confidentialBudget }.sumOf { it.referenceTotal ?: 0.0 }
+    val confidentialCount: Int get() = items.count { it.confidentialBudget || it.referenceTotal == null }
 }
 
 /** Gera o PDF da proposta em armazenamento privado do app e devolve o caminho absoluto. */
@@ -394,4 +476,9 @@ interface AiConfigRepository {
     suspend fun useDeviceDefault(provider: AiProviderType) {}
     /** Faz uma chamada mínima ao provedor e devolve uma mensagem de status. */
     suspend fun testConnection(provider: AiProviderType): Result<String>
+    /**
+     * Provedor que o app inteiro usa agora (conta logada ou chave; preferência explícita da empresa; global).
+     * MOCK = nenhum provedor real disponível (ou empresa de demonstração): análises ficam heurísticas.
+     */
+    fun observeEffective(): Flow<AiProviderType> = observeActive()
 }

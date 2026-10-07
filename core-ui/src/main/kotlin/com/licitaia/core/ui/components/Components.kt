@@ -509,7 +509,7 @@ fun BindingConfirmDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     confirmLabel: String = "Confirmar envio",
-    simulationNote: String? = "Modo SIMULAÇÃO: nenhum dado será enviado ao portal.",
+    simulationNote: String? = null,
 ) {
     var acknowledged by remember { mutableStateOf(false) }
     AlertDialog(

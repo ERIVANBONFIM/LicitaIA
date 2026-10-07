@@ -97,6 +97,62 @@ interface OpportunityDao {
 
     @Query("DELETE FROM opportunities WHERE cachedAt < :olderThan AND id NOT IN (SELECT opportunityId FROM tenders)")
     suspend fun prune(olderThan: Long)
+
+    /** Ids no cache (atualização diária: o que é novo hoje). */
+    @Query("SELECT id FROM opportunities")
+    suspend fun ids(): List<String>
+
+    /** Limpeza diária: apaga [ids], nunca as vinculadas a uma licitação salva (interesse, análise, proposta, sessão). */
+    @Query("DELETE FROM opportunities WHERE id IN (:ids) AND id NOT IN (SELECT opportunityId FROM tenders)")
+    suspend fun deleteUnprotected(ids: List<String>): Int
+}
+
+/** Cache persistente do Compras.gov.br (versão 10). Leitura filtrada no SQL e em blocos (keyset por id). */
+@Dao
+interface ComprasGovCacheDao {
+    @Query("SELECT * FROM comprasgov_sync WHERE modalityCode = :modalityCode AND uf = :uf")
+    suspend fun syncMark(modalityCode: Int, uf: String): ComprasGovSyncEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveSyncMark(mark: ComprasGovSyncEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(rows: List<ComprasGovRowEntity>)
+
+    @Query("DELETE FROM comprasgov_rows WHERE id IN (:ids)")
+    suspend fun delete(ids: List<String>)
+
+    @Query("DELETE FROM comprasgov_rows WHERE publishedAt < :publishedBefore OR (proposalDeadline > 0 AND proposalDeadline < :now)")
+    suspend fun prune(publishedBefore: Long, now: Long): Int
+
+    @Query(
+        "SELECT * FROM comprasgov_rows WHERE modalityCode = :modalityCode AND (:anyUf = 1 OR uf IN (:ufs)) " +
+            "AND publishedAt >= :publishedSince AND (proposalDeadline <= 0 OR proposalDeadline >= :openAt) AND id > :afterId " +
+            "ORDER BY id LIMIT :limit",
+    )
+    suspend fun page(
+        modalityCode: Int,
+        anyUf: Boolean,
+        ufs: List<String>,
+        publishedSince: Long,
+        openAt: Long,
+        afterId: String,
+        limit: Int,
+    ): List<ComprasGovRowEntity>
+
+    @Query("SELECT COUNT(*) FROM comprasgov_rows")
+    suspend fun count(): Int
+
+    /** Limpeza diária: encerradas (prazo de propostas e sessão já passaram), nunca as vinculadas a uma licitação salva. */
+    @Query(
+        "DELETE FROM comprasgov_rows WHERE proposalDeadline > 0 AND proposalDeadline < :now AND (sessionAt <= 0 OR sessionAt < :now) " +
+            "AND id NOT IN (SELECT opportunityId FROM tenders)",
+    )
+    suspend fun deleteEnded(now: Long): Int
+
+    /** Limpeza diária: apaga [ids] (retiradas), nunca as vinculadas a uma licitação salva. */
+    @Query("DELETE FROM comprasgov_rows WHERE id IN (:ids) AND id NOT IN (SELECT opportunityId FROM tenders)")
+    suspend fun deleteUnprotected(ids: List<String>): Int
 }
 
 @Dao
@@ -115,6 +171,14 @@ interface TenderDao {
 
     @Query("SELECT opportunityId FROM tenders WHERE companyId = :companyId")
     suspend fun opportunityIds(companyId: Long): List<String>
+
+    /** Oportunidades salvas por QUALQUER empresa (protegidas da limpeza diária). */
+    @Query("SELECT DISTINCT opportunityId FROM tenders")
+    suspend fun allOpportunityIds(): List<String>
+
+    /** Ids de todas as licitações salvas (editais órfãos em disco são os de ids fora desta lista). */
+    @Query("SELECT id FROM tenders")
+    suspend fun allIds(): List<Long>
 
     @Query("SELECT * FROM tenders WHERE status = :status")
     suspend fun getByStatus(status: TenderStatus): List<TenderEntity>
@@ -400,6 +464,44 @@ interface CompetitionDao {
     suspend fun deleteByCompany(companyId: Long)
 }
 
+/** Versão 11: "Minhas licitações" do Comprasnet e planos do robô, sempre filtrados por empresa. */
+@Dao
+interface PortalRobotDao {
+    @Query("SELECT * FROM portal_my_tenders WHERE companyId = :companyId ORDER BY CASE WHEN openingAt IS NULL THEN 1 ELSE 0 END, openingAt, tenderKey")
+    fun observeMyTenders(companyId: Long): Flow<List<PortalMyTenderEntity>>
+
+    @Query("SELECT * FROM portal_my_tenders WHERE companyId = :companyId")
+    suspend fun getMyTenders(companyId: Long): List<PortalMyTenderEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMyTenders(entities: List<PortalMyTenderEntity>)
+
+    @Query("DELETE FROM portal_my_tenders WHERE companyId = :companyId AND tenderKey = :tenderKey")
+    suspend fun deleteMyTender(companyId: Long, tenderKey: String)
+
+    @Query("DELETE FROM portal_my_tenders WHERE companyId = :companyId")
+    suspend fun deleteMyTendersByCompany(companyId: Long)
+
+    /** Oportunidades casadas com "minhas licitações" (todas as empresas): nunca podadas pela limpeza diária. */
+    @Query("SELECT DISTINCT matchedOpportunityId FROM portal_my_tenders WHERE matchedOpportunityId IS NOT NULL")
+    suspend fun matchedOpportunityIds(): List<String>
+
+    @Query("SELECT * FROM portal_robot_plans WHERE companyId = :companyId ORDER BY updatedAt DESC")
+    fun observePlans(companyId: Long): Flow<List<PortalRobotPlanEntity>>
+
+    @Query("SELECT * FROM portal_robot_plans WHERE companyId = :companyId AND tenderKey = :tenderKey")
+    fun observePlan(companyId: Long, tenderKey: String): Flow<PortalRobotPlanEntity?>
+
+    @Query("SELECT * FROM portal_robot_plans WHERE companyId = :companyId AND tenderKey = :tenderKey")
+    suspend fun getPlan(companyId: Long, tenderKey: String): PortalRobotPlanEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertPlan(entity: PortalRobotPlanEntity)
+
+    @Query("DELETE FROM portal_robot_plans WHERE companyId = :companyId")
+    suspend fun deletePlansByCompany(companyId: Long)
+}
+
 @Dao
 interface RelevanceScoreDao {
     @Query("SELECT * FROM relevance_scores WHERE companyId = :companyId AND radarSignature = :signature AND opportunityId IN (:ids)")
@@ -411,6 +513,35 @@ interface RelevanceScoreDao {
     @Query("DELETE FROM relevance_scores WHERE createdAt < :olderThan")
     suspend fun prune(olderThan: Long)
 
+    /** Notas por IA de oportunidades apagadas na limpeza diária. */
+    @Query("DELETE FROM relevance_scores WHERE opportunityId IN (:ids)")
+    suspend fun deleteForOpportunities(ids: List<String>)
+
     @Query("DELETE FROM relevance_scores WHERE companyId = :companyId")
+    suspend fun deleteByCompany(companyId: Long)
+}
+
+/** Versão 13: histórico do "Pergunte ao edital". A filtragem por empresa (RBAC) fica no repositório. */
+@Dao
+interface EditalQuestionDao {
+    @Query("SELECT * FROM edital_questions WHERE tenderId = :tenderId ORDER BY createdAt, id")
+    fun observeByTender(tenderId: Long): Flow<List<EditalQuestionEntity>>
+
+    @Query("SELECT * FROM edital_questions WHERE id = :id")
+    suspend fun getById(id: Long): EditalQuestionEntity?
+
+    @Insert
+    suspend fun insert(entity: EditalQuestionEntity): Long
+
+    @Update
+    suspend fun update(entity: EditalQuestionEntity)
+
+    @Query("DELETE FROM edital_questions WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("DELETE FROM edital_questions WHERE tenderId = :tenderId")
+    suspend fun deleteByTender(tenderId: Long)
+
+    @Query("DELETE FROM edital_questions WHERE companyId = :companyId")
     suspend fun deleteByCompany(companyId: Long)
 }

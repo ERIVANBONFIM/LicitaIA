@@ -1,4 +1,4 @@
-﻿package com.licitaia.feature.live.web
+package com.licitaia.feature.live.web
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -78,6 +78,8 @@ class PortalWebViewModel @Inject constructor(
     private val connectivity: ConnectivityMonitor,
     /** WebView retido por empresa/portal (sobrevive ao sair/voltar da tela; usado também pelo keep-alive). */
     val webViews: PortalWebViewHolder,
+    /** Robôs do Comprasnet: banner "robô parado/aguardando você" sobre a página e "Mapear esta tela". */
+    val robots: com.licitaia.feature.live.automation.PortalRobotEngine,
 ) : ViewModel() {
 
     val portal: Portal? = savedStateHandle.get<String>("portal")?.let { name -> Portal.entries.firstOrNull { it.name == name } }
@@ -447,5 +449,10 @@ class PortalWebViewModel @Inject constructor(
     private companion object {
         const val OPTIMISTIC_WINDOW_MS = 15_000L
         const val EXPIRE_CONFIRM_MS = 3_000L
+    }
+
+    /** "Mapear esta tela": snapshot estrutural da página atual da aba retida (modo mapear do robô). */
+    fun mapScreen(companyId: Long, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(robots.mapCurrentScreen(companyId)) }
     }
 }

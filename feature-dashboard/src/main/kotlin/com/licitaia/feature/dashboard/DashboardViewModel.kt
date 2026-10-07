@@ -15,8 +15,11 @@ import com.licitaia.domain.repository.ProposalRepository
 import com.licitaia.domain.repository.TenderRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
@@ -71,7 +74,7 @@ class DashboardViewModel @Inject constructor(
                 opportunities.observeRadarMatchCount(companyId).safe(0),
                 documents.observeExpiringCount(companyId).safe(0),
                 proposals.observePendingApprovals(companyId).safe(0),
-            ) { unread, radar, docs, approvals -> Counts(unread, radar, docs, approvals) }
+            ) { unread, radar, docs, approvals -> Counts(unread, radar, docs, approvals) }.distinctUntilChanged()
 
             combine(
                 live.sessions,
@@ -103,7 +106,11 @@ class DashboardViewModel @Inject constructor(
                 )
             }
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
+    }
+        // Contagem do radar (cache das fontes, a cada 5 min) e montagem do estado fora da main thread.
+        .distinctUntilChanged()
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
 
     private fun Flow<Int>.safe(default: Int): Flow<Int> = onStart { emit(default) }.catch { emit(default) }
 

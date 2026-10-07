@@ -55,4 +55,28 @@ object Formatters {
         if (d.length != 14) return raw
         return "${d.substring(0, 2)}.${d.substring(2, 5)}.${d.substring(5, 8)}/${d.substring(8, 12)}-${d.substring(12)}"
     }
+
+    /** ###.###.###-## com 11 dígitos; caso contrário devolve o original. */
+    fun cpf(raw: String): String {
+        val d = raw.filter { it.isDigit() }
+        if (d.length != 11) return raw
+        return "${d.substring(0, 3)}.${d.substring(3, 6)}.${d.substring(6, 9)}-${d.substring(9)}"
+    }
+
+    /** #####-### com 8 dígitos; caso contrário devolve o original. */
+    fun cep(raw: String): String {
+        val d = raw.filter { it.isDigit() }
+        if (d.length != 8) return raw
+        return "${d.substring(0, 5)}-${d.substring(5)}"
+    }
+
+    /** (DD) ####-#### (fixo) ou (DD) #####-#### (celular); caso contrário devolve o original. */
+    fun phone(raw: String): String {
+        val d = raw.filter { it.isDigit() }
+        return when (d.length) {
+            10 -> "(${d.substring(0, 2)}) ${d.substring(2, 6)}-${d.substring(6)}"
+            11 -> "(${d.substring(0, 2)}) ${d.substring(2, 7)}-${d.substring(7)}"
+            else -> raw
+        }
+    }
 }

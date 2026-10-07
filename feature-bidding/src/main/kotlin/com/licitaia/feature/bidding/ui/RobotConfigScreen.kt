@@ -243,7 +243,7 @@ private fun ConfigForm(
                 PortalChip(session.portal)
                 Spacer(Modifier.width(8.dp))
                 Text(session.tenderNumber, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
-                StatusBadge("Modo assistido", Tone.INFO)
+                StatusBadge("Acompanhamento", Tone.INFO)
             }
             Spacer(Modifier.height(4.dp))
             Text(session.itemLabel, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextSecondary)

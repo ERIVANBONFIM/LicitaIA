@@ -196,13 +196,34 @@ fun AiSettingsScreen(viewModel: AiSettingsViewModel = hiltViewModel()) {
                         "Chaves de API e tokens de conta são cifrados no aparelho. A análise exige provedor real configurado. Não há fallback fictício; revise os resultados antes de decidir.",
                         Tone.INFO,
                     )
+                    if (!state.demo) {
+                        val effective = state.effective
+                        if (effective != AiProviderType.MOCK) {
+                            AlertBanner(
+                                "Em uso em todo o app: ${effective.label}",
+                                "Este provedor é usado em todo o app: análise do edital, Pergunte ao edital, relevância do radar, " +
+                                    "proposta e mensagens do pregoeiro. A conta logada ou a chave de API configurada aqui vale para tudo" +
+                                    " (uma empresa só usa outro provedor se isso estiver definido no cadastro dela).",
+                                Tone.SUCCESS,
+                            )
+                        } else {
+                            AlertBanner(
+                                "Nenhum provedor de IA conectado",
+                                "Entre com o ChatGPT ou cadastre uma chave de API abaixo. Este provedor é usado em todo o app; " +
+                                    "enquanto nenhum estiver conectado, as análises são heurísticas (regras locais, sem IA).",
+                                Tone.WARNING,
+                            )
+                        }
+                    }
                     if (state.activeWithoutKey) {
                         val oauth = state.config(state.active).authMode == AiAuthMode.OAUTH
+                        val fallback = state.effective.takeIf { it != AiProviderType.MOCK && it != state.active }
                         AlertBanner(
                             "${state.active.label} está ativo sem ${if (oauth) "conta autorizada" else "chave"}",
-                            if (oauth && state.active == AiProviderType.OPENAI) "Entre com o ChatGPT para habilitar a análise. Falhas de conexão serão informadas."
-                            else if (oauth) "Entre com sua conta Google para habilitar a análise. Falhas de conexão serão informadas."
-                            else "Configure sua chave para habilitar a análise. Falhas de conexão serão informadas.",
+                            (if (oauth && state.active == AiProviderType.OPENAI) "Entre com o ChatGPT para habilitar este provedor."
+                            else if (oauth) "Entre com sua conta Google para habilitar este provedor."
+                            else "Configure sua chave para habilitar este provedor.") +
+                                (fallback?.let { " Enquanto isso, o app usa ${it.label}." } ?: ""),
                             Tone.WARNING,
                         )
                     }

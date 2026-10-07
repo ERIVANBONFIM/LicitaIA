@@ -1,6 +1,7 @@
 package com.licitaia.connector.pncp
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 /*
  * DTOs da API pública de consulta do PNCP.
@@ -113,4 +114,48 @@ internal data class PncpItem(
     val criterioJulgamentoNome: String? = null,
     val situacaoCompraItemNome: String? = null,
     val tipoBeneficioNome: String? = null,
+    /** O item já tem resultado (fornecedor homologado) publicado. */
+    val temResultado: Boolean? = null,
+    // Detalhe do item (tela de detalhe da aba Itens) — campos reais de `/itens` (07/10/2026). Tipos incertos (catálogo,
+    // margem) chegam como JsonElement para nunca quebrar a decodificação da lista.
+    val informacaoComplementar: String? = null,
+    val itemCategoriaNome: String? = null,
+    val incentivoProdutivoBasico: Boolean? = null,
+    val exigenciaConteudoNacional: Boolean? = null,
+    val dataInclusao: String? = null,
+    val dataAtualizacao: String? = null,
+    val aplicabilidadeMargemPreferenciaNormal: Boolean? = null,
+    val aplicabilidadeMargemPreferenciaAdicional: Boolean? = null,
+    val percentualMargemPreferenciaNormal: Double? = null,
+    val percentualMargemPreferenciaAdicional: Double? = null,
+    val tipoMargemPreferencia: JsonElement? = null,
+    val ncmNbsCodigo: JsonElement? = null,
+    val ncmNbsDescricao: String? = null,
+    val catalogo: JsonElement? = null,
+    val categoriaItemCatalogo: JsonElement? = null,
+    val catalogoCodigoItem: JsonElement? = null,
+)
+
+/**
+ * Resultado de um item (RecuperarCompraItemResultadoDTO da API de integração do PNCP,
+ * `GET /v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/itens/{numeroItem}/resultados`).
+ */
+@Serializable
+internal data class PncpItemResultado(
+    val numeroItem: Int? = null,
+    val sequencialResultado: Int? = null,
+    val niFornecedor: String? = null,
+    val tipoPessoa: String? = null,
+    val nomeRazaoSocialFornecedor: String? = null,
+    val porteFornecedorNome: String? = null,
+    val quantidadeHomologada: Double? = null,
+    val valorUnitarioHomologado: Double? = null,
+    val valorTotalHomologado: Double? = null,
+    val percentualDesconto: Double? = null,
+    val situacaoCompraItemResultadoNome: String? = null,
+    val dataResultado: String? = null,
+    val dataInclusao: String? = null,
+    val dataCancelamento: String? = null,
+    val motivoCancelamento: String? = null,
+    val numeroControlePNCPCompra: String? = null,
 )

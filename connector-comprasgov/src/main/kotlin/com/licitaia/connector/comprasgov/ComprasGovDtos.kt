@@ -9,7 +9,8 @@ import kotlinx.serialization.Serializable
  * TbVwItemLicitacaoDTO), confirmados com respostas reais capturadas em 06/10/2026
  * (ver os arquivos .json em src/test/resources/comprasgov).
  *
- * Só os campos usados pelo app são declarados; os demais são ignorados (ignoreUnknownKeys).
+ * Só os campos usados pelo app são declarados (DTOs mínimos: menos alocação ao decodificar páginas de 500 linhas);
+ * os demais são ignorados (ignoreUnknownKeys).
  * Todos são opcionais porque a API devolve `null` com frequência.
  */
 
@@ -31,17 +32,11 @@ internal data class ComprasGovContratacao(
     val idCompra: String? = null,
     val numeroControlePNCP: String? = null,
     val anoCompraPncp: Int? = null,
-    val sequencialCompraPncp: Int? = null,
-    val orgaoEntidadeCnpj: String? = null,
-    val codigoOrgao: Int? = null,
     val orgaoEntidadeRazaoSocial: String? = null,
-    val orgaoEntidadeEsferaId: String? = null,
-    val orgaoEntidadePoderId: String? = null,
     val unidadeOrgaoCodigoUnidade: String? = null,
     val unidadeOrgaoNomeUnidade: String? = null,
     val unidadeOrgaoUfSigla: String? = null,
     val unidadeOrgaoMunicipioNome: String? = null,
-    val unidadeOrgaoCodigoIbge: Int? = null,
     val numeroCompra: String? = null,
     val modalidadeIdPncp: Int? = null,
     val codigoModalidade: Int? = null,
@@ -56,14 +51,10 @@ internal data class ComprasGovContratacao(
     val informacaoComplementar: String? = null,
     val processo: String? = null,
     val objetoCompra: String? = null,
-    val existeResultado: Boolean? = null,
-    val orcamentoSigilosoDescricao: String? = null,
     val situacaoCompraNomePncp: String? = null,
     val tipoInstrumentoConvocatorioNome: String? = null,
     val valorTotalEstimado: Double? = null,
-    val valorTotalHomologado: Double? = null,
     val dataInclusaoPncp: String? = null,
-    val dataAtualizacaoPncp: String? = null,
     val dataPublicacaoPncp: String? = null,
     val dataAberturaPropostaPncp: String? = null,
     val dataEncerramentoPropostaPncp: String? = null,
@@ -87,6 +78,23 @@ internal data class ComprasGovItem(
     val valorUnitarioEstimado: Double? = null,
     val valorTotal: Double? = null,
     val numeroControlePNCPCompra: String? = null,
+    // Detalhe do item (tela de detalhe da aba Itens) — campos reais observados em 07/10/2026.
+    val itemCategoriaNome: String? = null,
+    val tipoBeneficioNome: String? = null,
+    val incentivoProdutivoBasico: Boolean? = null,
+    val codItemCatalogo: String? = null,
+    val codigoPdm: String? = null,
+    val nomePdm: String? = null,
+    val codigoNCM: String? = null,
+    val descricaoNCM: String? = null,
+    val margemPreferenciaNormal: Boolean? = null,
+    val percentualMargemPreferenciaNormal: Double? = null,
+    val margemPreferenciaAdicional: Boolean? = null,
+    val percentualMargemPreferenciaAdicional: Double? = null,
+    val temResultado: Boolean? = null,
+    val nomeFornecedor: String? = null,
+    val dataInclusaoPncp: String? = null,
+    val dataAtualizacaoPncp: String? = null,
 )
 
 /**

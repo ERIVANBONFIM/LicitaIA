@@ -58,6 +58,7 @@ import com.licitaia.domain.bidding.BidRuleEngine
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.model.LiveSession
 import com.licitaia.domain.model.LiveStatus
+import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.security.Permission
@@ -107,14 +108,16 @@ class LiveViewModel @Inject constructor(
 }
 
 @Composable
-fun LiveScreen(vm: LiveViewModel = hiltViewModel()) {
+fun LiveScreen(vm: LiveViewModel = hiltViewModel(), myVm: MyTendersViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val mine by myVm.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
+    androidx.compose.runtime.LaunchedEffect(Unit) { myVm.events.collect { navigator.showMessage(it) } }
 
     LicitaScaffold(
         title = "Pregões ao Vivo",
         showBack = false,
-        subtitle = "Modo assistido",
+        subtitle = "Comprasnet · robô e acompanhamento",
         floatingActionButton = {
             if (state.canOperate) {
                 ExtendedFloatingActionButton(
@@ -127,19 +130,32 @@ fun LiveScreen(vm: LiveViewModel = hiltViewModel()) {
         },
     ) { padding ->
         when {
-            state.loading && state.sessions.isEmpty() -> SkeletonList(Modifier.padding(padding))
-            state.sessions.isEmpty() -> EmptyState(
-                "Nenhum pregão acompanhado",
-                "Você opera no portal oficial; o LicitaIA registra seus lances, calcula margem e piso, cronometra e alerta. Nenhum lance é enviado pelo app.",
-                Modifier.padding(padding), icon = Icons.Outlined.Podcasts,
-                actionLabel = if (state.canOperate) "Acompanhar pregão" else "Abrir portais", onAction = { navigator.navigate(if (state.canOperate) Routes.LIVE_NEW else Routes.PORTALS) },
-            )
+            state.loading && state.sessions.isEmpty() && mine.tenders.isEmpty() -> SkeletonList(Modifier.padding(padding))
             else -> LazyColumn(
                 Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                item("summary") {
+                // Sessões reais do Comprasnet: minhas licitações (com data de sessão), robôs armados e em andamento.
+                item("mine") {
+                    MyTendersPanel(
+                        mine, onRefresh = { myVm.refresh() },
+                        onOpenTender = { navigator.navigate(RobotRoutes.plan(it.tenderKey)) },
+                        onOpenPortal = { navigator.navigate(Routes.portalWeb(Portal.COMPRAS_GOV)) },
+                        maxItems = 6,
+                    )
+                }
+                if (state.sessions.isEmpty()) {
+                    item("empty") {
+                        EmptyState(
+                            "Nenhum pregão acompanhado",
+                            "Sessões do robô de lance e acompanhamentos assistidos aparecem aqui com o histórico de lances.",
+                            icon = Icons.Outlined.Podcasts,
+                            actionLabel = if (state.canOperate) "Acompanhar pregão" else "Abrir portais", onAction = { navigator.navigate(if (state.canOperate) Routes.LIVE_NEW else Routes.PORTALS) },
+                        )
+                    }
+                }
+                if (state.sessions.isNotEmpty()) item("summary") {
                     val open = state.sessions.filter { it.isOpen }
                     val alerts = open.sumOf { AssistedBidding.activeAlerts(it).size }
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -150,7 +166,7 @@ fun LiveScreen(vm: LiveViewModel = hiltViewModel()) {
                                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                             )
                         }
-                        StatusBadge(if (state.alertsMuted) "Alertas silenciados" else "Modo assistido", if (state.alertsMuted) Tone.WARNING else Tone.INFO)
+                        StatusBadge(if (state.alertsMuted) "Alertas silenciados" else "Acompanhamento", if (state.alertsMuted) Tone.WARNING else Tone.INFO)
                     }
                 }
                 val critical = state.sessions.filter { it.isOpen && AssistedBidding.activeAlerts(it).any { a -> a == AssistedBidding.AlertKind.PROXIMO_DO_PISO || a == AssistedBidding.AlertKind.TEMPO_CRITICO } }

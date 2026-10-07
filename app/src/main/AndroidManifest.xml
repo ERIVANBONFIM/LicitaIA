@@ -9,6 +9,11 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Atualização via GitHub Releases: abrir o instalador do APK baixado (fonte desconhecida). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Atualização diária das licitações (05:30): reagendar após reiniciar; alarme exato só se o sistema permitir. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Expedited do WorkManager em Android < 12 roda como serviço em primeiro plano. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application
         android:name=".LicitaApplication"
@@ -44,6 +49,22 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/update_paths" />
         </provider>
+
+        <!-- Atualização diária das licitações: alarme do horário e reagendamento após reiniciar/atualizar o app. -->
+        <receiver
+            android:name=".daily.DailySyncAlarmReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".daily.DailySyncBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <!-- WorkManager é inicializado pelo Application (HiltWorkerFactory). -->
         <provider

@@ -1,0 +1,31 @@
+# FIXTURE REAL: dump do DevTools no aparelho logado (Compras.gov.br, 2026). Dados pessoais do fornecedor substituídos.
+URL: https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/cadastro-propostas?compra=92731205000032026
+h1 .  @0,50 :: Compras eletrônicas
+button .br-button ml-auto type=button aria-label=Tela inicial icon.fa fa-home opcao-home @12,66 :: 
+button .br-button type=button aria-label=Recarregar página icon.fas fa-sync-alt @308,124 :: 
+button .br-button ml-auto secondary type=button aria-label=Adicionar aos favoritos icon.fa-heart far @188,365 :: 
+button .br-button ml-auto secondary type=button aria-label=Documentos e demais informações da contratação no PNCP icon.fa-file-alt fas @228,365 :: 
+button .br-button ml-auto secondary type=button aria-label=Quadro Informativo icon.fa-clipboard fas @268,365 :: 
+button .br-button ml-auto secondary type=button aria-label=Informações adicionais da compra icon.fa-info-circle fas @308,365 :: 
+label .col-auto m-0 pr-1 conteudo-div-centralizado  @12,405 :: Objeto:
+label .pr-1  @20,429 :: Data limite de entrega de propostas:
+label .  @20,502 :: Endereço do fornecedor
+button .br-button ml-auto type=button icon.fa-info-circle fas @182,496 :: 
+button .mini br-button type=button @159,592 :: Sincronizar endereço
+label .  @20,667 :: Termo/declarações
+input .p-checkbox-input type=checkbox @36,800 :: on
+a .align-middle cursor-pointer  @40,825 :: Termo de Aceitação.
+button .header pt-1 pb-1 align-items-center type=button icon.icon mr-0 @40,939 :: Declaração para fornecedores ME/EPP e equiparados
+label .  @76,950 :: Declaração para fornecedores ME/EPP e equiparados
+button .header pt-1 pb-1 type=button icon.icon mr-0 @40,1011 :: Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.1
+label .  @76,1022 :: Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.1
+div .row cp-itens-card justify-content-between cp-item-expansivel ng-star-i  icon.fa-heart far @31,1166 :: 1 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @229,1271 :: 
+button .br-button ng-tns-c501112478-36 ng-trigger ng-trigger-animationRotate18  icon.ng-tns-c501112478-36 fas fa-chevron-down @261,1271 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel ng-star-i  icon.fa-heart far @31,1327 :: 2 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @229,1433 :: 
+button .br-button ng-tns-c501112478-37 ng-trigger ng-trigger-animationRotate18  icon.ng-tns-c501112478-37 fas fa-chevron-down @261,1433 :: 
+div .outline-color text-right pr-3 role=tab @63,7 :: FORNECEDOR DE TESTE | 000.000.000-00 EMPRESA DE TESTE LTDA | 00.000.000/0
+button .br-button type=button role=tab icon.fas fa-bell @230,14 :: 
+button .br-sign-in p-1 id=avatar-dropdown-trigger type=button icon.br-tag icon avatarUsuario @290,10 :: 
+TEXTO: Compras eletrônicas Cadastrar propostas Cadastrar propostas Pregão Eletrônico N° 3/2026 (Lei 14.133/2021) UASG 927312 - SERVIÇO APOIO A MICROS E PEQUENAS EMPRESAS-PA Critério julgamento: Menor Preço / Maior Desconto Modo disputa: Aberto Objeto: Contratação de empresas para prestação de serviços, em regime de locação mensal, da conexão ao backbone da rede mundial – Internet, através de link dedicado de dados, de uso ilimitado, com alta qualidade e performance, através de serviço de IP, estabelecimento de circuito de acesso entre as dependências do Sebrae/PA e as dependências da prestadora de serviços (“last mile”), com utilização de fibra óptica. Data limite de entrega de propostas: 13/10/2026 08:59 Endereço do fornecedor Logradouro: RUA DE TESTE, 1 Município: Cidade UF: XX Sincronizar endereço Termo/declarações É necessário o aceite do termo e a escolha do enquadramento adequado da(s) declaração(ões) abaixo para iniciar o cadastramento das propostas. Termo de Aceitação. Declaro que cumpro e estou ciente de todas as declarações contidas no termo de aceitação. Declaração para fornecedores ME/EPP e equiparados Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.133/2021. Itens 1 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (unitário) R$ 151.000,0000 Proposta não cadastrada 2 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (unitário) R$ 151.000,0000 Pr

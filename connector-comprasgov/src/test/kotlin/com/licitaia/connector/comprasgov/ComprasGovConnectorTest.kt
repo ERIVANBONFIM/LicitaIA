@@ -2,6 +2,10 @@ package com.licitaia.connector.comprasgov
 
 import com.licitaia.connector.api.BidSubmission
 import com.licitaia.connector.api.HumanConfirmation
+import com.licitaia.connector.api.InMemoryListingRowStore
+import com.licitaia.connector.api.ListingRowStore
+import com.licitaia.connector.api.ListingSyncMark
+import com.licitaia.connector.api.SourceSyncPolicy
 import com.licitaia.connector.api.OpportunityScreen
 import com.licitaia.connector.api.PortalAuthResult
 import com.licitaia.connector.api.PortalCredentials
@@ -10,7 +14,13 @@ import com.licitaia.connector.api.SubmissionResult
 import com.licitaia.domain.model.Modality
 import com.licitaia.domain.model.OpportunityFilter
 import com.licitaia.domain.model.Portal
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -54,9 +64,17 @@ class ComprasGovConnectorTest {
     /** Resultado vazio REAL da API: HTTP 200 com lista vazia. */
     private fun emptyPage() = jsonResponse("""{"resultado":[],"totalRegistros":0,"totalPaginas":0,"paginasRestantes":0}""")
 
-    private val fast = ComprasGovConnector.Tuning(pageDelayMs = 0, retryDelaysMs = listOf(0, 0, 0), enrichMinIntervalMs = 0)
+    // Intervalo da completa em primeiro plano fixado em 6 h nos testes (o padrão de produção é 30 h, com a diária às 05:30).
+    private val fast = ComprasGovConnector.Tuning(
+        pageDelayMs = 0, retryDelaysMs = listOf(0, 0, 0), enrichMinIntervalMs = 0, fullSyncIntervalMs = 6L * 60 * 60 * 1000,
+    )
 
-    private fun start(tuning: ComprasGovConnector.Tuning = fast, clock: (() -> Long)? = null, dispatch: (RecordedRequest) -> MockResponse) {
+    private fun start(
+        tuning: ComprasGovConnector.Tuning = fast,
+        clock: (() -> Long)? = null,
+        store: ListingRowStore = InMemoryListingRowStore(),
+        dispatch: (RecordedRequest) -> MockResponse,
+    ) {
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -67,7 +85,7 @@ class ComprasGovConnectorTest {
         server.start()
         connector = ComprasGovConnector(
             OkHttpClient(), ComprasGovConnector.defaultJson(), server.url("/"),
-            clock = clock ?: { clockNow }, pncpBaseUrl = server.url("/"), tuning = tuning,
+            clock = clock ?: { clockNow }, pncpBaseUrl = server.url("/"), tuning = tuning, store = store,
         )
     }
 
@@ -118,9 +136,19 @@ class ComprasGovConnectorTest {
             """"valorTotalEstimado":$valor,"dataPublicacaoPncp":"$pub"$encField,"contratacaoExcluida":false}"""
     }
 
-    /** Serve [rowsByCode] paginado como a API real (tamanhoPagina, totalPaginas, paginasRestantes). */
+    private val PUB = Regex(""""dataPublicacaoPncp":"([^"]+)"""")
+
+    /**
+     * Serve [rowsByCode] paginado como a API real (tamanhoPagina, totalPaginas, paginasRestantes), só as linhas com
+     * publicação dentro de dataPublicacaoPncpInicial..Final (como a API).
+     */
     private fun serve(req: RecordedRequest, rowsByCode: Map<String, List<String>>): MockResponse {
-        val rows = rowsByCode[req.query("codigoModalidade")].orEmpty()
+        val from = req.query("dataPublicacaoPncpInicial").orEmpty()
+        val to = req.query("dataPublicacaoPncpFinal") ?: "9999-12-31"
+        val rows = rowsByCode[req.query("codigoModalidade")].orEmpty().filter { r ->
+            val pub = PUB.find(r)?.groupValues?.get(1)?.take(10) ?: return@filter true
+            pub >= from && pub <= to
+        }
         val size = req.query("tamanhoPagina")!!.toInt()
         val pagina = req.query("pagina")!!.toInt()
         val totalPages = (rows.size + size - 1) / size
@@ -193,22 +221,289 @@ class ComprasGovConnectorTest {
     }
 
     @Test
-    fun `cache de linhas por 10 minutos evita reler nas atualizacoes`() = runBlocking {
-        val pregao = (1..15).map { row(it) }
-        start(fast.copy(pageSize = 10)) { req -> serve(req, mapOf("5" to pregao)) }
+    fun `primeira leitura e completa e as atualizacoes seguintes so baixam o incremental ate 6 h`() = runBlocking {
+        val pregao = (1..15).map { row(it) }.toMutableList()
+        start(fast.copy(pageSize = 10)) { req -> serve(req, mapOf("5" to pregao.toList())) }
         val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
 
         connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
-        assertEquals(2, listings().size)
+        assertEquals("completa: 2 páginas da janela", listOf("1", "2"), listings().map { it.query("pagina") })
+        assertTrue(listings().all { it.query("dataPublicacaoPncpInicial") == "2026-08-07" })
+        assertEquals(1, connector.lastSync!!.fullSyncs)
 
-        clockNow = now + 2 * 60_000L // atualização automática de 2 min
+        // < 90 s: nem incremental (só o cache).
+        requests.clear()
+        clockNow = now + 60_000L
+        assertEquals(15, connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL).diagnostics.read)
+        assertTrue(listings().isEmpty())
+
+        // Atualização de 2 min: só as publicações desde o dia da última sincronização (menos 1 dia de defasagem).
+        requests.clear()
+        pregao += row(16, objeto = "Publicada hoje", pub = "2026-10-06T11:00:00")
+        clockNow = now + 2 * 60_000L
         val again = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
-        assertEquals("não relê dentro do cache", 2, listings().size)
-        assertEquals(15, again.diagnostics.read)
+        assertEquals(1, listings().size)
+        assertEquals("2026-10-05", listings().single().query("dataPublicacaoPncpInicial"))
+        assertEquals("2026-10-06", listings().single().query("dataPublicacaoPncpFinal"))
+        assertEquals(1, connector.lastSync!!.downloaded)
+        assertEquals(0, connector.lastSync!!.fullSyncs)
+        assertEquals(16, again.opportunities.size)
+        assertEquals(16, again.diagnostics.read)
 
-        clockNow = now + 11 * 60_000L
+        // 5 h depois: ainda incremental. 6 h depois da completa: nova varredura completa.
+        requests.clear()
+        clockNow = now + 5 * 60 * 60_000L
         connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
-        assertEquals("cache expirado relê tudo", 4, listings().size)
+        assertTrue(listings().all { it.query("dataPublicacaoPncpInicial") == "2026-10-05" })
+        requests.clear()
+        clockNow = now + 6 * 60 * 60_000L
+        connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(listOf("1", "2"), listings().map { it.query("pagina") })
+        assertTrue(listings().all { it.query("dataPublicacaoPncpInicial") == "2026-08-07" })
+        assertEquals(1, connector.lastSync!!.fullSyncs)
+    }
+
+    @Test
+    fun `Worker em modo incremental nunca faz a varredura completa`() = runBlocking {
+        val pregao = listOf(row(1, pub = "2026-10-05T10:00:00"), row(2, pub = "2026-09-01T10:00:00"))
+        val store = InMemoryListingRowStore()
+        start(fast, store = store) { req -> serve(req, mapOf("5" to pregao)) }
+        val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
+
+        // Cache vazio (nenhuma completa): o Worker não sincroniza nem grava marca — a completa fica para o primeiro plano.
+        val first = withContext(SourceSyncPolicy.INCREMENTAL_ONLY) { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+        assertTrue(listings().isEmpty())
+        assertTrue(first.opportunities.isEmpty())
+        assertNull(store.syncMark(5, ""))
+        assertEquals(0, store.size)
+
+        // Última completa há 5 h (< 6 h) e também há 7 h: o Worker continua só incremental.
+        for (hoursAgo in listOf(5L, 7L)) {
+            requests.clear()
+            store.saveSyncMark(ListingSyncMark(5, "", now - hoursAgo * 3_600_000L, now - 10 * 60_000L))
+            withContext(SourceSyncPolicy.INCREMENTAL_ONLY) { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+            assertEquals(1, listings().size)
+            assertTrue(listings().none { it.query("dataPublicacaoPncpInicial") == "2026-08-07" })
+            assertEquals(0, connector.lastSync!!.fullSyncs)
+        }
+
+        // Em primeiro plano, a mesma marca de 7 h dispara a completa.
+        requests.clear()
+        store.saveSyncMark(ListingSyncMark(5, "", now - 7 * 3_600_000L, now - 10 * 60_000L))
+        connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals("2026-08-07", listings().single().query("dataPublicacaoPncpInicial"))
+    }
+
+    @Test
+    fun `apos instalar - Worker com cache vazio e depois a primeira busca em primeiro plano faz a varredura completa`() = runBlocking {
+        // Janela com 3 páginas: as mais antigas (página 1) encerradas; as recentes abertas (como a API real, ascendente).
+        val old = (1..10).map { row(it, pub = "2026-08-10T10:00:00", enc = "2026-08-20T10:00:00") }
+        val recent = (11..25).map { row(it, pub = "2026-10-01T10:00:00", enc = "2026-10-20T10:00:00") }
+        val store = InMemoryListingRowStore()
+        start(fast.copy(pageSize = 10), store = store) { req -> if (req.route == CONTRATACOES) serve(req, mapOf("5" to old + recent)) else emptyPage() }
+        val filter = OpportunityFilter()
+
+        // 1) Worker logo após a instalação: nada sincronizado, nenhuma marca.
+        withContext(SourceSyncPolicy.INCREMENTAL_ONLY) { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+        assertTrue(listings().isEmpty())
+        assertNull(store.syncMark(5, ""))
+
+        // 2) Primeira busca em primeiro plano (segundos depois): varredura completa da janela de 60 dias.
+        requests.clear()
+        clockNow = now + 30_000L
+        val fg = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(3, connector.lastSync!!.fullSyncs)
+        assertEquals(listOf("1", "2", "3"), listings().filter { it.query("codigoModalidade") == "5" }.map { it.query("pagina") })
+        assertTrue(listings().all { it.query("dataPublicacaoPncpInicial") == "2026-08-07" })
+        assertEquals(15, fg.diagnostics.read)
+        assertEquals(15, fg.opportunities.size)
+        assertFalse(fg.diagnostics.syncing)
+        assertNull(fg.diagnostics.syncFailure)
+        assertTrue(store.syncMark(5, "")!!.lastFullSyncAt > 0)
+
+        // 3) Worker seguinte (15 min): agora sim só o incremental.
+        requests.clear()
+        clockNow = now + 15 * 60_000L
+        withContext(SourceSyncPolicy.INCREMENTAL_ONLY) { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+        assertTrue(listings().isNotEmpty())
+        assertTrue(listings().none { it.query("dataPublicacaoPncpInicial") == "2026-08-07" })
+    }
+
+    @Test
+    fun `varredura completa demorada devolve o parcial sincronizando e continua mesmo se a tela cancelar`() = runBlocking {
+        val recent = (1..30).map { row(it, pub = "2026-10-01T10:00:00") }
+        val store = InMemoryListingRowStore()
+        val release = java.util.concurrent.CountDownLatch(1)
+        start(fast.copy(pageSize = 10, foregroundWaitMs = 300), store = store) { req ->
+            // Página 1 responde na hora; as demais só depois de "liberadas" (API lenta).
+            if (req.query("pagina") != "1") release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            serve(req, mapOf("5" to recent))
+        }
+        val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
+
+        val partial = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertTrue("resultado parcial marcado", partial.diagnostics.syncing)
+        assertEquals(10, partial.diagnostics.read)
+        assertNotNull(connector.syncProgress.value)
+        assertTrue(partial.diagnostics.summary.contains("sincronização em andamento"))
+
+        // A tela sai (cancela a espera) — a varredura continua no escopo do conector.
+        val waiting = CoroutineScope(Dispatchers.IO).launch { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+        delay(50)
+        waiting.cancel()
+        release.countDown()
+        val deadline = System.currentTimeMillis() + 10_000
+        while (connector.syncProgress.value != null && System.currentTimeMillis() < deadline) delay(20)
+        assertNull(connector.syncProgress.value)
+        assertTrue("marca de completa gravada", store.syncMark(5, "")!!.lastFullSyncAt > 0)
+        assertEquals(30, store.size)
+
+        // Próxima busca: cache completo, sem nova varredura.
+        requests.clear()
+        val done = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertFalse(done.diagnostics.syncing)
+        assertEquals(30, done.diagnostics.read)
+        assertTrue(listings().isEmpty())
+    }
+
+    @Test
+    fun `varredura completa que falha com cache parcial aparece no diagnostico e e refeita na proxima`() = runBlocking {
+        val rows = (1..30).map { row(it, pub = "2026-10-01T10:00:00") }
+        val store = InMemoryListingRowStore()
+        var fail = true
+        start(fast.copy(pageSize = 10), store = store) { req ->
+            if (fail && req.query("pagina") != "1") MockResponse().setResponseCode(503) else serve(req, mapOf("5" to rows))
+        }
+        val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
+
+        val first = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(10, first.diagnostics.read)
+        assertNotNull(first.diagnostics.syncFailure)
+        assertTrue(first.diagnostics.summary.contains("não terminou"))
+        assertNull("sem marca: a próxima refaz a completa", store.syncMark(5, ""))
+
+        fail = false
+        requests.clear()
+        clockNow = now + 2 * 60_000L
+        val second = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(listOf("1", "2", "3"), listings().map { it.query("pagina") })
+        assertEquals(30, second.diagnostics.read)
+        assertNull(second.diagnostics.syncFailure)
+    }
+
+    @Test
+    fun `consultas de prazo ao PNCP esperam a listagem do PNCP da mesma busca`() = runBlocking {
+        start(fast) { req ->
+            when {
+                req.route == CONTRATACOES -> serve(req, mapOf("5" to listOf(row(1, enc = null))))
+                req.route?.startsWith(PNCP) == true -> pncpStatus("2026-10-30T10:00:00")
+                else -> emptyPage()
+            }
+        }
+        val gate = com.licitaia.connector.api.PncpTrafficGate()
+        val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
+        val job = async(Dispatchers.IO) {
+            withContext(gate) { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+        }
+        delay(500)
+        assertTrue("nenhuma consulta de prazo antes da listagem do PNCP terminar", pncpCalls().isEmpty())
+        gate.listingDone.complete(Unit)
+        val listing = job.await()
+        assertEquals(1, pncpCalls().size)
+        assertTrue(listing.opportunities.single().hasProposalDeadline)
+    }
+
+    @Test
+    fun `limpeza remove do cache o que saiu da janela ou encerrou`() = runBlocking {
+        val rows = listOf(
+            row(1, pub = "2026-08-08T10:00:00", enc = "2026-12-01T10:00:00"), // sai da janela em 2 dias
+            row(2, pub = "2026-10-01T10:00:00", enc = "2026-10-07T10:00:00"), // encerra amanhã
+            row(3, pub = "2026-10-01T10:00:00", enc = null), // sem prazo: fica
+            row(4, pub = "2026-10-01T10:00:00", enc = "2026-11-01T10:00:00"),
+        )
+        val store = InMemoryListingRowStore()
+        start(fast, store = store) { req -> serve(req, mapOf("5" to rows)) }
+        val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
+        connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(4, store.size)
+
+        // 3 dias depois (incremental): o 1 saiu da janela de 60 dias e o 2 encerrou → removidos do cache.
+        clockNow = now + 3 * 24 * 3_600_000L
+        val later = connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(2, store.size)
+        assertEquals(setOf(3, 4), later.opportunities.map { it.id.substringAfter("-1-").substringBefore("/").toInt() }.toSet())
+
+        // Revogada vista numa leitura posterior também sai do cache.
+        requests.clear()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                serve(request, mapOf("5" to listOf(row(4, pub = "2026-10-08T10:00:00", situacao = "Revogada"))))
+        }
+        clockNow += 3 * 60_000L
+        connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(1, store.size)
+        // ...e fica registrada para a limpeza do cache de oportunidades (uma vez só).
+        val withdrawn = connector.drainWithdrawnIds()
+        assertEquals(1, withdrawn.size)
+        assertTrue(withdrawn.single().endsWith(control(4)))
+        assertTrue(connector.drainWithdrawnIds().isEmpty())
+    }
+
+    @Test
+    fun `atualizacao diaria forca a varredura completa e o primeiro plano so baixa o incremental ate 30 h`() = runBlocking {
+        val pregao = (1..15).map { row(it) }
+        val store = InMemoryListingRowStore()
+        start(fast.copy(pageSize = 10, fullSyncIntervalMs = ComprasGovConnector.DEFAULT_FULL_SYNC_INTERVAL_MS), store = store) { req ->
+            serve(req, mapOf("5" to pregao))
+        }
+        val filter = OpportunityFilter(modality = Modality.PREGAO_ELETRONICO)
+        // Completa de ontem (25 h atrás): abrir a tela não relê a janela inteira.
+        store.saveSyncMark(ListingSyncMark(5, "", now - 25 * 3_600_000L, now - 25 * 3_600_000L))
+        connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL)
+        assertEquals(0, connector.lastSync!!.fullSyncs)
+        assertTrue(listings().none { it.query("dataPublicacaoPncpInicial") == "2026-08-07" })
+
+        // A diária (05:30) com a mesma marca: varredura completa.
+        requests.clear()
+        clockNow = now + 5 * 60_000L
+        withContext(SourceSyncPolicy.DAILY_FULL) { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+        assertEquals(1, connector.lastSync!!.fullSyncs)
+        assertEquals(listOf("1", "2"), listings().map { it.query("pagina") })
+
+        // Os radares da mesma execução (minutos depois) reaproveitam a completa recém-feita.
+        requests.clear()
+        clockNow = now + 10 * 60_000L
+        withContext(SourceSyncPolicy.DAILY_FULL) { connector.listScreened(filter, OpportunityScreen.ACCEPT_ALL) }
+        assertEquals(0, connector.lastSync!!.fullSyncs)
+    }
+
+    @Test
+    fun `decisao de sincronizacao pelo tempo`() {
+        val h = 3_600_000L
+        val six = 6 * h
+        val min90 = 90_000L
+        fun mark(fullAgo: Long?, syncAgo: Long) = ListingSyncMark(5, "", fullAgo?.let { now - it } ?: 0L, now - syncAgo)
+        assertEquals(SyncPlanner.Action.FULL, SyncPlanner.decide(null, now, false, six, min90))
+        // Worker sem nenhuma completa anterior: nada (nem incremental).
+        assertEquals(SyncPlanner.Action.NONE, SyncPlanner.decide(null, now, true, six, min90))
+        assertEquals(SyncPlanner.Action.NONE, SyncPlanner.decide(mark(null, 10 * 60_000L), now, true, six, min90))
+        assertEquals(SyncPlanner.Action.INCREMENTAL, SyncPlanner.decide(mark(5 * h, 10 * 60_000L), now, false, six, min90))
+        assertEquals(SyncPlanner.Action.NONE, SyncPlanner.decide(mark(5 * h, 60_000L), now, false, six, min90))
+        assertEquals(SyncPlanner.Action.FULL, SyncPlanner.decide(mark(six, 60_000L), now, false, six, min90))
+        assertEquals(SyncPlanner.Action.INCREMENTAL, SyncPlanner.decide(mark(7 * h, 10 * 60_000L), now, true, six, min90))
+        assertEquals("só incrementais até agora", SyncPlanner.Action.FULL, SyncPlanner.decide(mark(null, 10 * 60_000L), now, false, six, min90))
+        // Relógio voltou (marca no futuro): refaz a completa em primeiro plano.
+        assertEquals(SyncPlanner.Action.FULL, SyncPlanner.decide(mark(-h, -h), now, false, six, min90))
+        // Atualização diária forçada: completa mesmo com a última há 2 h; reaproveita a de 30 min atrás; nunca no Worker incremental.
+        assertEquals(SyncPlanner.Action.FULL, SyncPlanner.decide(mark(2 * h, 2 * h), now, false, six, min90, forceFull = true))
+        assertEquals(SyncPlanner.Action.INCREMENTAL, SyncPlanner.decide(mark(h / 2, 10 * 60_000L), now, false, six, min90, forceFull = true))
+        assertEquals(SyncPlanner.Action.INCREMENTAL, SyncPlanner.decide(mark(2 * h, 10 * 60_000L), now, true, six, min90, forceFull = true))
+
+        val day = 24 * h
+        val windowStart = now - 60 * day
+        assertEquals(now - 2 * day, SyncPlanner.incrementalStart(mark(h, day), now, 1, windowStart))
+        assertEquals(now - 2 * day, SyncPlanner.incrementalStart(null, now, 1, windowStart))
+        assertEquals(windowStart, SyncPlanner.incrementalStart(mark(h, 90 * day), now, 1, windowStart))
     }
 
     @Test
@@ -255,7 +550,7 @@ class ComprasGovConnectorTest {
         val listing = connector.listScreened(OpportunityFilter(ufs = setOf("MG")), screen)
 
         assertEquals(listOf("COMPRAS_GOV:${control(1)}"), listing.opportunities.map { it.id })
-        assertEquals(5, listing.diagnostics.read)
+        assertEquals("só as linhas vivas de MG no cache", 2, listing.diagnostics.read)
         assertEquals(1, listing.diagnostics.candidates)
         assertEquals(1, listing.diagnostics.open)
         assertTrue("UF enviada à API", listings().all { it.query("unidadeOrgaoUfSigla") == "MG" })

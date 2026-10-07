@@ -12,6 +12,7 @@ import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompanyRepository
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
+import com.licitaia.domain.util.BrDocuments
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
@@ -43,6 +44,22 @@ data class CompanyForm(
     val uf: String = "SP",
     val city: String = "",
     val preferredAi: AiProviderType? = null,
+    // Endereço / contato / representante legal / banco (saem na proposta em PDF; todos opcionais).
+    val street: String = "",
+    val complement: String = "",
+    val district: String = "",
+    /** Somente dígitos (até 8). */
+    val zipDigits: String = "",
+    /** Somente dígitos, com DDD (até 11). */
+    val phoneDigits: String = "",
+    val email: String = "",
+    val legalRepName: String = "",
+    /** Somente dígitos (até 11). */
+    val legalRepCpfDigits: String = "",
+    val legalRepRole: String = "",
+    val bankName: String = "",
+    val bankAgency: String = "",
+    val bankAccount: String = "",
     val errors: Map<String, String> = emptyMap(),
     val busy: Boolean = false,
 ) {
@@ -52,8 +69,38 @@ data class CompanyForm(
         fun from(c: Company) = CompanyForm(
             id = c.id, name = c.name, tradeName = c.tradeName, cnpjDigits = c.cnpj.filter { it.isDigit() }.take(14),
             segment = c.segment, uf = c.uf, city = c.city, preferredAi = c.preferredAi,
+            street = c.street, complement = c.complement, district = c.district,
+            zipDigits = BrDocuments.digits(c.zipCode).take(8), phoneDigits = BrDocuments.digits(c.phone).take(11), email = c.email,
+            legalRepName = c.legalRepName, legalRepCpfDigits = BrDocuments.digits(c.legalRepCpf).take(11), legalRepRole = c.legalRepRole,
+            bankName = c.bankName, bankAgency = c.bankAgency, bankAccount = c.bankAccount,
         )
     }
+
+    /** Empresa a persistir (textos aparados); preserva o que não é editado aqui (id, flag demo é imposta pelo repositório). */
+    fun toCompany() = Company(
+        id = id, name = name.trim(), tradeName = tradeName.trim().ifBlank { name.trim() },
+        cnpj = cnpjDigits, segment = segment, uf = uf, city = city.trim(), preferredAi = preferredAi,
+        street = street.trim(), complement = complement.trim(), district = district.trim(), zipCode = zipDigits,
+        phone = phoneDigits, email = email.trim(), legalRepName = legalRepName.trim(), legalRepCpf = legalRepCpfDigits,
+        legalRepRole = legalRepRole.trim(), bankName = bankName.trim(), bankAgency = bankAgency.trim(), bankAccount = bankAccount.trim(),
+    )
+}
+
+/**
+ * Validação do formulário da empresa (chave do campo → mensagem). Endereço, contato, representante e banco são
+ * opcionais, mas, se preenchidos, precisam estar corretos: CEP com 8 dígitos, CPF com dígitos verificadores válidos,
+ * e-mail com @ e domínio, telefone com DDD.
+ */
+internal fun validateCompanyForm(form: CompanyForm, companies: List<Company>): Map<String, String> = buildMap {
+    if (form.name.isBlank()) put("name", "Informe a razão social")
+    if (form.cnpjDigits.length != 14) put("cnpj", "O CNPJ deve ter 14 dígitos")
+    if (form.city.isBlank()) put("city", "Informe a cidade")
+    val duplicate = companies.any { it.id != form.id && it.cnpj.filter { c -> c.isDigit() } == form.cnpjDigits }
+    if (duplicate) put("cnpj", "Já existe uma empresa com este CNPJ")
+    if (form.zipDigits.isNotEmpty() && !BrDocuments.isValidCep(form.zipDigits)) put("zip", "O CEP deve ter 8 dígitos")
+    if (form.phoneDigits.isNotEmpty() && !BrDocuments.isValidPhone(form.phoneDigits)) put("phone", "Informe o telefone com DDD")
+    if (form.email.isNotBlank() && !BrDocuments.isValidEmail(form.email)) put("email", "E-mail inválido")
+    if (form.legalRepCpfDigits.isNotEmpty() && !BrDocuments.isValidCpf(form.legalRepCpfDigits)) put("cpf", "CPF inválido")
 }
 
 data class UserForm(
@@ -171,23 +218,14 @@ class CompaniesViewModel @Inject constructor(
         val form = local.value.companyForm ?: return
         val session = state.value.session ?: return
         if (form.busy || !state.value.canManage || (form.isNew && !state.value.canCreateCompany)) return
-        val errors = buildMap {
-            if (form.name.isBlank()) put("name", "Informe a razão social")
-            if (form.cnpjDigits.length != 14) put("cnpj", "O CNPJ deve ter 14 dígitos")
-            if (form.city.isBlank()) put("city", "Informe a cidade")
-            val duplicate = state.value.companies.any { it.id != form.id && it.cnpj.filter { c -> c.isDigit() } == form.cnpjDigits }
-            if (duplicate) put("cnpj", "Já existe uma empresa com este CNPJ")
-        }
+        val errors = validateCompanyForm(form, state.value.companies)
         if (errors.isNotEmpty()) {
             local.update { it.copy(companyForm = form.copy(errors = errors)) }
             return
         }
         local.update { it.copy(companyForm = form.copy(busy = true)) }
         viewModelScope.launch {
-            val company = Company(
-                id = form.id, name = form.name.trim(), tradeName = form.tradeName.trim().ifBlank { form.name.trim() },
-                cnpj = form.cnpjDigits, segment = form.segment, uf = form.uf, city = form.city.trim(), preferredAi = form.preferredAi,
-            )
+            val company = form.toCompany()
             // O repositório concede acesso a quem cria a empresa e registra a auditoria (CADASTRO).
             runCatching { companies.upsertCompany(company) }
                 .onSuccess {

@@ -50,6 +50,7 @@ class OpenAiProvider @Inject constructor(
     private val http by lazy { client.forLlm() }
     override val type = AiProviderType.OPENAI
     override val displayName = type.label
+    override suspend fun modelName(): String? = runCatching { credentials.resolve(type).model }.getOrNull()
 
     override suspend fun complete(system: String, user: String, expectJson: Boolean): String {
         val cfg = credentials.resolve(type)
@@ -106,6 +107,7 @@ class AnthropicProvider @Inject constructor(
     private val http by lazy { client.forLlm() }
     override val type = AiProviderType.ANTHROPIC
     override val displayName = type.label
+    override suspend fun modelName(): String? = runCatching { credentials.resolve(type).model }.getOrNull()
 
     override suspend fun complete(system: String, user: String, expectJson: Boolean): String {
         val cfg = credentials.resolve(type)
@@ -160,12 +162,19 @@ class GeminiProvider @Inject constructor(
     private val http by lazy { client.forLlm() }
     override val type = AiProviderType.GEMINI
     override val displayName = type.label
+    override suspend fun modelName(): String? = runCatching { credentials.resolve(type).model }.getOrNull()
 
-    override suspend fun complete(system: String, user: String, expectJson: Boolean): String {
+    override suspend fun complete(system: String, user: String, expectJson: Boolean): String =
+        generate(requestBody(system, user, expectJson, temperature = null))
+
+    /** Gemini aceita `generationConfig.temperature`: baixa para respostas literais do "Pergunte ao edital". */
+    override suspend fun completePrecise(system: String, user: String): String =
+        generate(requestBody(system, user, expectJson = false, temperature = PRECISE_TEMPERATURE))
+
+    private suspend fun generate(body: JsonObject): String {
         val cfg = credentials.resolve(type)
         val model = cfg.model.removePrefix("models/")
         if (!MODEL_NAME.matches(model)) throw AiProviderException("Nome de modelo inválido para $displayName.")
-        val body = requestBody(system, user, expectJson)
         val url = "${cfg.baseUrl}/v1beta/models/$model:generateContent"
         val response = if (cfg.authMode == AiAuthMode.OAUTH) {
             try {
@@ -201,7 +210,7 @@ class GeminiProvider @Inject constructor(
         else -> this
     }
 
-    private fun requestBody(system: String, user: String, expectJson: Boolean): JsonObject {
+    private fun requestBody(system: String, user: String, expectJson: Boolean, temperature: Double?): JsonObject {
         val body = buildJsonObject {
             putJsonObject("systemInstruction") {
                 put("parts", buildJsonArray { add(buildJsonObject { put("text", system) }) })
@@ -214,7 +223,12 @@ class GeminiProvider @Inject constructor(
                     },
                 )
             }
-            if (expectJson) putJsonObject("generationConfig") { put("responseMimeType", "application/json") }
+            if (expectJson || temperature != null) {
+                putJsonObject("generationConfig") {
+                    if (expectJson) put("responseMimeType", "application/json")
+                    if (temperature != null) put("temperature", temperature)
+                }
+            }
         }
         return body
     }
@@ -235,6 +249,7 @@ class GeminiProvider @Inject constructor(
 
     private companion object {
         val MODEL_NAME = Regex("[A-Za-z0-9._-]+")
+        const val PRECISE_TEMPERATURE = 0.1
     }
 }
 
@@ -248,21 +263,41 @@ class CustomProvider @Inject constructor(
     private val http by lazy { client.forLlm() }
     override val type = AiProviderType.CUSTOM
     override val displayName = type.label
+    override suspend fun modelName(): String? = runCatching { credentials.resolve(type).model }.getOrNull()
 
-    override suspend fun complete(system: String, user: String, expectJson: Boolean): String {
+    override suspend fun complete(system: String, user: String, expectJson: Boolean): String =
+        // `response_format` não é universal entre servidores compatíveis: o JSON é pedido só via prompt.
+        send(chatCompletionsBody(credentials.resolve(type).model, system, user, jsonMode = false))
+
+    /**
+     * Servidores compatíveis costumam aceitar `temperature`: baixa para o "Pergunte ao edital". Se o servidor recusar
+     * (HTTP 400, ex.: modelo de raciocínio), repete sem o parâmetro.
+     */
+    override suspend fun completePrecise(system: String, user: String): String {
+        val base = chatCompletionsBody(credentials.resolve(type).model, system, user, jsonMode = false)
+        val precise = JsonObject(base + ("temperature" to kotlinx.serialization.json.JsonPrimitive(PRECISE_TEMPERATURE)))
+        return try {
+            send(precise)
+        } catch (e: AiProviderException) {
+            if (e.httpStatus == 400) send(base) else throw e
+        }
+    }
+
+    private suspend fun send(body: JsonObject): String {
         val cfg = credentials.resolve(type)
         val response = http.postJson(
             providerLabel = displayName,
             url = endpointUrl(cfg.baseUrl),
             headers = mapOf("Authorization" to "Bearer ${cfg.apiKey}"),
-            // `response_format` não é universal entre servidores compatíveis: o JSON é pedido só via prompt.
-            body = chatCompletionsBody(cfg.model, system, user, jsonMode = false),
+            body = body,
             json = json,
         )
         return chatCompletionsText(displayName, response)
     }
 
     internal companion object {
+        const val PRECISE_TEMPERATURE = 0.1
+
         /** Aceita a URL completa do endpoint, uma base terminada em `/v1` ou só o host. */
         fun endpointUrl(baseUrl: String): String {
             val base = baseUrl.trimEnd('/')

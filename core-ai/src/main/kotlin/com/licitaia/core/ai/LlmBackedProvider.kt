@@ -3,6 +3,8 @@ package com.licitaia.core.ai
 import com.licitaia.ai.api.AIProvider
 import com.licitaia.ai.api.AiProviderException
 import com.licitaia.ai.api.DocumentComparison
+import com.licitaia.ai.api.EditalAnswer
+import com.licitaia.ai.api.EditalQuestionRequest
 import com.licitaia.ai.api.MessageDraft
 import com.licitaia.ai.api.ProposalDraft
 import com.licitaia.ai.api.RelevanceItem
@@ -39,6 +41,12 @@ abstract class LlmBackedProvider(
 
     /** Envia [system] + [user] ao modelo e devolve o texto da resposta. */
     protected abstract suspend fun complete(system: String, user: String, expectJson: Boolean): String
+
+    /**
+     * Texto livre com temperatura baixa (respostas literais, sem "criatividade"), quando o provedor aceita amostragem
+     * customizada. Padrão: igual a [complete] — os modelos de raciocínio atuais da OpenAI/Anthropic rejeitam `temperature`.
+     */
+    protected open suspend fun completePrecise(system: String, user: String): String = complete(system, user, expectJson = false)
 
     private suspend fun completeJson(user: String): JsonObject? =
         extractJsonObject(complete(SYSTEM_JSON, user, expectJson = true), json)
@@ -323,6 +331,16 @@ abstract class LlmBackedProvider(
         }
         return scores
     }
+
+    /** Texto livre (sem JSON): a resposta vem com as linhas "Fonte: ..." pedidas no prompt. Vazia → erro. */
+    override suspend fun askEdital(request: EditalQuestionRequest): EditalAnswer {
+        val answer = completePrecise(request.system, request.prompt).trim()
+        if (answer.isEmpty()) throw AiProviderException("$displayName devolveu uma resposta vazia. Tente novamente.")
+        return EditalAnswer(answer, modelName())
+    }
+
+    /** Modelo configurado (exibido no histórico de perguntas); null quando não for possível resolver. */
+    protected open suspend fun modelName(): String? = null
 
     // ------------------------------------------------------------------ apoio
 

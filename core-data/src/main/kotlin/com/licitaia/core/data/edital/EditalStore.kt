@@ -18,6 +18,8 @@ import javax.inject.Singleton
 @Singleton
 class EditalStore @Inject constructor(@ApplicationContext private val context: Context) {
 
+    /** Raiz `filesDir/editais` (uma pasta por empresa). */
+    fun rootDirectory(): File = File(context.filesDir, "editais")
     fun directory(companyId: Long): File = File(context.filesDir, "editais/$companyId")
     fun pdfFile(companyId: Long, tenderId: Long): File = File(directory(companyId), "$tenderId.pdf")
     fun textFile(companyId: Long, tenderId: Long): File = File(directory(companyId), "$tenderId.txt")

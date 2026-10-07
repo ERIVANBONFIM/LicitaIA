@@ -79,10 +79,10 @@ fun TenderWorthScreen(viewModel: TenderAnalysisViewModel = hiltViewModel()) {
                 ) {
                     if (analysis.heuristicOnly) {
                         item(key = "heuristic") {
-                            AlertBanner(
-                                "Análise heurística — configure um provedor de IA para analisar o edital",
-                                "Veredito calculado por regras locais, sem leitura do edital. Trate os indicadores como estimativa preliminar.",
-                                Tone.WARNING, actionLabel = "Configurar", onAction = { navigator.navigate(Routes.AI_SETTINGS) },
+                            HeuristicAnalysisBanner(
+                                activeAi = state.activeAi, canAnalyze = state.canAnalyze, analyzing = state.analyzing,
+                                onReanalyze = viewModel::analyze, onConfigure = { navigator.navigate(Routes.AI_SETTINGS) },
+                                detail = "Veredito calculado por regras locais, sem leitura do edital.",
                             )
                         }
                     }

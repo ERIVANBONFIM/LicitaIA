@@ -1,5 +1,6 @@
 package com.licitaia.connector.pncp
 
+import com.licitaia.domain.competition.PublicResultsSource
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -16,4 +17,9 @@ object PncpModule {
     @Provides
     @Singleton
     fun providePncpConnector(client: OkHttpClient, json: Json): PncpConnector = PncpConnector(client, json)
+
+    /** Resultados públicos (fornecedor homologado) para a Concorrência — fila própria com espaçamento anti-429. */
+    @Provides
+    @Singleton
+    fun providePublicResultsSource(client: OkHttpClient, json: Json): PublicResultsSource = PncpResultsSource(client, json)
 }

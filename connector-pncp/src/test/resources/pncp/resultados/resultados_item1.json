@@ -1,0 +1,34 @@
+[
+  {
+    "numeroItem": 1,
+    "sequencialResultado": 1,
+    "niFornecedor": "12345678000190",
+    "tipoPessoa": "PJ",
+    "nomeRazaoSocialFornecedor": "FIBRA NORTE TELECOM LTDA",
+    "porteFornecedorNome": "ME",
+    "porteFornecedorId": 1,
+    "quantidadeHomologada": 12.0,
+    "valorUnitarioHomologado": 3900.0,
+    "valorTotalHomologado": 46800.0,
+    "percentualDesconto": 13.33,
+    "situacaoCompraItemResultadoId": "1",
+    "situacaoCompraItemResultadoNome": "Informado",
+    "dataResultado": "2026-09-10T00:00:00",
+    "dataInclusao": "2026-09-10T08:34:00",
+    "aplicacaoMargemPreferencia": false,
+    "aplicacaoBeneficioMeEpp": true,
+    "numeroControlePNCPCompra": "20918579000183-1-000016/2025"
+  },
+  {
+    "numeroItem": 1,
+    "sequencialResultado": 2,
+    "niFornecedor": "98765432000155",
+    "tipoPessoa": "PJ",
+    "nomeRazaoSocialFornecedor": "REDE ANTIGA SERVICOS LTDA",
+    "valorTotalHomologado": 50000.0,
+    "situacaoCompraItemResultadoNome": "Cancelado",
+    "dataResultado": "2026-09-01T00:00:00",
+    "dataCancelamento": "2026-09-05T00:00:00",
+    "motivoCancelamento": "Inabilitação posterior"
+  }
+]

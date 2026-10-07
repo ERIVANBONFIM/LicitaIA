@@ -158,6 +158,9 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                         NavRow(Icons.Outlined.Hub, "Portais conectados", "Compras.gov, BLL, Licitanet e PCP", LicitaColors.Cyan) { navigator.navigate(Routes.PORTALS) }
                         NavRow(Icons.Outlined.Business, "Empresas e perfis", "Multiempresa, usuários e matriz de permissões", LicitaColors.Yellow) { navigator.navigate(Routes.COMPANIES) }
 
+                        SectionHeader("Busca de licitações")
+                        DailySyncCard(haptic = haptic)
+
                         SectionHeader("Preservação dos dados")
                         BackupCard()
                         SectionHeader("Alertas de CAPTCHA")

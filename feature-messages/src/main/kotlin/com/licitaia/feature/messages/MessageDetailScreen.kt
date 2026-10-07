@@ -18,7 +18,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import com.licitaia.core.ui.nav.Routes
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Refresh
@@ -43,7 +46,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.licitaia.core.ui.components.AlertBanner
-import com.licitaia.core.ui.components.BindingConfirmDialog
 import com.licitaia.core.ui.components.ButtonRow
 import com.licitaia.core.ui.components.ErrorState
 import com.licitaia.core.ui.components.IconBubble
@@ -52,7 +54,6 @@ import com.licitaia.core.ui.components.LicitaScaffold
 import com.licitaia.core.ui.components.PortalChip
 import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.SecondaryButton
-import com.licitaia.core.ui.components.SimulationBadge
 import com.licitaia.core.ui.components.SkeletonBox
 import com.licitaia.core.ui.components.SkeletonList
 import com.licitaia.core.ui.components.StatusBadge
@@ -67,8 +68,18 @@ import com.licitaia.domain.util.Formatters
 fun MessageDetailScreen(viewModel: MessageDetailViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
-    var confirmSend by rememberSaveable { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
     val now by rememberNow()
+    val replyInPortal: () -> Unit = {
+        state.message?.let { m ->
+            val text = state.draft.trim()
+            if (text.isNotEmpty()) {
+                clipboard.setText(AnnotatedString(text))
+                navigator.showMessage("Resposta copiada. Cole no chat do pregoeiro e envie no portal.")
+            }
+            navigator.navigate(Routes.portalWeb(m.portal))
+        }
+    }
 
     LaunchedEffect(Unit) { viewModel.events.collect { navigator.showMessage(it) } }
 
@@ -93,41 +104,20 @@ fun MessageDetailScreen(viewModel: MessageDetailViewModel = hiltViewModel()) {
                         )
                     }
 
-                    MessageBody(message)
+                    MessageBody(message, onOpenPortal = { navigator.navigate(Routes.portalWeb(message.portal)) })
                     AiSummaryCard(state, onGenerate = viewModel::generateAi)
                     SuggestedReplyCard(state, onUse = viewModel::useSuggestion)
-                    ReplyEditor(state, viewModel, onSend = { confirmSend = true })
+                    ReplyEditor(state, viewModel, onReplyInPortal = replyInPortal)
                     Spacer(Modifier.height(24.dp))
                 }
             }
         }
     }
 
-    val message = state.message
-    if (confirmSend && message != null) {
-        if (!state.canSend) {
-            confirmSend = false
-        } else {
-            BindingConfirmDialog(
-                title = "Enviar resposta ao pregoeiro?",
-                details = listOf(
-                    "Portal" to message.portal.displayName,
-                    "Pregão" to message.tenderNumber,
-                    "Destinatário" to message.sender,
-                    "Empresa" to state.companyName,
-                    "Resposta" to state.draft.trim().let { if (it.length > 140) it.take(140) + "…" else it },
-                ),
-                acknowledgeText = "Li a resposta e confirmo que ela representa a posição oficial da empresa.",
-                confirmLabel = "Confirmar envio",
-                onConfirm = { confirmSend = false; viewModel.sendConfirmed() },
-                onDismiss = { confirmSend = false },
-            )
-        }
-    }
 }
 
 @Composable
-private fun MessageBody(message: AuctioneerMessage) {
+private fun MessageBody(message: AuctioneerMessage, onOpenPortal: () -> Unit) {
     LicitaCard(Modifier.fillMaxWidth(), accent = if (message.isUrgentPending()) LicitaColors.Red else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -145,6 +135,7 @@ private fun MessageBody(message: AuctioneerMessage) {
         SelectionContainer {
             Text(message.body, style = MaterialTheme.typography.bodyLarge, color = LicitaColors.TextPrimary)
         }
+        TextButton(onClick = onOpenPortal) { Text("Abrir a licitação no portal (${message.portal.shortName})") }
     }
 }
 
@@ -221,13 +212,12 @@ private fun SuggestedReplyCard(state: MessageDetailUiState, onUse: () -> Unit) {
 }
 
 @Composable
-private fun ReplyEditor(state: MessageDetailUiState, viewModel: MessageDetailViewModel, onSend: () -> Unit) {
+private fun ReplyEditor(state: MessageDetailUiState, viewModel: MessageDetailViewModel, onReplyInPortal: () -> Unit) {
     val message = state.message ?: return
     LicitaCard(Modifier.fillMaxWidth(), accent = if (state.sent) LicitaColors.Green else null) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Sua resposta", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
             StatusBadge(message.replyStatus.label, message.replyStatus.tone())
-            SimulationBadge()
         }
         Spacer(Modifier.height(10.dp))
 
@@ -237,7 +227,7 @@ private fun ReplyEditor(state: MessageDetailUiState, viewModel: MessageDetailVie
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Enviada (simulação) em ${Formatters.dateTime(message.repliedAt)}. Nenhum dado saiu do aparelho.",
+                "Respondida em ${Formatters.dateTime(message.repliedAt)}.",
                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.GreenBright,
             )
             return@LicitaCard
@@ -284,15 +274,15 @@ private fun ReplyEditor(state: MessageDetailUiState, viewModel: MessageDetailVie
         }
         Spacer(Modifier.height(10.dp))
         PrimaryButton(
-            "Enviar resposta", onSend, Modifier.fillMaxWidth(),
-            enabled = state.canSend, icon = Icons.AutoMirrored.Outlined.Send, tone = Tone.SUCCESS,
+            "Copiar e responder no portal", onReplyInPortal, Modifier.fillMaxWidth(),
+            enabled = state.canSend, icon = Icons.AutoMirrored.Outlined.OpenInNew, tone = Tone.SUCCESS,
         )
         Spacer(Modifier.height(6.dp))
         Text(
             when {
-                !state.canReply -> "Envio indisponível para o seu perfil."
-                state.canSend -> "O envio exige confirmação dupla e é SIMULADO: nada é transmitido ao portal."
-                else -> "Fluxo: revisar → aprovar → confirmar envio. O envio só é liberado após a aprovação."
+                !state.canReply -> "Seu perfil não pode responder ao pregoeiro."
+                state.canSend -> "A resposta aprovada é copiada e o portal abre no navegador interno: cole no chat do pregoeiro e envie por lá."
+                else -> "Fluxo: revisar → aprovar → responder no portal. O botão é liberado após a aprovação."
             },
             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
         )

@@ -3,12 +3,14 @@ package com.licitaia.feature.tender
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.domain.model.AiProviderType
 import com.licitaia.domain.model.CompanyDocument
 import com.licitaia.domain.model.DocumentStatus
 import com.licitaia.domain.model.DocumentType
 import com.licitaia.domain.model.Tender
 import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.UserRole
+import com.licitaia.domain.repository.AiConfigRepository
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.DocumentRepository
 import com.licitaia.domain.repository.TenderRepository
@@ -42,6 +44,8 @@ data class TenderAnalysisState(
     val analyzing: Boolean = false,
     val error: String? = null,
     val role: UserRole? = null,
+    /** Provedor de IA que o app usa agora (MOCK = nenhum provedor real disponível). */
+    val activeAi: AiProviderType = AiProviderType.MOCK,
 ) {
     val canAnalyze: Boolean get() = role?.let { Rbac.can(it, Permission.ANALISAR) } ?: false
 }
@@ -56,9 +60,13 @@ class TenderAnalysisViewModel @Inject constructor(
     auth: AuthRepository,
     private val tenders: TenderRepository,
     documents: DocumentRepository,
+    aiConfig: AiConfigRepository,
 ) : ViewModel() {
 
     private val tenderId: Long = savedStateHandle.longArg("tenderId") ?: -1L
+
+    /** Aba inicial pedida pela rota (`?tab=analise|perguntas|itens`); null = Análise. */
+    val initialTab: String? = savedStateHandle.get<String>("tab")
     private val flags = MutableStateFlow(LocalFlags())
 
     private val remote = auth.session.flatMapLatest { session ->
@@ -82,10 +90,19 @@ class TenderAnalysisViewModel @Inject constructor(
         }
     }
 
-    val state: StateFlow<TenderAnalysisState> = combine(remote, flags) { s, f -> s.copy(analyzing = f.analyzing, error = f.error) }
+    private val activeAi = aiConfig.observeEffective().catch { emit(AiProviderType.MOCK) }
+
+    val state: StateFlow<TenderAnalysisState> = combine(remote, flags, activeAi) { s, f, ai -> s.copy(analyzing = f.analyzing, error = f.error, activeAi = ai) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TenderAnalysisState())
 
     init {
+        // Análise antiga heurística (feita quando não havia provedor) + provedor real disponível agora: reanalisa
+        // automaticamente UMA vez por licitação no processo (sem loop: falha ou nova heurística não repete).
+        viewModelScope.launch {
+            val target = state.first { s -> s.notFound || (!s.loading && s.analysis != null && s.activeAi != AiProviderType.MOCK) }
+            val analysis = target.analysis ?: return@launch
+            if (analysis.heuristicOnly && target.canAnalyze && !target.analyzing && autoReanalyzed.add(tenderId)) analyze()
+        }
         // A análise é disparada em segundo plano pelo "Tenho Interesse"; se não chegar em alguns
         // segundos (ex.: app fechado no meio), disparamos aqui mesmo.
         // Licitações cadastradas manualmente NÃO são analisadas sozinhas: o usuário importa o edital e decide.
@@ -133,5 +150,7 @@ class TenderAnalysisViewModel @Inject constructor(
 
     private companion object {
         const val AUTO_ANALYZE_DELAY_MS = 8_000L
+        /** Licitações já reanalisadas automaticamente neste processo (evita gastar cota em loop). */
+        val autoReanalyzed: MutableSet<Long> = java.util.Collections.synchronizedSet(HashSet())
     }
 }

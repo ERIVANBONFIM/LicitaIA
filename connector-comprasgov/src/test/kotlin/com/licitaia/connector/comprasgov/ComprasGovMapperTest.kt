@@ -203,6 +203,23 @@ class ComprasGovMapperTest {
     }
 
     @Test
+    fun `item real traz campos do detalhe - NCM, situacao, categoria, fornecedor e datas`() {
+        val items = json.decodeFromString(ComprasGovPage.serializer(ComprasGovItem.serializer()), fixture("itens_14133_05055128000176-1-000108_2026.json"))
+        val item = ComprasGovMapper.toOfficialItem(items.resultado.first { it.numeroItemPncp == 3 })!!
+        assertEquals("85469000", item.ncmNbsCode)
+        assertEquals("Homologado", item.situation)
+        assertEquals("Informática (TIC)", item.category)
+        assertEquals("Não se aplica", item.benefit)
+        assertEquals("Menor preço", item.judgingCriterion)
+        assertEquals("TORRAO EQUIPAMENTOS E ACESSORIOS LTDA", item.supplier)
+        assertEquals(true, item.hasResult)
+        assertEquals("2026-09-01T07:27:03", item.includedAt)
+        assertEquals("Não se aplica", item.preferenceMargin)
+        assertEquals(false, item.productiveIncentive)
+        assertNull(item.catalogCode)
+    }
+
+    @Test
     fun `licitacao legada real e mapeada sem UF e com UASG como orgao`() {
         val page = json.decodeFromString(ComprasGovPage.serializer(ComprasGovLicitacaoLegado.serializer()), fixture("legado_licitacao_pregao_2023-11_p1.json"))
         assertEquals(4016, page.totalRegistros)

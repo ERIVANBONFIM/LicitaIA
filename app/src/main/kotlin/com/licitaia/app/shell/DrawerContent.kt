@@ -30,7 +30,6 @@ import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.RestartAlt
-import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
@@ -90,8 +89,7 @@ private val drawerGroups = listOf(
         listOf(
             DrawerItem(Routes.LIVE, "Pregões ao Vivo", Icons.Outlined.Gavel),
             DrawerItem(Routes.WARROOM, "Sala de Guerra", Icons.Outlined.Shield),
-            DrawerItem(Routes.STRATEGY, "Estratégia", Icons.Outlined.Tune),
-            DrawerItem(Routes.SIMULATOR, "Simulador", Icons.Outlined.Science),
+            DrawerItem(Routes.STRATEGY, "Estratégias do robô", Icons.Outlined.Tune),
             DrawerItem(Routes.MESSAGES, "Mensagens do Pregoeiro", Icons.Outlined.Forum),
             DrawerItem(Routes.COMPETITION, "Concorrência", Icons.Outlined.Groups),
             DrawerItem(Routes.ROBOT, "Robô de Lances", Icons.Outlined.SmartToy),

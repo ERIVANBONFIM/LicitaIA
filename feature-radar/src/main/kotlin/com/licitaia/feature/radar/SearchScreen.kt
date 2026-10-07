@@ -35,6 +35,7 @@ import com.licitaia.core.ui.components.SelectChip
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.components.color
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.model.LowAdherence
 import com.licitaia.domain.model.Modality
 import com.licitaia.domain.model.OpportunityFilter
 import com.licitaia.domain.model.Portal
@@ -44,6 +45,7 @@ import com.licitaia.domain.model.Segment
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.OpportunityRepository
 import com.licitaia.domain.repository.TenderRepository
+import com.licitaia.domain.sync.DailySyncRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -75,7 +77,10 @@ class SearchViewModel @Inject constructor(
     tenders: TenderRepository,
     private val opportunities: OpportunityRepository,
     connectivity: ConnectivityMonitor,
+    private val daily: DailySyncRepository,
 ) : OpportunityListViewModel(auth, tenders, connectivity) {
+
+    override val dailySync: DailySyncRepository get() = daily
 
     private val _filters = MutableStateFlow(SearchFilters())
     val filters: StateFlow<SearchFilters> = _filters.asStateFlow()
@@ -86,11 +91,14 @@ class SearchViewModel @Inject constructor(
 
     override fun aiScores(request: com.licitaia.domain.model.AiScoringRequest) = opportunities.scoreWithAi(request)
 
-    override suspend fun fetch(companyId: Long): Result<com.licitaia.domain.model.SearchOutcome> {
+    override fun sourceSync() = opportunities.observeSourceSync()
+
+    /** Busca: nota < 30 oculta por padrão ("Mostrar baixa aderência"). */
+    override val lowAdherenceThreshold: Int? get() = LowAdherence.THRESHOLD
+
+    override suspend fun fetch(companyId: Long, cacheOnly: Boolean): Result<com.licitaia.domain.model.SearchOutcome> {
         val f = _filters.value
-        return opportunities.searchWithSources(
-            companyId,
-            OpportunityFilter(
+        val filter = OpportunityFilter(
                 query = f.query.trim(),
                 portals = f.portals,
                 ufs = f.ufs,
@@ -100,8 +108,11 @@ class SearchViewModel @Inject constructor(
                 maxValue = parseMoney(f.maxValue)?.takeIf { !it.isNaN() },
                 minScore = f.minScore,
                 showNoDispute = f.showNoDispute,
-            ),
         )
+        // Texto digitado consulta as fontes (o salvo no aparelho já passou pela triagem de relevância); filtros de
+        // portal/UF/modalidade/valor ao abrir ou trocar usam só o que está salvo — rápido, sem baixar tudo de novo.
+        return if (cacheOnly && filter.query.isBlank()) opportunities.searchCached(companyId, filter)
+        else opportunities.searchWithSources(companyId, filter)
     }
 
     fun edit(transform: (SearchFilters) -> SearchFilters) = _filters.update { transform(it).copy(valueError = null) }
@@ -151,14 +162,10 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
     OpportunityEvents(viewModel)
 
     LicitaScaffold(title = "Buscar Licitações", showBack = false) { padding ->
-        OpportunityRefreshBox(list, viewModel, Modifier.fillMaxSize().padding(padding)) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item(key = "query") {
-                Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Campo de busca e portais fixos no topo; o pull-to-refresh envolve SÓ a lista (o indicador aparece no topo
+        // da lista, nunca sobre o campo de busca).
+        Column(Modifier.fillMaxSize().padding(padding)) {
+                Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = filters.query,
                         onValueChange = { v -> viewModel.edit { it.copy(query = v) } },
@@ -184,9 +191,8 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
                         }
                     }
                 }
-            }
-            item(key = "portals") {
                 LazyRow(
+                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -195,13 +201,23 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
                         SelectChip(portal.shortName, portal in filters.portals, { viewModel.togglePortal(portal) }, color = portal.color())
                     }
                 }
-            }
+        OpportunityRefreshBox(list, viewModel, Modifier.fillMaxWidth().weight(1f)) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item(key = "source-note") {
-                Text(
-                    "Fontes: PNCP e Compras.gov.br (consulta pública, propostas em aberto). Licitanet, BLL e PCP aparecem pelas publicações dessas plataformas no PNCP. Atualiza sozinha a cada 2 min com a tela aberta.",
-                    style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
+                Column(Modifier.padding(horizontal = 16.dp)) {
+                    Text(
+                        "Fontes: PNCP e Compras.gov.br (consulta pública, propostas em aberto). Licitanet, BLL e PCP aparecem pelas publicações dessas plataformas no PNCP. Puxe para atualizar.",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                    )
+                    // "Atualizado hoje às 05:30 · Próxima atualização automática: amanhã 05:30".
+                    list.scheduleLine?.let { line ->
+                        Text(line, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary)
+                    }
+                }
             }
             item(key = "filters") {
                 AnimatedVisibility(showFilters, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
@@ -213,12 +229,28 @@ fun SearchScreen(viewModel: SearchViewModel = hiltViewModel()) {
                     )
                 }
             }
+            // Baixa aderência (nota < 30) oculta por padrão; o chip mostra/oculta sem nova consulta.
+            val lowCount = list.hiddenLow.size
+            if (!list.loading && list.error == null && (lowCount > 0 || list.showLowAdherence)) {
+                item(key = "low-adherence") {
+                    Row(Modifier.padding(horizontal = 16.dp)) {
+                        SelectChip(
+                            if (list.showLowAdherence) "Mostrando baixa aderência" else "Mostrar baixa aderência ($lowCount)",
+                            list.showLowAdherence,
+                            { viewModel.setShowLowAdherence(!list.showLowAdherence) },
+                        )
+                    }
+                }
+            }
             opportunityItems(
                 state = list,
                 viewModel = viewModel,
                 emptyTitle = "Nenhuma licitação encontrada",
-                emptyMessage = "Ajuste a busca ou os filtros. Você também pode criar um Radar para ser avisado de novas oportunidades.",
+                emptyMessage = if (lowCount > 0) "Só há resultados de baixa aderência (nota abaixo de ${LowAdherence.THRESHOLD}). Toque em \"Mostrar baixa aderência\" para vê-los."
+                else "Ajuste a busca ou os filtros. Você também pode criar um Radar para ser avisado de novas oportunidades.",
+                showScheduleInHeader = false,
             )
+        }
         }
         }
     }

@@ -17,17 +17,21 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddChart
+import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Insights
+import androidx.compose.material.icons.outlined.Leaderboard
 import androidx.compose.material.icons.outlined.Percent
+import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.TrendingDown
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,7 +48,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.licitaia.core.ui.components.AlertBanner
 import com.licitaia.core.ui.components.EmptyState
 import com.licitaia.core.ui.components.ErrorState
 import com.licitaia.core.ui.components.InfoRow
@@ -52,6 +55,7 @@ import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
 import com.licitaia.core.ui.components.LinearMeter
 import com.licitaia.core.ui.components.PortalChip
+import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SectionHeader
 import com.licitaia.core.ui.components.SelectChip
@@ -62,6 +66,8 @@ import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.components.color
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.competition.CompetitorRanking
+import com.licitaia.domain.competition.CompetitorStat
 import com.licitaia.domain.model.CompetitionRecord
 import com.licitaia.domain.util.Formatters
 
@@ -112,8 +118,8 @@ fun CompetitionScreen(viewModel: CompetitionViewModel = hiltViewModel()) {
         title = "Concorrência", showBack = false,
         actions = {
             if (canRegister) {
-                IconButton(onClick = { formOpen = true }, enabled = !state.saving) {
-                    Icon(Icons.Outlined.AddChart, contentDescription = "Registrar resultado", tint = LicitaColors.Blue)
+                IconButton(onClick = viewModel::refreshResults, enabled = !state.syncing) {
+                    Icon(Icons.Outlined.Sync, contentDescription = "Atualizar resultados", tint = LicitaColors.Blue)
                 }
             }
         },
@@ -123,113 +129,43 @@ fun CompetitionScreen(viewModel: CompetitionViewModel = hiltViewModel()) {
                 state.loading -> SkeletonList()
                 state.noSession -> ErrorState("Sessão encerrada. Entre novamente para ver a análise de concorrência.")
                 state.error != null -> ErrorState(state.error ?: "", onRetry = viewModel::retry)
-                !state.hasAny -> Column {
-                    EmptyState(
-                        "Sem resultados registrados",
-                        "A análise de concorrência é construída com os resultados reais dos pregões da empresa. " +
-                            "Ao marcar uma licitação como Vencida ou Perdida (tela da licitação ou Minhas Participações), o app pede os dados do pregão " +
-                            "— concorrentes, fechamento, nosso lance e lances. Você também pode registrar um resultado manualmente.",
-                        icon = Icons.Outlined.Insights,
-                        actionLabel = "Registrar resultado",
-                        onAction = { formOpen = true },
-                    )
-                    Text(
-                        "Apenas dados públicos (atas e resultados dos portais) e o histórico interno da empresa. Nenhum dado sigiloso de concorrentes é coletado.",
-                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
-                        modifier = Modifier.padding(horizontal = 32.dp),
-                    )
-                }
                 else -> LazyColumn(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    item(key = "notice") {
-                        AlertBanner(
-                            "Resultados reais da empresa e dados públicos",
-                            "Os indicadores vêm dos resultados que a empresa registra ao vencer ou perder um pregão (e de atas públicas). Nenhum dado sigiloso de concorrentes é coletado.",
-                            Tone.INFO,
-                        )
+                    item(key = "sync") {
+                        SyncCard(state, onRefresh = viewModel::refreshResults, onRegister = { formOpen = true })
                     }
-                    item(key = "register") {
-                        SecondaryButton(
-                            "Registrar resultado", { formOpen = true }, Modifier.fillMaxWidth(),
-                            enabled = !state.saving, icon = Icons.Outlined.AddChart,
-                        )
-                    }
-                    item(key = "filters") { FiltersBlock(state, viewModel) }
 
-                    val stats = state.stats
-                    if (stats == null) {
-                        item(key = "emptyFilter") {
-                            EmptyState("Nada neste filtro", "Nenhum pregão do histórico corresponde ao segmento/portal selecionado.")
+                    if (!state.hasAny) {
+                        item(key = "empty") {
+                            EmptyState(
+                                "Os resultados entram sozinhos",
+                                "Para as licitações da empresa (interesse, participação, vencidas e perdidas) o app consulta todo dia o resultado " +
+                                    "público no PNCP — fornecedor vencedor, CNPJ e valor homologado — e grava aqui. Ainda não há resultado publicado " +
+                                    "para as suas licitações; toque em Atualizar resultados para consultar agora.",
+                                icon = Icons.Outlined.Insights,
+                            )
                         }
                     } else {
-                        item(key = "kpi1") {
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                StatCard(
-                                    "Taxa de vitória", Formatters.percent(stats.winRatePct, 0), Icons.Outlined.EmojiEvents, Modifier.weight(1f),
-                                    tone = if (stats.winRatePct >= 40) Tone.SUCCESS else Tone.WARNING,
-                                )
-                                StatCard("Concorrentes (média)", String.format(PT_BR, "%.1f", stats.avgCompetitors), Icons.Outlined.Groups, Modifier.weight(1f))
+                        item(key = "filters") { FiltersBlock(state, viewModel) }
+                        val stats = state.stats
+                        if (stats == null) {
+                            item(key = "emptyFilter") {
+                                EmptyState("Nada neste filtro", "Nenhum pregão do histórico corresponde ao segmento/portal selecionado.")
                             }
+                        } else {
+                            statsItems(state, stats) { pendingDelete = it }
                         }
-                        item(key = "kpi2") {
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                StatCard("Desconto médio no fechamento vs. estimado", Formatters.percent(stats.avgDiscountPct), Icons.Outlined.TrendingDown, Modifier.weight(1f), tone = Tone.WARNING)
-                                StatCard(
-                                    "Margem média", Formatters.percent(stats.avgMarginPct), Icons.Outlined.Percent, Modifier.weight(1f),
-                                    tone = if (stats.avgMarginPct >= 10) Tone.SUCCESS else if (stats.avgMarginPct >= 0) Tone.WARNING else Tone.DANGER,
-                                )
-                            }
-                        }
+                    }
 
-                        item(key = "margin") {
-                            ChartCard("Evolução da margem", "Margem do nosso lance final em cada pregão, em ordem cronológica") {
-                                MarginChart(stats.timeline)
-                            }
-                        }
-                        item(key = "bands") {
-                            ChartCard("Faixas de fechamento", "Desconto do valor de fechamento em relação ao estimado") {
-                                BandsChart(stats.bands)
-                            }
-                        }
-                        item(key = "winloss") {
-                            ChartCard("Vitórias × derrotas", "${stats.total} pregão(ões) no histórico filtrado") {
-                                WinLossChart(stats.wins, stats.losses)
-                            }
-                        }
+                    marketItems(state)
 
-                        item(key = "segHeader") { SectionHeader("Média por objeto / segmento") }
-                        items(stats.bySegment, key = { "seg-${it.segment.name}" }) { seg -> SegmentCard(seg) }
-
-                        item(key = "behHeader") { SectionHeader("Comportamento de lances observado") }
-                        item(key = "behavior") {
-                            LicitaCard(Modifier.fillMaxWidth()) {
-                                InfoRow("Lances por pregão (média)", String.format(PT_BR, "%.0f", stats.avgBids))
-                                if (stats.behaviors.isEmpty()) {
-                                    Text("Sem observações registradas.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
-                                } else {
-                                    stats.behaviors.forEach { b ->
-                                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
-                                            Text("•", color = LicitaColors.Blue, modifier = Modifier.width(14.dp))
-                                            Text(b.text, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
-                                            if (b.count > 1) {
-                                                Spacer(Modifier.width(8.dp))
-                                                StatusBadge("${b.count}×", Tone.NEUTRAL)
-                                            }
-                                        }
-                                    }
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                Text("Padrões inferidos de atas públicas; não identificam estratégia sigilosa de terceiros.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-                            }
-                        }
-
-                        item(key = "histHeader") { SectionHeader("Histórico (${state.records.size})") }
-                        items(state.records.size, key = { i -> "rec-${state.records[i].id}-$i" }) { i ->
-                            val record = state.records[i]
-                            RecordCard(record, Modifier.animateItem(), onDelete = { pendingDelete = record })
-                        }
+                    item(key = "privacy") {
+                        Text(
+                            "Somente dados públicos (resultados publicados no PNCP) e o histórico interno da empresa. Nenhum dado sigiloso de concorrentes é coletado.",
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                        )
                     }
                 }
             }
@@ -238,6 +174,185 @@ fun CompetitionScreen(viewModel: CompetitionViewModel = hiltViewModel()) {
 }
 
 internal val PT_BR = java.util.Locale("pt", "BR")
+
+@Composable
+private fun SyncCard(state: CompetitionUiState, onRefresh: () -> Unit, onRegister: () -> Unit) {
+    LicitaCard(Modifier.fillMaxWidth(), accent = if (state.lastReport?.error != null) LicitaColors.Yellow else null) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.CloudSync, contentDescription = null, tint = LicitaColors.Blue, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Resultados públicos do PNCP", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                val report = state.lastReport
+                Text(
+                    when {
+                        state.syncing -> "Consultando o PNCP… (as consultas são espaçadas para respeitar o limite do portal)"
+                        state.demo -> "Empresa de demonstração: resultados de exemplo."
+                        report == null -> "Atualização automática diária. Ainda não consultado."
+                        else -> "Última consulta ${Formatters.dateTime(report.finishedAt)} · ${report.summary}"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (report?.error != null && !state.syncing) LicitaColors.Yellow else LicitaColors.TextSecondary,
+                )
+            }
+        }
+        if (state.syncing) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth(), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PrimaryButton("Atualizar resultados", onRefresh, Modifier.weight(1f), enabled = !state.syncing, loading = state.syncing, icon = Icons.Outlined.Sync)
+            SecondaryButton("Registrar", onRegister, Modifier.weight(0.7f), enabled = !state.saving, icon = Icons.Outlined.AddChart, tone = Tone.NEUTRAL)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Registrar manualmente só é necessário para pregões fora do PNCP.",
+            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+        )
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.statsItems(
+    state: CompetitionUiState,
+    stats: CompetitionStats,
+    onDelete: (CompetitionRecord) -> Unit,
+) {
+    item(key = "kpi1") {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatCard(
+                "Taxa de vitória", Formatters.percent(stats.winRatePct, 0), Icons.Outlined.EmojiEvents, Modifier.weight(1f),
+                tone = if (stats.winRatePct >= 40) Tone.SUCCESS else Tone.WARNING,
+            )
+            StatCard("Concorrentes (média)", String.format(PT_BR, "%.1f", stats.avgCompetitors), Icons.Outlined.Groups, Modifier.weight(1f))
+        }
+    }
+    item(key = "kpi2") {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatCard("Desconto médio no fechamento vs. estimado", Formatters.percent(stats.avgDiscountPct), Icons.Outlined.TrendingDown, Modifier.weight(1f), tone = Tone.WARNING)
+            val margin = stats.avgMarginPct
+            StatCard(
+                "Margem média", margin?.let { Formatters.percent(it) } ?: "—", Icons.Outlined.Percent, Modifier.weight(1f),
+                tone = when {
+                    margin == null -> Tone.NEUTRAL
+                    margin >= 10 -> Tone.SUCCESS
+                    margin >= 0 -> Tone.WARNING
+                    else -> Tone.DANGER
+                },
+            )
+        }
+    }
+
+    if (stats.timeline.isNotEmpty()) {
+        item(key = "margin") {
+            ChartCard("Evolução da margem", "Margem do nosso lance final nos pregões com custo conhecido, em ordem cronológica") {
+                MarginChart(stats.timeline)
+            }
+        }
+    }
+    item(key = "bands") {
+        ChartCard("Faixas de fechamento", "Desconto do valor homologado/fechamento em relação ao estimado") {
+            BandsChart(stats.bands)
+        }
+    }
+    item(key = "winloss") {
+        ChartCard("Vitórias × derrotas", "${stats.total} pregão(ões) no histórico filtrado") {
+            WinLossChart(stats.wins, stats.losses)
+        }
+    }
+
+    item(key = "segHeader") { SectionHeader("Média por objeto / segmento") }
+    items(stats.bySegment, key = { "seg-${it.segment.name}" }) { seg -> SegmentCard(seg) }
+
+    if (stats.behaviors.isNotEmpty() || stats.avgBids != null) {
+        item(key = "behHeader") { SectionHeader("Comportamento de lances observado") }
+        item(key = "behavior") {
+            LicitaCard(Modifier.fillMaxWidth()) {
+                stats.avgBids?.let { InfoRow("Lances por pregão (média)", String.format(PT_BR, "%.0f", it)) }
+                stats.behaviors.forEach { b ->
+                    Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                        Text("•", color = LicitaColors.Blue, modifier = Modifier.width(14.dp))
+                        Text(b.text, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, modifier = Modifier.weight(1f))
+                        if (b.count > 1) {
+                            Spacer(Modifier.width(8.dp))
+                            StatusBadge("${b.count}×", Tone.NEUTRAL)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("Observações registradas pela equipe nas sessões acompanhadas.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+            }
+        }
+    }
+
+    item(key = "histHeader") { SectionHeader("Histórico (${state.records.size})") }
+    items(state.records.size, key = { i -> "rec-${state.records[i].id}-$i" }) { i ->
+        val record = state.records[i]
+        RecordCard(record, Modifier.animateItem(), onDelete = { onDelete(record) })
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.marketItems(state: CompetitionUiState) {
+    item(key = "marketHeader") { SectionHeader("Concorrentes do meu segmento") }
+    val market = state.market
+    if (market.ranking.isEmpty()) {
+        item(key = "marketEmpty") {
+            LicitaCard(Modifier.fillMaxWidth()) {
+                Text(
+                    if (state.marketUpdatedAt == null) "O ranking é montado com resultados homologados recentes de pregões semelhantes (palavras dos seus radares). Toque em Atualizar resultados para montar agora."
+                    else "Nenhum resultado homologado recente encontrado para as palavras dos radares. Ajuste as palavras-chave dos radares para ampliar a busca.",
+                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                )
+                if (state.marketKeywords.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Palavras: ${state.marketKeywords.joinToString(", ")}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                }
+            }
+        }
+        return
+    }
+    item(key = "marketKpi") {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatCard("Preço médio homologado (item)", Formatters.brlCompact(market.avgHomologated), Icons.Outlined.Leaderboard, Modifier.weight(1f))
+            StatCard(
+                "Desconto médio vs. estimado", market.avgDiscountPct?.let { Formatters.percent(it) } ?: "—",
+                Icons.Outlined.TrendingDown, Modifier.weight(1f), tone = Tone.WARNING,
+            )
+        }
+    }
+    item(key = "marketInfo") {
+        Text(
+            "${market.results} resultado(s) de ${market.contracts} contratação(ões) publicadas no PNCP" +
+                (state.marketUpdatedAt?.let { " · atualizado ${Formatters.dateTime(it)}" } ?: "") +
+                (if (state.marketKeywords.isNotEmpty()) " · palavras: ${state.marketKeywords.joinToString(", ")}" else ""),
+            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+        )
+    }
+    items(market.ranking.take(10), key = { "comp-${it.document.ifEmpty { it.name }}" }) { stat ->
+        CompetitorCard(market.ranking.indexOf(stat) + 1, stat)
+    }
+}
+
+@Composable
+private fun CompetitorCard(position: Int, stat: CompetitorStat) {
+    LicitaCard(Modifier.fillMaxWidth(), accent = if (stat.isUs) LicitaColors.Green else null, contentPadding = PaddingValues(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("${position}º", style = MaterialTheme.typography.titleMedium, color = if (position <= 3) LicitaColors.Yellow else LicitaColors.TextSecondary, fontWeight = FontWeight.Bold, modifier = Modifier.width(36.dp))
+            Column(Modifier.weight(1f)) {
+                Text(stat.name, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                val doc = CompetitorRanking.formatDocument(stat.document)
+                if (doc.isNotEmpty()) Text("CNPJ $doc", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+            }
+            if (stat.isUs) StatusBadge("Nossa empresa", Tone.SUCCESS)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Metric("Itens vencidos", "${stat.wins} · ${stat.contracts} pregão(ões)", Modifier.weight(1.2f))
+            Metric("Homologado", Formatters.brlCompact(stat.totalHomologated), Modifier.weight(1f))
+            Metric("Desconto médio", stat.avgDiscountPct?.let { Formatters.percent(it) } ?: "—", Modifier.weight(1f))
+        }
+    }
+}
 
 @Composable
 private fun FiltersBlock(state: CompetitionUiState, viewModel: CompetitionViewModel) {
@@ -280,7 +395,8 @@ private fun SegmentCard(seg: SegmentStats) {
         InfoRow("Concorrentes (média)", String.format(PT_BR, "%.1f", seg.avgCompetitors))
         InfoRow("Desconto médio no fechamento", Formatters.percent(seg.avgDiscountPct))
         InfoRow("Fechamento médio", Formatters.brl(seg.avgClosing))
-        InfoRow("Margem média", Formatters.percent(seg.avgMarginPct), valueColor = if (seg.avgMarginPct >= 0) LicitaColors.GreenBright else LicitaColors.RedBright)
+        val margin = seg.avgMarginPct
+        InfoRow("Margem média", margin?.let { Formatters.percent(it) } ?: "—", valueColor = if ((margin ?: 0.0) >= 0) LicitaColors.GreenBright else LicitaColors.RedBright)
     }
 }
 
@@ -290,6 +406,7 @@ private fun RecordCard(record: CompetitionRecord, modifier: Modifier, onDelete: 
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PortalChip(record.portal)
             Text(record.tenderNumber, style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (record.isPublicImport) StatusBadge("PNCP", Tone.INFO)
             StatusBadge(if (record.won) "Vitória" else "Derrota", if (record.won) Tone.SUCCESS else Tone.DANGER)
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.Outlined.DeleteOutline, contentDescription = "Excluir registro", tint = LicitaColors.TextMuted, modifier = Modifier.size(18.dp))
@@ -304,18 +421,25 @@ private fun RecordCard(record: CompetitionRecord, modifier: Modifier, onDelete: 
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Metric("Estimado", Formatters.brlCompact(record.estimatedValue), Modifier.weight(1f))
-            Metric("Fechamento", Formatters.brlCompact(record.closingValue), Modifier.weight(1f))
-            Metric("Nosso lance", Formatters.brlCompact(record.ourFinalBid), Modifier.weight(1f))
+            Metric(if (record.isPublicImport) "Homologado" else "Fechamento", Formatters.brlCompact(record.closingValue), Modifier.weight(1f))
+            Metric("Nosso valor", if (record.ourFinalBid > 0.0) Formatters.brlCompact(record.ourFinalBid) else "—", Modifier.weight(1f))
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Metric("Desconto", Formatters.percent(record.discountPct), Modifier.weight(1f))
-            Metric("Margem", Formatters.percent(record.ourMarginPct), Modifier.weight(1f), if (record.ourMarginPct >= 0) LicitaColors.GreenBright else LicitaColors.RedBright)
-            Metric("Concorrentes", "${record.competitors} · ${record.bidsCount} lances", Modifier.weight(1f))
+            Metric(
+                "Margem", if (record.hasKnownMargin) Formatters.percent(record.ourMarginPct) else "—", Modifier.weight(1f),
+                if (!record.hasKnownMargin) LicitaColors.TextSecondary else if (record.ourMarginPct >= 0) LicitaColors.GreenBright else LicitaColors.RedBright,
+            )
+            Metric(
+                if (record.isPublicImport) "Vencedores" else "Concorrentes",
+                if (record.isPublicImport) "${record.competitors}" else "${record.competitors} · ${record.bidsCount} lances",
+                Modifier.weight(1f),
+            )
         }
         if (record.behavior.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
-            Text(record.behavior, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Text(record.behavior, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary, maxLines = 4, overflow = TextOverflow.Ellipsis)
         }
     }
 }

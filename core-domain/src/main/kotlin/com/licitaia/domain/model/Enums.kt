@@ -56,7 +56,7 @@ enum class TenderStatus(val label: String) {
     AGUARDANDO_APROVACAO("Aguardando aprovação"),
     APROVADA("Aprovada"),
     PRONTA_PARA_ENVIO("Pronta para envio"),
-    ENVIADA_SIMULADA("Enviada (simulação)"),
+    ENVIADA_SIMULADA("Proposta enviada"),
     EM_DISPUTA("Em disputa"),
     VENCIDA("Vencida"),
     PERDIDA("Perdida"),
@@ -103,7 +103,7 @@ enum class ProposalStatus(val label: String) {
     EM_REVISAO("Em revisão"),
     APROVADA("Aprovada"),
     REJEITADA("Rejeitada"),
-    ENVIADA_SIMULADA("Enviada (simulação)"),
+    ENVIADA_SIMULADA("Liberada para o portal"),
 }
 
 enum class PortalConnectionStatus(val label: String) {
@@ -174,7 +174,7 @@ enum class ReplyStatus(val label: String) {
     NENHUMA("Sem resposta"),
     RASCUNHO("Rascunho"),
     APROVADA("Aprovada"),
-    ENVIADA_SIMULADA("Enviada (simulação)"),
+    ENVIADA_SIMULADA("Respondida"),
 }
 
 /** Categorias = canais Android. `priority` menor = mais importante. */

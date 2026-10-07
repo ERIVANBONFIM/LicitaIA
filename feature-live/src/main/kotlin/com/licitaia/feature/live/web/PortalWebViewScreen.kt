@@ -1,4 +1,4 @@
-﻿package com.licitaia.feature.live.web
+package com.licitaia.feature.live.web
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
@@ -352,6 +352,16 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                 Box {
                     IconButton(onClick = { menuOpen = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "Mais opções") }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        if (portal == Portal.COMPRAS_GOV) {
+                            DropdownMenuItem(
+                                text = { Text("Mapear esta tela (robô)") },
+                                leadingIcon = { Icon(Icons.Outlined.VerifiedUser, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    vm.mapScreen(companyId) { ok -> navigator.showMessage(if (ok) "Tela mapeada (estrutura salva, sem valores digitados)." else "Não foi possível mapear esta tela.") }
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Trocar certificado digital") },
                             leadingIcon = { Icon(Icons.Outlined.VerifiedUser, contentDescription = null) },
@@ -517,6 +527,8 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                 )
             }
 
+            if (portal == Portal.COMPRAS_GOV) RobotAttentionBar(vm, companyId)
+
             Box(Modifier.fillMaxSize()) {
                 key(generation) {
                 AndroidView(
@@ -538,6 +550,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                                 }
 
                                 override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+                                    super.doUpdateVisitedHistory(view, url, isReload)
                                     currentUrl = url
                                     canGoBack = view.canGoBack(); canGoForward = view.canGoForward()
                                     latestVm.onNavigated(

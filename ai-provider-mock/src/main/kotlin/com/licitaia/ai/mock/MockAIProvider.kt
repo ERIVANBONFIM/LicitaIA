@@ -2,6 +2,10 @@ package com.licitaia.ai.mock
 
 import com.licitaia.ai.api.AIProvider
 import com.licitaia.ai.api.DocumentComparison
+import com.licitaia.ai.api.EditalAnswer
+import com.licitaia.ai.api.EditalQuestionRequest
+import com.licitaia.domain.edital.EditalExcerptSelector
+import com.licitaia.domain.edital.EditalQuestionPrompt
 import com.licitaia.ai.api.MessageDraft
 import com.licitaia.ai.api.ProposalDraft
 import com.licitaia.ai.api.TenderAnalysisRequest
@@ -95,6 +99,26 @@ class MockAIProvider(
     ): DocumentComparison {
         think(required.size)
         return TenderHeuristics.compare(required, available, now)
+    }
+
+    /**
+     * Sem modelo de IA: devolve as frases do edital que mais citam os termos da pergunta (busca por palavras-chave),
+     * rotuladas como heurística. Nada é interpretado nem inventado.
+     */
+    override suspend fun askEdital(request: EditalQuestionRequest): EditalAnswer {
+        think(request.question.length)
+        val sentences = EditalExcerptSelector.keySentences(request.editalExcerpt, request.question, limit = 3)
+        val text = if (sentences.isEmpty()) {
+            "${EditalQuestionPrompt.NOT_FOUND.removeSuffix(".")} (busca por palavras-chave, sem IA). Configure um provedor de IA para uma resposta interpretada."
+        } else {
+            buildString {
+                appendLine("Resposta heurística (sem IA): trechos do edital que citam os termos da pergunta —")
+                sentences.forEach { appendLine("• «$it»") }
+                appendLine("Confira no edital e configure um provedor de IA para uma resposta interpretada.")
+                append("Fonte: trechos localizados por palavras-chave no texto do edital")
+            }
+        }
+        return EditalAnswer(text, model = null)
     }
 
     companion object {

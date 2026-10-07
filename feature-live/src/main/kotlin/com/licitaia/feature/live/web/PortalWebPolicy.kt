@@ -592,8 +592,9 @@ object PortalWebPolicy {
      * Script para `evaluateJavascript`: procura (no documento e em frames do mesmo domínio) o link do menu do portal
      * cujo texto normalizado contém os termos de [Rules.electronicLinkTerms] e dispara o `click()` DELE — mesmo que o
      * item de menu esteja oculto. Se o link abriria nova janela/aba (`target`), é redirecionado para a própria aba
-     * (`_self`/`_top`); `window.open` é tratado pelo `onCreateWindow` do WebView. Devolve só 'clicked' | 'notfound'.
-     * Não lê formulários, inputs nem cookies.
+     * (`_self`/`_top`); `window.open` é tratado pelo `onCreateWindow` do WebView. Sem link (HV Menu do Comprasnet),
+     * carrega a URL do item do menu no frame de destino e reenvia o form do token em `_top`. Devolve só
+     * 'clicked' | 'notfound'. Não lê inputs nem cookies.
      */
     fun electronicLinkScript(portal: Portal): String {
         val r = rules(portal)
@@ -614,6 +615,20 @@ object PortalWebPolicy {
             "if(D[k].top){if(tg&&tg!=='_self'&&tg!=='_top'&&tg!=='_parent')a.setAttribute('target','_self');}" +
             "else{a.setAttribute('target','_top');}}" +
             "a.click();return 'clicked';}}}" +
+            // Comprasnet: o menu "Compras" é um HV Menu (arrays `MenuN_M` no frame nav, itens são <div> sem link nem
+            // onclick). Mesmo destino do clique: carrega a URL do item no frame DocTargetFrame (main2). A página
+            // intermediária (/assinadas/dispensa_eletronica.asp) faz submit do form `dispensaEletronica` (com o token)
+            // em target=_blank — bloqueado como pop-up sem gesto; por isso o form é reenviado em _top.
+            "var H=null,hw=null;for(var k=0;k<D.length&&!H;k++){var w=D[k].d.defaultView;if(!w)continue;" +
+            "for(var key in w){if(!/^Menu\\d+(_\\d+)+$/.test(key))continue;var m=w[key];" +
+            "if(!m||typeof m[0]!=='string'||typeof m[1]!=='string'||!m[1])continue;var tx=N(m[0]);var ok=false;" +
+            "for(var t=0;t<W.length;t++){if(tx.indexOf(W[t])>=0){ok=true;break;}}" +
+            "for(var x=0;x<X.length;x++){if(tx.indexOf(X[x])>=0)ok=false;}if(ok){H=m[1];hw=w;break;}}}" +
+            "if(H){var tf=null;try{tf=window.frames[hw.DocTargetFrame||'main2'];}catch(e){}" +
+            "if(!tf||!tf.location)tf=window;tf.location.href=H;var n=0;var iv=setInterval(function(){n++;" +
+            "try{var f=tf.document&&tf.document.getElementById('dispensaEletronica');" +
+            "if(f){clearInterval(iv);f.setAttribute('target','_top');f.submit();}}catch(e){}" +
+            "if(n>60)clearInterval(iv);},250);return 'clicked';}" +
             "return 'notfound';}catch(e){return 'notfound';}})()"
     }
 

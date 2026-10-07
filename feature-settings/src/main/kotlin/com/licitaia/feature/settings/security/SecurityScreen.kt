@@ -189,7 +189,7 @@ fun SecurityScreen(viewModel: SecurityViewModel = hiltViewModel()) {
                                 "Toda comunicação com portais e provedores de IA usa HTTPS.",
                                 "Credenciais de portais e chaves de IA ficam cifradas no Android Keystore, fora do banco e dos backups.",
                                 "Senhas, tokens e chaves nunca são gravados em logs nem na auditoria.",
-                                "Ações vinculantes (proposta, lance, resposta ao pregoeiro) exigem confirmação dupla e são simuladas no MVP.",
+                                "Ações vinculantes (proposta, lance, resposta ao pregoeiro) exigem sua confirmação explícita antes de o robô agir no portal.",
                                 "CAPTCHA e MFA são sempre resolvidos manualmente por você — o app apenas pausa a sessão e avisa.",
                                 "Todas as ações relevantes geram trilha de auditoria por usuário e empresa.",
                             ).forEach { line ->

@@ -7,8 +7,20 @@ import kotlinx.serialization.json.Json
 
 // DTOs @Serializable internos: o domínio não é anotado.
 
+/** Itens da proposta em JSON; campos novos são opcionais (registros antigos continuam válidos, sem migração). */
 @Serializable
-data class ProposalItemDto(val description: String, val unit: String, val quantity: Double, val unitPrice: Double)
+data class ProposalItemDto(
+    val description: String,
+    val unit: String,
+    val quantity: Double,
+    val unitPrice: Double,
+    val itemNumber: Int? = null,
+    val brand: String = "",
+    val manufacturer: String = "",
+    val model: String = "",
+    val estimatedUnitPrice: Double? = null,
+    val confidentialBudget: Boolean = false,
+)
 
 @Serializable
 data class BidAuthorizationDto(

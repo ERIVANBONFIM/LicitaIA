@@ -16,23 +16,28 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.EmojiEvents
+import androidx.compose.material.icons.outlined.Event
 import androidx.compose.material.icons.outlined.Mail
-import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.Podcasts
+import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -61,14 +66,20 @@ import com.licitaia.domain.bidding.AssistedBidding
 import com.licitaia.domain.bidding.AssistedBidding.AlertKind
 import com.licitaia.domain.bidding.BidRuleEngine
 import com.licitaia.domain.live.LiveSessionManager
+import com.licitaia.domain.model.AuctioneerMessage
 import com.licitaia.domain.model.LiveSession
 import com.licitaia.domain.model.LiveStatus
 import com.licitaia.domain.model.RiskLevel
+import com.licitaia.domain.model.Tender
+import com.licitaia.domain.portal.PortalMyTender
+import com.licitaia.domain.portal.PortalRobotRepository
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.MessageRepository
+import com.licitaia.domain.repository.TenderRepository
 import com.licitaia.domain.util.Formatters
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -80,14 +91,20 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.Optional
 import javax.inject.Inject
 
 data class WarRoomAlert(val sessionId: String, val title: String, val message: String, val tone: Tone)
 
 data class WarRoomUiState(
     val loading: Boolean = true,
+    val demo: Boolean = false,
     val sessions: List<LiveSession> = emptyList(),
     val unreadMessages: Int = 0,
+    /** Mensagens não lidas mais recentes (até 3). */
+    val latestUnread: List<AuctioneerMessage> = emptyList(),
+    val tenders: List<Tender> = emptyList(),
+    val myTenders: List<PortalMyTender> = emptyList(),
     val toggling: Boolean = false,
     val alertsMuted: Boolean = false,
     val lastAffected: Int? = null,
@@ -103,6 +120,9 @@ data class WarRoomUiState(
     val alertCount: Int get() = alertsBySession.sumOf { it.second.size }
     val nearFloor: Int get() = alertsBySession.count { AlertKind.PROXIMO_DO_PISO in it.second }
     val closingSoon: Int get() = alertsBySession.count { AlertKind.TEMPO_CRITICO in it.second }
+
+    fun upcoming(now: Long): List<UpcomingSession> = WarRoomAgenda.upcomingSessions(tenders, myTenders, now)
+    fun deadlines(now: Long): List<UpcomingDeadline> = WarRoomAgenda.upcomingDeadlines(tenders, now)
 
     /** Risco agregado: piso/fechamento pesam mais; margem baixa e posição somam. */
     val riskScore: Int
@@ -141,26 +161,44 @@ data class WarRoomUiState(
         }
 }
 
+private data class CompanyData(
+    val demo: Boolean = false,
+    val unread: List<AuctioneerMessage> = emptyList(),
+    val tenders: List<Tender> = emptyList(),
+    val myTenders: List<PortalMyTender> = emptyList(),
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class WarRoomViewModel @Inject constructor(
     private val manager: LiveSessionManager,
     private val auth: AuthRepository,
     messages: MessageRepository,
+    tenders: TenderRepository,
+    portalRobot: Optional<PortalRobotRepository>,
 ) : ViewModel() {
 
     private val ready = MutableStateFlow(false)
     private val toggling = MutableStateFlow(false)
     private val lastAffected = MutableStateFlow<Int?>(null)
 
-    private val unread = auth.session.flatMapLatest { s ->
-        if (s == null) flowOf(0) else messages.observeUnreadCount(s.activeCompany.id).catch { emit(0) }
+    private val companyData = auth.session.flatMapLatest { s ->
+        if (s == null) return@flatMapLatest flowOf(CompanyData())
+        val id = s.activeCompany.id
+        val myTenders = portalRobot.orElse(null)?.observeMyTenders(id)?.catch { emit(emptyList()) } ?: flowOf(emptyList())
+        combine(
+            messages.observeMessages(id).map { list -> list.filter { !it.read }.sortedByDescending { it.receivedAt } }.catch { emit(emptyList()) },
+            tenders.observeTenders(id).catch { emit(emptyList()) },
+            myTenders,
+        ) { unread, t, my -> CompanyData(s.user.demo || s.activeCompany.demo, unread, t, my) }
     }
 
-    val state: StateFlow<WarRoomUiState> = combine(manager.sessions, unread, ready, toggling, manager.alertsMuted, lastAffected) { values ->
+    val state: StateFlow<WarRoomUiState> = combine(manager.sessions, companyData, ready, toggling, manager.alertsMuted, lastAffected) { values ->
         @Suppress("UNCHECKED_CAST")
+        val data = values[1] as CompanyData
         WarRoomUiState(
-            loading = !(values[2] as Boolean), sessions = values[0] as List<LiveSession>, unreadMessages = values[1] as Int,
+            loading = !(values[2] as Boolean), demo = data.demo, sessions = values[0] as List<LiveSession>,
+            unreadMessages = data.unread.size, latestUnread = data.unread.take(3), tenders = data.tenders, myTenders = data.myTenders,
             toggling = values[3] as Boolean, alertsMuted = values[4] as Boolean, lastAffected = values[5] as Int?,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WarRoomUiState())
@@ -185,83 +223,78 @@ class WarRoomViewModel @Inject constructor(
     }
 }
 
+/** Relógio de 1 s para as contagens regressivas. */
+@Composable
+private fun rememberNow(): State<Long> = produceState(System.currentTimeMillis()) {
+    while (true) {
+        delay(1_000)
+        value = System.currentTimeMillis()
+    }
+}
+
 @Composable
 fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     var confirmMute by remember { mutableStateOf(false) }
+    val now by rememberNow()
+    val upcoming = state.upcoming(now)
+    val deadlines = state.deadlines(now)
 
-    LicitaScaffold(title = "Sala de Guerra", showBack = false, subtitle = "Modo assistido") { padding ->
+    LicitaScaffold(title = "Sala de Guerra", showBack = false, subtitle = if (state.demo) "Demonstração" else null) { padding ->
         when {
             state.loading && state.sessions.isEmpty() -> SkeletonList(Modifier.padding(padding))
-            state.sessions.isEmpty() -> EmptyState(
-                "Nenhuma operação em andamento", "Quando houver pregões acompanhados, o painel mostra sessões em disputa, margem média, cronômetros e alertas de piso em tempo real.",
+            state.sessions.isEmpty() && upcoming.isEmpty() && deadlines.isEmpty() && state.unreadMessages == 0 -> EmptyState(
+                "Nada para os próximos 7 dias",
+                "Aqui aparecem as sessões das suas licitações (interesse, participação e minhas licitações) com contagem regressiva, " +
+                    "os pregões em andamento, alertas de piso, mensagens do pregoeiro e prazos. Marque “Tenho interesse” nas oportunidades do Radar para começar.",
                 Modifier.padding(padding), icon = Icons.Outlined.Security,
-                actionLabel = "Pregões ao Vivo", onAction = { navigator.navigateTop(Routes.LIVE) },
+                actionLabel = "Abrir Radar", onAction = { navigator.navigateTop(Routes.RADAR) },
             )
             else -> LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item("hero") {
-                    GradientCard(Modifier.fillMaxWidth()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Operações simultâneas", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
-                                Text("${state.open.size} pregão(ões) · ${state.winning} vencendo", style = MaterialTheme.typography.headlineSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
+                if (state.sessions.isNotEmpty()) {
+                    item("hero") {
+                        GradientCard(Modifier.fillMaxWidth()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Pregões em andamento", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                                    Text("${state.open.size} pregão(ões) · ${state.winning} vencendo", style = MaterialTheme.typography.headlineSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
+                                }
+                                StatusBadge(if (state.alertsMuted) "Alertas silenciados" else "Alertas ativos", if (state.alertsMuted) Tone.WARNING else Tone.SUCCESS)
                             }
-                            StatusBadge(if (state.alertsMuted) "Alertas silenciados" else "Alertas ativos", if (state.alertsMuted) Tone.WARNING else Tone.SUCCESS)
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        val riskTone = state.riskLevel.tone()
-                        LinearMeter("Risco agregado — ${state.riskLevel.label}", state.riskScore, tone = riskTone, valueText = "${state.riskScore}/100")
-                        Spacer(Modifier.height(8.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column {
-                                Text(Formatters.percent(state.averageMargin), style = MaterialTheme.typography.titleLarge, color = if (state.averageMargin >= 10) LicitaColors.GreenBright else LicitaColors.Yellow, fontWeight = FontWeight.Bold)
-                                Text("margem média (sessões com lance)", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text("${state.alertCount}", style = MaterialTheme.typography.titleLarge, color = if (state.alertCount > 0) LicitaColors.Yellow else LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
-                                Text("alertas ativos", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                            Spacer(Modifier.height(12.dp))
+                            val riskTone = state.riskLevel.tone()
+                            LinearMeter("Risco agregado — ${state.riskLevel.label}", state.riskScore, tone = riskTone, valueText = "${state.riskScore}/100")
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column {
+                                    Text(Formatters.percent(state.averageMargin), style = MaterialTheme.typography.titleLarge, color = if (state.averageMargin >= 10) LicitaColors.GreenBright else LicitaColors.Yellow, fontWeight = FontWeight.Bold)
+                                    Text("margem média (sessões com lance)", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text("${state.alertCount}", style = MaterialTheme.typography.titleLarge, color = if (state.alertCount > 0) LicitaColors.Yellow else LicitaColors.TextPrimary, fontWeight = FontWeight.Bold)
+                                    Text("alertas ativos", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                                }
                             }
                         }
                     }
-                }
-                item("counters1") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StatCard("Em disputa", "${state.inDispute}", Icons.Outlined.Podcasts, Modifier.weight(1f), tone = Tone.INFO, onClick = { navigator.navigateTop(Routes.LIVE) })
-                        StatCard("Vencendo", "${state.winning}", Icons.Outlined.EmojiEvents, Modifier.weight(1f), tone = Tone.SUCCESS, highlight = state.winning > 0)
+                    item("counters1") {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            StatCard("Em disputa", "${state.inDispute}", Icons.Outlined.Podcasts, Modifier.weight(1f), tone = Tone.INFO, onClick = { navigator.navigateTop(Routes.LIVE) })
+                            StatCard("Vencendo", "${state.winning}", Icons.Outlined.EmojiEvents, Modifier.weight(1f), tone = Tone.SUCCESS, highlight = state.winning > 0)
+                        }
                     }
-                }
-                item("counters2") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StatCard("Perto do piso", "${state.nearFloor}", Icons.Outlined.WarningAmber, Modifier.weight(1f), tone = if (state.nearFloor > 0) Tone.DANGER else Tone.NEUTRAL, highlight = state.nearFloor > 0)
-                        StatCard("Cronômetros", "${state.timers}" + if (state.closingSoon > 0) " (${state.closingSoon} < 60 s)" else "", Icons.Outlined.Timer, Modifier.weight(1f), tone = if (state.closingSoon > 0) Tone.DANGER else Tone.NEUTRAL, highlight = state.closingSoon > 0)
+                    item("counters2") {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            StatCard("Perto do piso", "${state.nearFloor}", Icons.Outlined.WarningAmber, Modifier.weight(1f), tone = if (state.nearFloor > 0) Tone.DANGER else Tone.NEUTRAL, highlight = state.nearFloor > 0)
+                            StatCard("Cronômetros", "${state.timers}" + if (state.closingSoon > 0) " (${state.closingSoon} < 60 s)" else "", Icons.Outlined.Timer, Modifier.weight(1f), tone = if (state.closingSoon > 0) Tone.DANGER else Tone.NEUTRAL, highlight = state.closingSoon > 0)
+                        }
                     }
                 }
                 item("counters3") {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         StatCard("Mensagens não lidas", "${state.unreadMessages}", Icons.Outlined.Mail, Modifier.weight(1f), tone = if (state.unreadMessages > 0) Tone.INFO else Tone.NEUTRAL, onClick = { navigator.navigateTop(Routes.MESSAGES) })
-                        StatCard("Risco", state.riskLevel.label, Icons.Outlined.Security, Modifier.weight(1f), tone = state.riskLevel.tone())
-                    }
-                }
-
-                item("mute") {
-                    Column {
-                        if (state.alertsMuted) {
-                            SecondaryButton("Reativar alertas de todas", { vm.setMuted(false) { navigator.showMessage("Alertas reativados.") } }, Modifier.fillMaxWidth(), enabled = !state.toggling, icon = Icons.Outlined.NotificationsActive, tone = Tone.SUCCESS)
-                        } else {
-                            DangerButton("PAUSAR ALERTAS DE TODAS", { confirmMute = true }, icon = Icons.Outlined.NotificationsOff, enabled = !state.toggling && state.open.isNotEmpty())
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "Silencia as notificações de margem, piso e cronômetro de todas as sessões desta empresa. As sessões continuam abertas e a telemetria segue atualizada. Fica registrado na auditoria.",
-                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
-                        )
-                        AnimatedVisibility(state.alertsMuted && state.lastAffected != null) {
-                            Column {
-                                Spacer(Modifier.height(8.dp))
-                                AlertBanner("Alertas silenciados", "${state.lastAffected ?: 0} sessão(ões) aberta(s) mantida(s). Os banners nesta tela continuam visíveis.", Tone.WARNING)
-                            }
-                        }
+                        StatCard("Sessões em 7 dias", "${upcoming.size}", Icons.Outlined.Event, Modifier.weight(1f), tone = if (upcoming.isNotEmpty()) Tone.INFO else Tone.NEUTRAL)
                     }
                 }
 
@@ -274,12 +307,91 @@ fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
                     }
                 }
 
-                item("gridHeader") { SectionHeader("Status de cada sessão", actionLabel = "Ver todas", onAction = { navigator.navigateTop(Routes.LIVE) }) }
-                state.sessions.chunked(2).forEachIndexed { rowIndex, pair ->
-                    item("row-$rowIndex-${pair.joinToString { it.id }}") {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            pair.forEach { s -> SessionTile(s, Modifier.weight(1f)) { navigator.navigate(Routes.liveSession(s.id)) } }
-                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                if (state.open.isNotEmpty()) {
+                    item("mute") {
+                        Column {
+                            if (state.alertsMuted) {
+                                SecondaryButton("Reativar alertas de todas", { vm.setMuted(false) { navigator.showMessage("Alertas reativados.") } }, Modifier.fillMaxWidth(), enabled = !state.toggling, icon = Icons.Outlined.NotificationsActive, tone = Tone.SUCCESS)
+                            } else {
+                                DangerButton("PAUSAR ALERTAS DE TODAS", { confirmMute = true }, icon = Icons.Outlined.NotificationsOff, enabled = !state.toggling)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "Silencia as notificações de margem, piso e cronômetro de todas as sessões desta empresa. As sessões continuam abertas. Fica registrado na auditoria.",
+                                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                            )
+                            AnimatedVisibility(state.alertsMuted && state.lastAffected != null) {
+                                Column {
+                                    Spacer(Modifier.height(8.dp))
+                                    AlertBanner("Alertas silenciados", "${state.lastAffected ?: 0} sessão(ões) aberta(s) mantida(s). Os banners nesta tela continuam visíveis.", Tone.WARNING)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (state.sessions.isNotEmpty()) {
+                    item("gridHeader") { SectionHeader("Sessões em andamento", actionLabel = "Ver todas", onAction = { navigator.navigateTop(Routes.LIVE) }) }
+                    state.sessions.chunked(2).forEachIndexed { rowIndex, pair ->
+                        item("row-$rowIndex-${pair.joinToString { it.id }}") {
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                pair.forEach { s -> SessionTile(s, Modifier.weight(1f)) { navigator.navigate(Routes.liveSession(s.id)) } }
+                                if (pair.size == 1) Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
+
+                item("upcomingHeader") { SectionHeader("Próximas sessões (7 dias)") }
+                if (upcoming.isEmpty()) {
+                    item("upcomingEmpty") {
+                        LicitaCard(Modifier.fillMaxWidth()) {
+                            Text("Nenhuma sessão das suas licitações nos próximos 7 dias.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                            Spacer(Modifier.height(8.dp))
+                            SecondaryButton("Abrir Radar", { navigator.navigateTop(Routes.RADAR) }, Modifier.fillMaxWidth(), icon = Icons.Outlined.Radar, tone = Tone.NEUTRAL)
+                        }
+                    }
+                } else {
+                    upcoming.forEach { u ->
+                        item("up-${u.key}") {
+                            UpcomingCard(u, now) { u.tenderId?.let { navigator.navigate(Routes.tender(it)) } ?: navigator.navigate(Routes.portalWeb(u.portal)) }
+                        }
+                    }
+                }
+
+                if (deadlines.isNotEmpty()) {
+                    item("deadlinesHeader") { SectionHeader("Prazos (7 dias)") }
+                    item("deadlines") {
+                        LicitaCard(Modifier.fillMaxWidth()) {
+                            deadlines.take(12).forEachIndexed { i, d ->
+                                if (i > 0) Spacer(Modifier.height(8.dp))
+                                DeadlineRow(d, now) { d.tenderId?.let { navigator.navigate(Routes.tender(it)) } }
+                            }
+                            if (deadlines.any { it.estimated }) {
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    "Esclarecimento e impugnação: até 3 dias úteis antes da abertura (art. 164 da Lei 14.133/2021), calculado sem feriados. Confira o edital.",
+                                    style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (state.latestUnread.isNotEmpty()) {
+                    item("msgHeader") { SectionHeader("Mensagens do pregoeiro não lidas", actionLabel = "Ver todas", onAction = { navigator.navigateTop(Routes.MESSAGES) }) }
+                    state.latestUnread.forEach { m ->
+                        item("msg-${m.id}") {
+                            LicitaCard(Modifier.fillMaxWidth(), onClick = { navigator.navigate(Routes.message(m.id)) }, accent = if (m.urgent) LicitaColors.Red else LicitaColors.Blue, contentPadding = PaddingValues(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    PortalChip(m.portal)
+                                    Text(m.tenderNumber, style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f), maxLines = 1)
+                                    if (m.urgent) StatusBadge("URGENTE", Tone.DANGER)
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(m.body, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text("${m.sender} · ${Formatters.relative(m.receivedAt, now)}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                            }
                         }
                     }
                 }
@@ -301,6 +413,41 @@ fun WarRoomScreen(vm: WarRoomViewModel = hiltViewModel()) {
             tone = Tone.DANGER,
             icon = Icons.Outlined.NotificationsOff,
         )
+    }
+}
+
+@Composable
+private fun UpcomingCard(u: UpcomingSession, now: Long, onClick: () -> Unit) {
+    val soon = u.sessionAt - now < WarRoomAgenda.DAY_MS
+    LicitaCard(Modifier.fillMaxWidth(), onClick = onClick, accent = if (soon) LicitaColors.Yellow else null, contentPadding = PaddingValues(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PortalChip(u.portal)
+            Text(u.number, style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                WarRoomAgenda.countdown(u.sessionAt, now), style = MaterialTheme.typography.titleSmall,
+                color = if (soon) LicitaColors.Yellow else LicitaColors.TextPrimary, fontWeight = FontWeight.Bold,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(u.objectDescription, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text("${u.agency} · sessão ${Formatters.dateTime(u.sessionAt)}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            StatusBadge(u.statusLabel, if (u.participating) Tone.SUCCESS else Tone.NEUTRAL)
+            if (u.participating) StatusBadge("Participando", Tone.INFO)
+        }
+    }
+}
+
+@Composable
+private fun DeadlineRow(d: UpcomingDeadline, now: Long, onClick: () -> Unit) {
+    val soon = d.at - now < WarRoomAgenda.DAY_MS
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("${d.kind.label}${if (d.estimated) " (estimado)" else ""}", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
+            Text("${d.portal.shortName} ${d.number} · ${Formatters.dateTime(d.at)}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        SecondaryButton(WarRoomAgenda.countdown(d.at, now), onClick, tone = if (soon) Tone.DANGER else Tone.NEUTRAL)
     }
 }
 

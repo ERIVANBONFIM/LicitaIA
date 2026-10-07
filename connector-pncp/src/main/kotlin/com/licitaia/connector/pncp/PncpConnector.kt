@@ -5,6 +5,8 @@ import com.licitaia.connector.api.HumanConfirmation
 import com.licitaia.connector.api.LiveSessionHandle
 import com.licitaia.connector.api.OfficialDocument
 import com.licitaia.connector.api.OfficialDocumentSource
+import com.licitaia.connector.api.OfficialItemsSource
+import com.licitaia.domain.proposal.OfficialTenderItem
 import com.licitaia.connector.api.PortalAuthResult
 import com.licitaia.connector.api.PortalBidState
 import com.licitaia.connector.api.PortalConnector
@@ -13,6 +15,9 @@ import com.licitaia.connector.api.PortalMessage
 import com.licitaia.connector.api.ProposalPreparation
 import com.licitaia.connector.api.SubmissionResult
 import com.licitaia.connector.api.TenderDetails
+import com.licitaia.connector.api.WithdrawnIds
+import com.licitaia.connector.api.WithdrawnListingSource
+import com.licitaia.connector.api.WithdrawnSituation
 import com.licitaia.domain.model.ConnectorCapabilities
 import com.licitaia.domain.model.LiveSessionSpec
 import com.licitaia.domain.model.Opportunity
@@ -22,7 +27,9 @@ import com.licitaia.domain.model.Proposal
 import com.licitaia.domain.model.Tender
 import com.licitaia.domain.scoring.OpportunityFilterMatcher
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -43,7 +50,7 @@ class PncpConnector internal constructor(
     private val pageDelayMs: Long = DEFAULT_PAGE_DELAY_MS,
     /** Esperas entre retentativas após HTTP 429 sem `Retry-After` (testes usam 0). */
     private val retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS,
-) : PortalConnector, OfficialDocumentSource {
+) : PortalConnector, OfficialDocumentSource, OfficialItemsSource, WithdrawnListingSource {
 
     constructor(
         client: OkHttpClient,
@@ -100,8 +107,51 @@ class PncpConnector internal constructor(
         val combos = codes.size * ufs.size
         val pagesPerCombo = (maxItems / (PncpApi.MAX_PAGE_SIZE * combos)).coerceAtLeast(1)
 
+        // Mesma consulta (dia, modalidades, UFs, teto) nos últimos 10 min: reaproveita a listagem sem ir à rede.
+        val now = clock()
+        val key = "$dataFinal|$codes|$ufs|$maxItems"
+        val previous = listingCache[key]
+        val cached = previous?.takeIf { now - it.fetchedAt in 0 until LISTING_CACHE_TTL_MS }
+        val listed = cached?.opportunities ?: fetchListing(dataFinal, codes, ufs, maxItems, pagesPerCombo).let { (list, complete) ->
+            if (complete) {
+                listingCache.entries.removeIf { now - it.value.fetchedAt !in 0 until LISTING_STALE_MS }
+                listingCache[key] = CachedListing(now, list)
+                list
+            } else {
+                // O parcial de um 429 não vai para o cache (a próxima atualização tenta de novo), mas é completado com a
+                // última listagem COMPLETA da mesma consulta (até [LISTING_STALE_MS]), sem as que já encerraram: a busca
+                // não "perde" de repente a maior parte das abertas porque o limite de consultas do PNCP apertou.
+                val stale = previous?.takeIf { now - it.fetchedAt in 0 until LISTING_STALE_MS }?.opportunities.orEmpty()
+                mergePartial(list, stale, now)
+            }
+        }
+        // A API não filtra por texto/valor: aplica-se o filtro completo localmente (mesmas regras do app), fora do Main.
+        return withContext(Dispatchers.Default) {
+            listed.filter { OpportunityFilterMatcher.matches(filter, it) }.sortedBy { it.proposalDeadline }
+        }
+    }
+
+    private fun isCancelled(situacao: String?): Boolean = WithdrawnSituation.isWithdrawn(null, situacao)
+
+    private val withdrawn = WithdrawnIds()
+
+    override fun drainWithdrawnIds(): Set<String> = withdrawn.drain()
+
+    private class CachedListing(val fetchedAt: Long, val opportunities: List<Opportunity>)
+
+    private val listingCache = java.util.concurrent.ConcurrentHashMap<String, CachedListing>()
+
+    /** Lê as páginas; `second = false` = parcial após 429 persistente. */
+    private suspend fun fetchListing(
+        dataFinal: String,
+        codes: List<Int?>,
+        ufs: List<String?>,
+        maxItems: Int,
+        pagesPerCombo: Int,
+    ): Pair<List<Opportunity>, Boolean> {
         val collected = LinkedHashMap<String, Opportunity>()
         var requests = 0
+        var partial = false
         outer@ for (uf in ufs) {
             for (code in codes) {
                 var page = 1
@@ -116,20 +166,21 @@ class PncpConnector internal constructor(
                     } catch (e: PncpException) {
                         // 429 persistente (após as retentativas) com resultados já obtidos: devolve o parcial
                         // (o backoff do app cuida das próximas buscas).
-                        if (e.httpStatus == 429 && collected.isNotEmpty()) break@outer
+                        if (e.httpStatus == 429 && collected.isNotEmpty()) { partial = true; break@outer }
                         throw e
                     }
                     requests++
-                    result.data.mapNotNull(PncpMapper::toOpportunity).forEach { collected.putIfAbsent(it.id, it) }
+                    // Revogadas/anuladas/suspensas/desertas/fracassadas nunca entram na listagem; ficam registradas para a
+                    // limpeza do cache local de oportunidades.
+                    val (cancelled, live) = result.data.partition { isCancelled(it.situacaoCompraNome) }
+                    cancelled.forEach { dto -> PncpMapper.toOpportunity(dto)?.let { withdrawn.record(it.id) } }
+                    live.mapNotNull(PncpMapper::toOpportunity).forEach { collected.putIfAbsent(it.id, it) }
                     if (result.data.isEmpty() || result.paginasRestantes <= 0) break
                     page++
                 }
             }
         }
-        // A API não filtra por texto/valor: aplica-se o filtro completo localmente (mesmas regras do app).
-        return collected.values
-            .filter { OpportunityFilterMatcher.matches(filter, it) }
-            .sortedBy { it.proposalDeadline }
+        return collected.values.toList() to !partial
     }
 
     /**
@@ -195,6 +246,30 @@ class PncpConnector internal constructor(
         return PncpEditalSelector.select(documents)
     }
 
+    /**
+     * Itens oficiais da contratação (`/itens?pagina=N&tamanhoPagina=500` da API de integração), com retentativa em 429
+     * e pausa entre páginas. Itens cancelados/desertos/fracassados ficam de fora (não recebem proposta).
+     */
+    override suspend fun officialItems(pncpControlNumber: String): List<OfficialTenderItem> {
+        val ref = PncpControlNumber.parse(pncpControlNumber)
+            ?: throw IllegalArgumentException("Número de controle PNCP inválido: $pncpControlNumber")
+        val all = mutableListOf<PncpItem>()
+        for (page in 1..MAX_ITEM_PAGES) {
+            if (page > 1 && pageDelayMs > 0) delay(pageDelayMs)
+            val chunk = withRateLimitRetry { api.itens(ref, page, PncpApi.MAX_ITEMS_PAGE_SIZE) }
+            all += chunk
+            if (chunk.size < PncpApi.MAX_ITEMS_PAGE_SIZE) break
+        }
+        return all.mapNotNull(PncpMapper::toOfficialItem).distinctBy { it.number }
+    }
+
+    /** Órgão e unidade compradora (`/api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{seq}`: `orgaoEntidade` + `unidadeOrgao`). */
+    override suspend fun officialBuyer(pncpControlNumber: String): com.licitaia.domain.proposal.OfficialBuyer? {
+        val ref = PncpControlNumber.parse(pncpControlNumber) ?: return null
+        val compra = withRateLimitRetry { api.contratacao(ref) } ?: return null
+        return PncpMapper.toBuyer(compra)
+    }
+
     // ------------------------------------------------------------ não suportado (consulta pública)
 
     override suspend fun authenticate(credentials: PortalCredentials): PortalAuthResult = PortalAuthResult.Failure(NOT_SUPPORTED)
@@ -229,6 +304,24 @@ class PncpConnector internal constructor(
 
     companion object {
         const val DEFAULT_PAGE_DELAY_MS = 350L
+
+        /** Validade da listagem em memória para a mesma consulta (atualizações de 2/5/15 min não relêem tudo). */
+        const val LISTING_CACHE_TTL_MS = 10L * 60 * 1000
+
+        /** Até quando a última listagem completa serve para completar uma listagem parcial (429). */
+        const val LISTING_STALE_MS = 6L * 60 * 60 * 1000
+
+        /** Parcial (429) + última listagem completa da mesma consulta, sem duplicatas e sem as que já encerraram. */
+        internal fun mergePartial(partial: List<Opportunity>, lastComplete: List<Opportunity>, now: Long): List<Opportunity> {
+            if (lastComplete.isEmpty()) return partial
+            val merged = LinkedHashMap<String, Opportunity>()
+            partial.forEach { merged[it.id] = it }
+            lastComplete.filterNot { it.isProposalClosed(now) }.forEach { merged.putIfAbsent(it.id, it) }
+            return merged.values.toList()
+        }
+
+        /** Teto de páginas de itens (500 por página). */
+        const val MAX_ITEM_PAGES = 4
 
         /** Retentativas após HTTP 429 (além da requisição original). */
         const val MAX_RATE_LIMIT_RETRIES = 3

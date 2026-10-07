@@ -20,6 +20,8 @@ dependencies {
     // "Manter sessão ativa": FGS só com o app em primeiro plano + inicialização via App Startup.
     implementation(libs.androidx.lifecycle.process)
     implementation("androidx.startup:startup-runtime:1.1.1")
+    // Motor de automação: JSON dos scripts injetados, mapa aprendido e snapshots do modo mapear.
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)

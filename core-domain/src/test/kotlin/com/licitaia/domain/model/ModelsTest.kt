@@ -6,6 +6,39 @@ import org.junit.Test
 
 class ModelsTest {
 
+    @Test
+    fun `lista vazia explica a causa real e nao um generico nenhum passou nos filtros`() {
+        // Caso do aparelho: 3 candidatas, todas dispensas sem disputa ocultas.
+        val hidden = SearchOutcome(
+            items = emptyList(), sourceCounts = mapOf(Portal.PNCP to 31, Portal.COMPRAS_GOV to 3),
+            sourceDiagnostics = mapOf(Portal.COMPRAS_GOV to SourceDiagnostics(316, 3, 3, unknownDeadline = 3)), hiddenNoDispute = 3,
+        )
+        assertEquals("as que casaram estão ocultas: 3 dispensas sem disputa", hidden.emptyReason)
+
+        val syncing = hidden.copy(sourceDiagnostics = mapOf(Portal.COMPRAS_GOV to SourceDiagnostics(316, 3, 3, syncing = true)))
+        assertEquals(true, syncing.syncing)
+        assertEquals(true, syncing.emptyReason!!.startsWith("sincronização do Compras.gov.br em andamento"))
+        assertEquals(true, syncing.sourceSummary!!.contains("316 lidas · 3 candidatas · 3 abertas · sincronização em andamento (parcial)"))
+
+        val failed = hidden.copy(sourceDiagnostics = mapOf(Portal.COMPRAS_GOV to SourceDiagnostics(316, 3, 3, syncFailure = "HTTP 429")))
+        assertEquals(true, failed.emptyReason!!.contains("leitura completa do Compras.gov.br não terminou (HTTP 429)"))
+
+        val none = SearchOutcome(
+            items = emptyList(), sourceCounts = mapOf(Portal.PNCP to 0, Portal.COMPRAS_GOV to 0),
+            sourceDiagnostics = mapOf(Portal.COMPRAS_GOV to SourceDiagnostics(7153, 0, 0, truncated = true)),
+        )
+        assertEquals("nenhuma licitação aberta das fontes casou com as palavras/filtros", none.emptyReason)
+
+        val belowScore = none.copy(sourceDiagnostics = mapOf(Portal.COMPRAS_GOV to SourceDiagnostics(7153, 33, 33, truncated = true)))
+        assertEquals("nenhuma atingiu o score mínimo ou os demais filtros", belowScore.emptyReason)
+        assertNull(belowScore.copy(items = listOf(ScoredOpportunity(sample(), 80, false))).emptyReason)
+    }
+
+    private fun sample() = Opportunity(
+        id = "PNCP:x", portal = Portal.PNCP, number = "1", agency = "a", objectDescription = "o", modality = Modality.PREGAO_ELETRONICO,
+        segment = Segment.TI, uf = "MG", city = "BH", estimatedValue = 0.0, publishedAt = 0L, proposalDeadline = 1L, sessionAt = 1L,
+    )
+
     private val now = 1_700_000_000_000L
     private val day = CompanyDocument.DAY_MS
 

@@ -12,6 +12,8 @@ android {
 
 dependencies {
     implementation(project(":core-ui"))
+    // Robô do Comprasnet: motor de automação/WebView retido (feature-live não depende de feature-bidding).
+    implementation(project(":feature-live"))
     implementation(project(":connector-api"))
     implementation(project(":connector-mock"))
     implementation(project(":connector-pncp"))

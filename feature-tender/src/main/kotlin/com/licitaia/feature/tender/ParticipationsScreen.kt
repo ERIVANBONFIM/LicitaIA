@@ -103,7 +103,7 @@ fun ParticipationsScreen(viewModel: TenderListViewModel = hiltViewModel()) {
                             Spacer(Modifier.height(10.dp))
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 StatusBadge("Resultado: ${result.first}", result.second, pulsing = tender.status == TenderStatus.EM_DISPUTA)
-                                if (tender.status.ordinal >= TenderStatus.ENVIADA_SIMULADA.ordinal) SimulationBadge()
+                                Unit
                                 Spacer(Modifier.weight(1f))
                                 Text("Atualizada ${Formatters.relative(tender.updatedAt)}", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                             }

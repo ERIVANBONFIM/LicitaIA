@@ -27,13 +27,16 @@ import javax.inject.Singleton
 @Singleton
 class AssistedSessionServiceController @Inject constructor(
     @ApplicationContext private val context: Context,
-) : AssistedSessionKeepAlive {
+) : AssistedSessionKeepAlive, com.licitaia.feature.live.automation.PortalRobotForeground {
 
     private val main = Handler(Looper.getMainLooper())
     private val lifecycle: Lifecycle get() = ProcessLifecycleOwner.get().lifecycle
 
     /** Último pedido (sessões ativas). */
-    private var requested = 0
+    private var requestedSessions = 0
+    /** Robôs do Comprasnet em execução (proposta/lance). */
+    private var requestedRobots = 0
+    private val requested: Int get() = requestedSessions + requestedRobots
     /** true = startForegroundService já foi aceito e o serviço não foi parado por nós. */
     private var running = false
     private var observing = false
@@ -48,7 +51,16 @@ class AssistedSessionServiceController @Inject constructor(
     override fun update(activeSessions: Int) {
         val count = activeSessions.coerceAtLeast(0)
         runOnMain {
-            requested = count
+            requestedSessions = count
+            apply()
+        }
+    }
+
+    /** Robôs em execução contam como acompanhamento ativo (notificação com a ação PARAR). */
+    override fun updateRobots(active: Int) {
+        val count = active.coerceAtLeast(0)
+        runOnMain {
+            requestedRobots = count
             apply()
         }
     }
@@ -66,7 +78,7 @@ class AssistedSessionServiceController @Inject constructor(
         }
         if (running) {
             // Atualização do contador: não exige novo start (que poderia ser bloqueado em segundo plano).
-            runCatching { NotificationManagerCompat.from(context).notify(AssistedSessionService.NOTIFICATION_ID, AssistedSessionService.buildNotification(context, requested)) }
+            runCatching { NotificationManagerCompat.from(context).notify(AssistedSessionService.NOTIFICATION_ID, AssistedSessionService.buildNotification(context, requestedSessions, requestedRobots)) }
             return
         }
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
@@ -75,7 +87,7 @@ class AssistedSessionServiceController @Inject constructor(
             return
         }
         running = try {
-            ContextCompat.startForegroundService(context, AssistedSessionService.startIntent(context, requested))
+            ContextCompat.startForegroundService(context, AssistedSessionService.startIntent(context, requestedSessions, requestedRobots))
             true
         } catch (e: Exception) {
             // IllegalStateException / ForegroundServiceStartNotAllowedException: tenta de novo no próximo ON_START.

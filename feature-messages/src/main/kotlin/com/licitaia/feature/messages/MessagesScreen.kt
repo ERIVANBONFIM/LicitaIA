@@ -24,6 +24,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.runtime.remember
+import com.licitaia.core.ui.components.color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -78,6 +82,7 @@ fun MessagesScreen(viewModel: MessagesViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     var tab by rememberSaveable { mutableStateOf(MessageTab.ALL) }
+    var tenderFilter by remember { mutableStateOf<TenderKey?>(null) }
     val now by rememberNow()
 
     LicitaScaffold(
@@ -98,7 +103,8 @@ fun MessagesScreen(viewModel: MessagesViewModel = hiltViewModel()) {
                 state.noSession -> ErrorState("Sessão encerrada. Entre novamente para ver as mensagens.")
                 state.error != null -> ErrorState(state.error ?: "", onRetry = viewModel::retry)
                 else -> {
-                    val list = state.forTab(tab)
+                    val activeTender = tenderFilter?.takeIf { it in state.tenders }
+                    val list = state.forTab(tab, activeTender)
                     LazyColumn(
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -111,6 +117,19 @@ fun MessagesScreen(viewModel: MessagesViewModel = hiltViewModel()) {
                                 SelectChip("Todas (${state.all.size})", tab == MessageTab.ALL, { tab = MessageTab.ALL })
                                 SelectChip("Não lidas (${state.unreadCount})", tab == MessageTab.UNREAD, { tab = MessageTab.UNREAD })
                                 SelectChip("Urgentes (${state.urgentCount})", tab == MessageTab.URGENT, { tab = MessageTab.URGENT }, color = LicitaColors.Red)
+                            }
+                        }
+                        if (state.tenders.size > 1) {
+                            item(key = "tenderFilter") {
+                                Row(
+                                    Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    SelectChip("Todas as licitações", activeTender == null, { tenderFilter = null })
+                                    state.tenders.forEach { key ->
+                                        SelectChip(key.label, activeTender == key, { tenderFilter = key }, color = key.portal.color())
+                                    }
+                                }
                             }
                         }
                         if (state.urgentCount > 0 && tab != MessageTab.URGENT) {
@@ -136,7 +155,10 @@ fun MessagesScreen(viewModel: MessagesViewModel = hiltViewModel()) {
                                 when (tab) {
                                     MessageTab.ALL -> EmptyState(
                                         "Nenhuma mensagem",
-                                        "As mensagens do pregoeiro recebidas nas sessões acompanhadas aparecem aqui, com resumo e sugestão de resposta da IA.",
+                                        "As mensagens do pregoeiro (chat da sessão) são capturadas do portal enquanto você acompanha o pregão em Portais/Pregões ao Vivo " +
+                                            "e aparecem aqui com resumo e sugestão de resposta da IA. A resposta é dada no próprio portal.",
+                                        actionLabel = "Abrir Portais",
+                                        onAction = { navigator.navigateTop(Routes.PORTALS) },
                                     )
                                     MessageTab.UNREAD -> EmptyState("Tudo lido", "Você não tem mensagens pendentes de leitura.", icon = Icons.Outlined.MarkEmailRead)
                                     MessageTab.URGENT -> EmptyState("Sem urgências", "Nenhuma mensagem urgente aguardando resposta.", icon = Icons.Outlined.MarkEmailRead)
@@ -144,7 +166,10 @@ fun MessagesScreen(viewModel: MessagesViewModel = hiltViewModel()) {
                             }
                         } else {
                             items(list, key = { "msg-${it.id}" }) { message ->
-                                MessageCard(message, now, Modifier.animateItem()) { navigator.navigate(Routes.message(message.id)) }
+                                MessageCard(
+                                    message, now, Modifier.animateItem(),
+                                    onReplyInPortal = { navigator.navigate(Routes.portalWeb(message.portal)) },
+                                ) { navigator.navigate(Routes.message(message.id)) }
                             }
                         }
                     }
@@ -155,7 +180,7 @@ fun MessagesScreen(viewModel: MessagesViewModel = hiltViewModel()) {
 }
 
 @Composable
-private fun MessageCard(message: AuctioneerMessage, now: Long, modifier: Modifier, onClick: () -> Unit) {
+private fun MessageCard(message: AuctioneerMessage, now: Long, modifier: Modifier, onReplyInPortal: () -> Unit, onClick: () -> Unit) {
     val pendingUrgent = message.isUrgentPending()
     LicitaCard(
         modifier = modifier.fillMaxWidth(),
@@ -197,6 +222,13 @@ private fun MessageCard(message: AuctioneerMessage, now: Long, modifier: Modifie
             val deadline = message.responseDeadline
             if (deadline != null && message.replyStatus != ReplyStatus.ENVIADA_SIMULADA) {
                 DeadlineLabel(deadline, now)
+            }
+        }
+        if (message.replyStatus != ReplyStatus.ENVIADA_SIMULADA) {
+            TextButton(onClick = onReplyInPortal, contentPadding = PaddingValues(0.dp)) {
+                Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Responder no portal")
             }
         }
     }

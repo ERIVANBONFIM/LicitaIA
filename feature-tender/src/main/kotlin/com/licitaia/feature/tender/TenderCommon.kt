@@ -23,7 +23,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.SavedStateHandle
+import com.licitaia.core.ui.components.AlertBanner
 import com.licitaia.core.ui.components.PortalChip
+import com.licitaia.domain.model.AiProviderType
 import com.licitaia.core.ui.components.ScoreRing
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
@@ -83,16 +85,21 @@ internal const val FILE_PROVIDER_SUFFIX = ".licitaia.fileprovider"
 /** Compartilha um PDF privado via FileProvider. Retorna false quando o arquivo não existe. */
 internal fun sharePdf(context: Context, path: String, title: String): Boolean {
     val file = File(path)
-    if (!file.exists()) return false
-    val uri = FileProvider.getUriForFile(context, context.packageName + FILE_PROVIDER_SUFFIX, file)
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "application/pdf"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_SUBJECT, title)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    val chooser = Intent.createChooser(intent, "Compartilhar proposta").apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+    if (!file.exists() || file.length() == 0L) return false
     return try {
+        val uri = FileProvider.getUriForFile(context, context.packageName + FILE_PROVIDER_SUFFIX, file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TITLE, file.name)
+            // ClipData garante a permissão de leitura também no app escolhido pelo chooser
+            clipData = android.content.ClipData.newUri(context.contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(intent, "Compartilhar proposta").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
         context.startActivity(chooser)
         true
     } catch (_: Exception) {
@@ -104,12 +111,12 @@ internal fun sharePdf(context: Context, path: String, title: String): Boolean {
 internal fun openPdf(context: Context, path: String): Boolean {
     val file = File(path)
     if (!file.exists()) return false
-    val uri = FileProvider.getUriForFile(context, context.packageName + FILE_PROVIDER_SUFFIX, file)
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, "application/pdf")
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
     return try {
+        val uri = FileProvider.getUriForFile(context, context.packageName + FILE_PROVIDER_SUFFIX, file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/pdf")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         context.startActivity(intent)
         true
     } catch (_: Exception) {
@@ -120,7 +127,7 @@ internal fun openPdf(context: Context, path: String): Boolean {
 // ------------------------------------------------------------------ Linha do tempo do fluxo
 
 internal enum class FlowStep(val label: String) {
-    INTERESSE("Interesse"), ANALISE("Análise"), PROPOSTA("Proposta"), APROVACAO("Aprovação"), ENVIO("Envio simulado"),
+    INTERESSE("Interesse"), ANALISE("Análise"), PROPOSTA("Proposta"), APROVACAO("Aprovação"), ENVIO("Portal"),
 }
 
 /** Quantas etapas do fluxo "Tenho Interesse" já foram concluídas (0..5). */
@@ -226,5 +233,40 @@ internal fun ValueDateStrip(tender: Tender) {
             Text("Sessão", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
             Text(Formatters.dateTime(tender.sessionAt), style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextPrimary, maxLines = 1)
         }
+    }
+}
+
+/** Nome curto do provedor para botões ("OpenAI", "Anthropic", "Google Gemini"...). */
+internal fun AiProviderType.shortLabel(): String = label.substringBefore(" /").substringBefore(" (")
+
+/**
+ * Aviso de análise heurística. Com um provedor real disponível agora ([activeAi] != MOCK), a análise é antiga (feita
+ * quando não havia IA) e o aviso oferece "Reanalisar com <provedor>"; sem provedor, diz claramente que nenhum provedor
+ * está conectado e leva a Configurações > IA.
+ */
+@Composable
+internal fun HeuristicAnalysisBanner(
+    activeAi: AiProviderType,
+    canAnalyze: Boolean,
+    analyzing: Boolean,
+    onReanalyze: () -> Unit,
+    onConfigure: () -> Unit,
+    detail: String,
+) {
+    if (activeAi != AiProviderType.MOCK) {
+        AlertBanner(
+            if (analyzing) "Reanalisando com ${activeAi.shortLabel()}…" else "Análise antiga, feita sem IA",
+            "$detail Na época não havia provedor de IA disponível; agora ${activeAi.label} está conectado e é usado em todo o app.",
+            Tone.WARNING,
+            actionLabel = if (canAnalyze && !analyzing) "Reanalisar com ${activeAi.shortLabel()}" else null,
+            onAction = if (canAnalyze && !analyzing) onReanalyze else null,
+            pulsing = analyzing,
+        )
+    } else {
+        AlertBanner(
+            "Análise heurística — nenhum provedor de IA conectado",
+            "$detail Entre com o ChatGPT ou cadastre uma chave de API em Configurações > IA: o provedor configurado é usado em todo o app.",
+            Tone.WARNING, actionLabel = "Configurar", onAction = onConfigure,
+        )
     }
 }

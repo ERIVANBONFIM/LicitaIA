@@ -1,0 +1,32 @@
+[
+  {
+    "numeroItem": 1,
+    "descricao": "Serviço de link dedicado de internet 500 Mbps",
+    "materialOuServico": "S",
+    "materialOuServicoNome": "Serviço",
+    "valorUnitarioEstimado": 4500.0,
+    "valorTotal": 54000.0,
+    "quantidade": 12.0,
+    "unidadeMedida": "Mês",
+    "orcamentoSigiloso": false,
+    "criterioJulgamentoNome": "Menor preço",
+    "situacaoCompraItemNome": "Homologado",
+    "tipoBeneficioNome": "Não se aplica",
+    "temResultado": true,
+    "dataInclusao": "2026-08-01T10:00:00",
+    "dataAtualizacao": "2026-09-10T08:34:00"
+  },
+  {
+    "numeroItem": 2,
+    "descricao": "Instalação e configuração de roteador",
+    "materialOuServico": "S",
+    "materialOuServicoNome": "Serviço",
+    "valorUnitarioEstimado": 3000.0,
+    "valorTotal": 3000.0,
+    "quantidade": 1.0,
+    "unidadeMedida": "Unidade",
+    "orcamentoSigiloso": false,
+    "situacaoCompraItemNome": "Em andamento",
+    "temResultado": false
+  }
+]

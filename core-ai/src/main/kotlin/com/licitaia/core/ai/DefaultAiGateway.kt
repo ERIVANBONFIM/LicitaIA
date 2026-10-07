@@ -13,11 +13,10 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Resolve o provedor: preferido da empresa ativa → provedor global ativo → heurística local (MOCK).
- * As credenciais são resolvidas por [AiCredentials] na empresa ativa, com fallback para o padrão do
- * aparelho. Um provedor sem credencial (chave de API, ou conta Google autorizada no modo OAuth) nunca é
- * escolhido, então o app funciona sem credenciais. A empresa de demonstração "prefere" MOCK: nunca gasta
- * nem expõe uma chave real.
+ * Resolve o provedor ativo de todo o app pela regra de [ActiveAiResolver]: preferido da empresa (se explícito e com
+ * credencial) → provedor global (se com credencial) → qualquer provedor com conta logada ou chave → heurística local.
+ * As credenciais são resolvidas por [AiCredentials] na empresa ativa (ou na de [AiCompanyScope]), com fallback para o
+ * padrão do aparelho. A empresa de demonstração "prefere" MOCK: nunca gasta nem expõe uma chave real.
  */
 @Singleton
 class DefaultAiGateway @Inject constructor(
@@ -30,17 +29,13 @@ class DefaultAiGateway @Inject constructor(
     private val credentials: AiCredentials,
 ) : AiGateway {
 
-    override suspend fun current(): AIProvider {
-        val candidates = listOfNotNull(
-            runCatching { settings.companyPreferredProvider() }.getOrNull(),
-            runCatching { settings.activeProvider() }.getOrNull(),
-        ).distinct()
-        for (type in candidates) {
-            if (type == AiProviderType.MOCK) return mock
-            if (runCatching { credentials.isConfigured(type) }.getOrDefault(false)) return provider(type)
-        }
-        return mock
-    }
+    override suspend fun current(): AIProvider = provider(activeType())
+
+    override suspend fun activeType(): AiProviderType = ActiveAiResolver.resolve(
+        companyPreferred = runCatching { settings.companyPreferredProvider() }.getOrNull(),
+        globalActive = runCatching { settings.activeProvider() }.getOrNull(),
+        isConfigured = { type -> runCatching { credentials.isConfigured(type) }.getOrDefault(false) },
+    )
 
     override fun provider(type: AiProviderType): AIProvider = when (type) {
         AiProviderType.MOCK -> mock

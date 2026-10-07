@@ -1,6 +1,40 @@
-﻿# Changelog — LicitaIA
+# Changelog — LicitaIA
 
 Formato baseado em Keep a Changelog. Versões seguem SemVer.
+
+## [0.5.0] — 2026-10-07
+
+### Adicionado
+- Busca diária às 05:30 (horário configurável): ao abrir o app as licitações já estão baixadas; a tela lê o cache
+  e não baixa tudo a cada abertura. Limpeza automática de canceladas, encerradas e de meses anteriores já fechadas
+  (preserva as de interesse, analisadas, com proposta ou no robô).
+- Robô do Comprasnet: lê "Minhas participações" (Em andamento e Propostas, favoritas marcadas), cadastra a proposta
+  item a item em "Cadastrar propostas" (seletores mapeados nas telas reais), confere o "Operação realizada com
+  sucesso!", nunca marca declarações legais; robô de lance manual/automático com piso, 20 s/3 s e PARAR.
+  "Robô do Comprasnet" direto na tela da licitação (licitação nova, sem precisar separar antes no portal).
+- Proposta comercial pela IA a partir dos itens oficiais do edital (PNCP/Compras.gov.br), preço nunca acima do
+  estimado, sigiloso marcado; "Atualizar valores do edital"; atalho "Aprovar e liberar para o portal" (Admin);
+  itens liberados vão para o plano do robô.
+- PDF da proposta reescrito: dados completos da empresa (endereço, contato, representante legal, dados bancários),
+  planilha com nº do item do edital, total por extenso, declarações, assinatura e "Página X de Y".
+- Cadastro da empresa: endereço, contato, representante legal e dados bancários.
+- "Pergunte ao edital": perguntas livres sobre TODOS os documentos da licitação (edital, TR, anexos, ETP), resposta
+  com fonte (documento/página), histórico gravado; aba "Itens" com detalhe completo do item, órgão e local.
+- Documentos da empresa: anexar PDF, foto ou galeria; OCR lê tipo, emissor, código, CNPJ, emissão e validade;
+  alertas 15 e 3 dias antes de vencer.
+- Concorrência com resultados públicos do PNCP (diário) e ranking do segmento; Estratégias viram a configuração
+  real do robô; Sala de Guerra e Mensagens com dados reais.
+
+### Corrigido
+- Provedor de IA: o provedor logado (conta ChatGPT/Google) ou com chave é usado em todo o app; análises antigas
+  heurísticas são refeitas com a IA.
+- Atalho "Compras eletrônicas" (menu do portal desenhado por script e token enviado em nova janela).
+- hCaptcha invisível do Compras eletrônicas não é mais tratado como CAPTCHA.
+- Página do portal não trava mais em "carregando" quando não está na tela; selo Logado/Deslogado real.
+- Busca: ordenação por nota, baixa aderência oculta, indicador de atualização.
+
+### Removido
+- Simulador e textos de "modo simulação" nas telas operacionais (demonstração continua isolada).
 
 ## [0.4.3-personal] — 2026-10-06
 

@@ -148,6 +148,7 @@ internal object PncpMapper {
             proposalDeadline = deadline,
             // O PNCP não publica data da sessão de disputa: usa-se o fim do recebimento de propostas.
             sessionAt = deadline,
+            proposalOpening = parseDate(dto.dataAberturaProposta),
             requiresLocalSupport = false,
             keywords = keywords,
             editalUrl = ref.publicPageUrl,
@@ -174,6 +175,72 @@ internal object PncpMapper {
             append(')')
         }
     }
+
+    /** Item oficial para a proposta; null sem número ou quando o item foi cancelado/deserto/fracassado. */
+    fun toOfficialItem(item: PncpItem): com.licitaia.domain.proposal.OfficialTenderItem? {
+        val number = item.numeroItem?.takeIf { it > 0 } ?: return null
+        val situation = item.situacaoCompraItemNome.orEmpty().lowercase()
+        if (listOf("cancelad", "desert", "fracassad", "anulad", "revogad").any { it in situation }) return null
+        return com.licitaia.domain.proposal.OfficialTenderItem(
+            number = number,
+            description = item.descricao?.trim().orEmpty(),
+            quantity = item.quantidade?.takeIf { it > 0 } ?: 1.0,
+            unit = item.unidadeMedida?.trim().orEmpty().ifEmpty { "un" },
+            estimatedUnitPrice = item.valorUnitarioEstimado?.takeIf { it > 0 && item.orcamentoSigiloso != true },
+            estimatedTotal = item.valorTotal?.takeIf { it > 0 && item.orcamentoSigiloso != true },
+            confidentialBudget = item.orcamentoSigiloso == true,
+            materialOrService = item.materialOuServicoNome,
+            judgingCriterion = item.criterioJulgamentoNome,
+            benefit = item.tipoBeneficioNome,
+            complementaryInfo = item.informacaoComplementar.clean(),
+            situation = item.situacaoCompraItemNome.clean(),
+            category = item.itemCategoriaNome.clean(),
+            catalogName = item.catalogo.text("nome", "descricao") ?: item.categoriaItemCatalogo.text("nome", "descricao"),
+            catalogCode = item.catalogoCodigoItem.text("codigo", "id"),
+            ncmNbsCode = item.ncmNbsCodigo.text("codigo"),
+            ncmNbsDescription = item.ncmNbsDescricao.clean(),
+            preferenceMargin = com.licitaia.domain.proposal.OfficialItemFields.preferenceMargin(
+                item.aplicabilidadeMargemPreferenciaNormal, item.percentualMargemPreferenciaNormal,
+                item.aplicabilidadeMargemPreferenciaAdicional, item.percentualMargemPreferenciaAdicional,
+                type = item.tipoMargemPreferencia.text("nome", "descricao"),
+            ),
+            productiveIncentive = item.incentivoProdutivoBasico,
+            nationalContentRequired = item.exigenciaConteudoNacional,
+            includedAt = item.dataInclusao.clean(),
+            updatedAt = item.dataAtualizacao.clean(),
+            hasResult = item.temResultado,
+        )
+    }
+
+    /** Órgão/unidade compradora; null quando a contratação não traz nenhum dos dois. */
+    fun toBuyer(compra: PncpContratacao): com.licitaia.domain.proposal.OfficialBuyer? {
+        val orgao = compra.orgaoEntidade
+        val unidade = compra.unidadeOrgao
+        if (orgao == null && unidade == null) return null
+        return com.licitaia.domain.proposal.OfficialBuyer(
+            agencyName = orgao?.razaoSocial.clean(),
+            agencyCnpj = orgao?.cnpj.clean(),
+            unitCode = unidade?.codigoUnidade.clean(),
+            unitName = unidade?.nomeUnidade.clean(),
+            city = unidade?.municipioNome.clean(),
+            uf = unidade?.ufSigla.clean(),
+        )
+    }
+
+    private fun String?.clean(): String? = this?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+
+    /** Texto de um campo de tipo incerto: primitivo (string/número) ou objeto com uma das [keys] (ex.: {"nome": "CATMAT"}). */
+    private fun kotlinx.serialization.json.JsonElement?.text(vararg keys: String): String? = when (this) {
+        null, kotlinx.serialization.json.JsonNull -> null
+        is kotlinx.serialization.json.JsonPrimitive -> contentOrNullSafe().clean()
+        is kotlinx.serialization.json.JsonObject -> keys.firstNotNullOfOrNull { key ->
+            (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNullSafe().clean()
+        }
+        else -> null
+    }
+
+    private fun kotlinx.serialization.json.JsonPrimitive.contentOrNullSafe(): String? =
+        if (this is kotlinx.serialization.json.JsonNull) null else content
 
     private fun formatQuantity(q: Double): String =
         if (q % 1.0 == 0.0) q.toLong().toString() else String.format(java.util.Locale("pt", "BR"), "%.2f", q)

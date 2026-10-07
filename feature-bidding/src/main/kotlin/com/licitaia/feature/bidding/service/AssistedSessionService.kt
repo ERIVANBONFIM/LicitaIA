@@ -34,15 +34,21 @@ class AssistedSessionService : Service() {
             stopForegroundAndSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_STOP_ROBOTS) {
+            // Ação PARAR da notificação: para TODOS os robôs do Comprasnet (o serviço some quando não houver mais nada).
+            runCatching { RobotStopEntry.engine(this).stopAll("PARAR acionado pela notificação.") }
+            return START_NOT_STICKY
+        }
         val count = intent?.getIntExtra(EXTRA_COUNT, 0) ?: 0
-        if (count <= 0) {
+        val robots = intent?.getIntExtra(EXTRA_ROBOTS, 0) ?: 0
+        if (count + robots <= 0) {
             // Reinício sem extras (ou pedido vazio): não há o que acompanhar.
             stopForegroundAndSelf()
             return START_NOT_STICKY
         }
         val started = try {
             ServiceCompat.startForeground(
-                this, NOTIFICATION_ID, buildNotification(this, count),
+                this, NOTIFICATION_ID, buildNotification(this, count, robots),
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
             )
             true
@@ -69,7 +75,9 @@ class AssistedSessionService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.licitaia.feature.bidding.action.STOP_ASSISTED_SESSIONS"
+        const val ACTION_STOP_ROBOTS = "com.licitaia.feature.bidding.action.STOP_PORTAL_ROBOTS"
         const val EXTRA_COUNT = "count"
+        const val EXTRA_ROBOTS = "robots"
         /** Id fixo: a notificação é sempre substituída, nunca duplicada. */
         const val NOTIFICATION_ID = 7001
         /** Mesmo id de canal usado pelo AppNotifier para a categoria SESSOES ("licitaia.sessoes"). */
@@ -77,8 +85,8 @@ class AssistedSessionService : Service() {
         /** Extra lido pela MainActivity para navegar até a rota ao tocar na notificação. */
         private const val EXTRA_ROUTE = "route"
 
-        fun startIntent(context: Context, count: Int): Intent =
-            Intent(context, AssistedSessionService::class.java).putExtra(EXTRA_COUNT, count)
+        fun startIntent(context: Context, count: Int, robots: Int = 0): Intent =
+            Intent(context, AssistedSessionService::class.java).putExtra(EXTRA_COUNT, count).putExtra(EXTRA_ROBOTS, robots)
 
         fun stopIntent(context: Context): Intent =
             Intent(context, AssistedSessionService::class.java).setAction(ACTION_STOP)
@@ -95,10 +103,11 @@ class AssistedSessionService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        fun buildNotification(context: Context, count: Int): Notification {
+        fun buildNotification(context: Context, count: Int, robots: Int = 0): Notification {
             ensureChannel(context)
-            val title = "Pregão em acompanhamento: $count sessão(ões)"
-            val body = "Cronômetro e alertas das sessões assistidas continuam ativos em segundo plano."
+            val title = if (robots > 0) "Robô do Comprasnet em operação: $robots" else "Pregão em acompanhamento: $count sessão(ões)"
+            val body = if (robots > 0) "O robô está operando na sua sessão do Comprasnet. Toque em PARAR para interromper todos."
+            else "Cronômetro e alertas das sessões assistidas continuam ativos em segundo plano."
             val open = openIntent(context)
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_assisted_session)
@@ -118,6 +127,13 @@ class AssistedSessionService : Service() {
                 builder.setContentIntent(open)
                 builder.addAction(0, "Abrir", open)
             }
+            if (robots > 0) {
+                val stop = PendingIntent.getService(
+                    context, NOTIFICATION_ID + 1, Intent(context, AssistedSessionService::class.java).setAction(ACTION_STOP_ROBOTS),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+                builder.addAction(0, "PARAR robôs", stop)
+            }
             return builder.build()
         }
 
@@ -131,4 +147,16 @@ class AssistedSessionService : Service() {
             )
         }
     }
+}
+
+/** Acesso ao motor dos robôs a partir do serviço (ação PARAR da notificação). */
+internal object RobotStopEntry {
+    @dagger.hilt.EntryPoint
+    @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+    interface Access {
+        fun robotEngine(): com.licitaia.feature.live.automation.PortalRobotEngine
+    }
+
+    fun engine(context: Context) =
+        dagger.hilt.android.EntryPointAccessors.fromApplication(context.applicationContext, Access::class.java).robotEngine()
 }

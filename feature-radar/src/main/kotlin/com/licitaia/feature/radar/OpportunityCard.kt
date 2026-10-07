@@ -13,12 +13,21 @@ import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import com.licitaia.domain.model.LowAdherence
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import com.licitaia.domain.model.Opportunity
+import com.licitaia.domain.model.ProposalWindow
+import com.licitaia.domain.model.ProposalWindows
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -62,8 +71,12 @@ internal fun OpportunityEvents(viewModel: OpportunityListViewModel) {
 }
 
 /**
- * Puxar para atualizar + atualização automática a cada 2 min enquanto a tela está visível (STARTED);
- * o laço é cancelado ao sair da tela ou ir para segundo plano.
+ * Puxar para atualizar (consulta incremental leve às fontes) + re-filtro local pelo relógio enquanto a tela está
+ * visível (STARTED), sem rede: as novas licitações chegam pela atualização diária (05:30). O laço é cancelado ao sair
+ * da tela ou ir para segundo plano.
+ *
+ * O indicador grande (Material3) fica alinhado ao topo DESTA caixa (o topo da lista) e só existe enquanto o usuário
+ * puxa ou durante a atualização pedida por ele ([OpportunityListState.userRefreshing]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,13 +88,39 @@ internal fun OpportunityRefreshBox(
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(viewModel, lifecycleOwner) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.autoRefreshLoop() }
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.clockRefreshLoop() }
     }
+    val pullState = rememberPullToRefreshState()
+    val refreshing = state.userRefreshing
     PullToRefreshBox(
-        isRefreshing = state.refreshing,
+        isRefreshing = refreshing,
         onRefresh = viewModel::refresh,
         modifier = modifier,
+        state = pullState,
+        indicator = {
+            if (refreshing || pullState.distanceFraction > 0f) {
+                PullToRefreshDefaults.Indicator(
+                    state = pullState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            }
+        },
     ) { content() }
+}
+
+/** "Atualizado há X min" (+ indicador discreto durante a atualização automática), recalculado a cada 30 s. */
+@Composable
+private fun UpdatedAgoRow(updatedAt: Long?, offline: Boolean, backgroundRefresh: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        UpdatedAgoText(updatedAt, offline)
+        if (backgroundRefresh) {
+            Spacer(Modifier.width(6.dp))
+            CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp, color = LicitaColors.TextMuted)
+            Spacer(Modifier.width(4.dp))
+            Text("atualizando…", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+        }
+    }
 }
 
 /** "Atualizado há X min", recalculado a cada 30 s. */
@@ -93,9 +132,13 @@ private fun UpdatedAgoText(updatedAt: Long?, offline: Boolean) {
             delay(30_000)
         }
     }
-    val label = when {
-        offline -> "Sem internet — mostrando resultados salvos" + (updatedAgoLabel(updatedAt, now)?.let { " · ${it.lowercase()}" } ?: "")
-        else -> updatedAgoLabel(updatedAt, now)
+    // Recalcula o texto só quando o minuto exibido muda (o produceState tica a cada 30 s).
+    val minuteBucket = now / 60_000L
+    val label = remember(updatedAt, offline, minuteBucket) {
+        when {
+            offline -> "Sem internet — mostrando resultados salvos" + (updatedAgoLabel(updatedAt, now)?.let { " · ${it.lowercase()}" } ?: "")
+            else -> updatedAgoLabel(updatedAt, now)
+        }
     } ?: return
     Text(label, style = MaterialTheme.typography.labelSmall, color = if (offline) LicitaColors.Yellow else LicitaColors.TextMuted)
 }
@@ -108,11 +151,23 @@ internal fun LazyListScope.opportunityItems(
     emptyTitle: String,
     emptyMessage: String,
     emptyIcon: ImageVector = Icons.Outlined.SearchOff,
+    /** Mostrar a linha da atualização diária no cabeçalho (a Busca já a mostra na linha de fontes). */
+    showScheduleInHeader: Boolean = true,
 ) {
     val error = state.error
+    // Varredura completa das fontes em andamento: progresso visível (nunca um vazio enganoso).
+    state.syncLabel?.let { label ->
+        item(key = "sync-progress", contentType = "note") {
+            Text(
+                if (state.partialSync && !state.loading) "$label — resultado parcial, a lista será atualizada ao terminar" else label,
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
+    }
     when {
-        state.loading -> item(key = "loading") { SkeletonList(Modifier.padding(horizontal = 0.dp), items = 3) }
-        error != null -> item(key = "error") {
+        state.loading -> item(key = "loading", contentType = "loading") { SkeletonList(Modifier.padding(horizontal = 0.dp), items = 3) }
+        error != null -> item(key = "error", contentType = "error") {
             ErrorState(
                 if (state.offline) "Sem internet — busca indisponível até reconectar. A lista será atualizada automaticamente quando a conexão voltar." else error,
                 title = when {
@@ -126,29 +181,47 @@ internal fun LazyListScope.opportunityItems(
         state.items.isEmpty() -> {
             // Diagnóstico: mesmo sem resultados, mostra quanto cada fonte trouxe antes dos filtros.
             state.sourceSummary?.let { summary ->
-                item(key = "sources-empty") {
+                item(key = "sources-empty", contentType = "note") {
+                    val reason = state.emptyReason
+                    val low = LowAdherence.hiddenLabel(state.hiddenLow.size)
                     Text(
-                        "Obtidos das fontes: $summary (nenhum passou nos filtros)",
+                        remember(summary, reason, low) {
+                            "Obtidos das fontes: $summary" + (low?.let { " · $it" } ?: "") + (reason?.takeIf { low == null }?.let { " — $it" } ?: "")
+                        },
                         style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
             }
-            item(key = "empty") { EmptyState(emptyTitle, emptyMessage, icon = emptyIcon) }
+            item(key = "empty", contentType = "empty") { EmptyState(emptyTitle, emptyMessage, icon = emptyIcon) }
         }
         else -> {
-            item(key = "count") {
+            item(key = "count", contentType = "header") {
+                // Textos de diagnóstico só são refeitos quando os dados mudam (não a cada recomposição).
+                val countText = remember(state.items.size) { "${state.items.size} oportunidade(s) encontrada(s)" }
+                val lowHidden = state.hiddenLow.size
+                val sourcesText = remember(state.sourceSummary, lowHidden) {
+                    val base = state.sourceSummary?.let { "Obtidos das fontes: $it" } ?: sourceLabel(state.items)
+                    LowAdherence.hiddenLabel(lowHidden)?.let { "$base · $it" } ?: base
+                }
+                val aiText = remember(state.aiTotal, state.aiRated, state.aiFailure) { aiProgressLabel(state) }
                 Column(Modifier.padding(horizontal = 16.dp)) {
                     Text(
-                        "${state.items.size} oportunidade(s) encontrada(s)",
+                        countText,
                         style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary,
                     )
                     Text(
-                        state.sourceSummary?.let { "Obtidos das fontes: $it" } ?: sourceLabel(state.items),
+                        sourcesText,
                         style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                     )
-                    UpdatedAgoText(state.updatedAt, state.offline)
-                    aiProgressLabel(state)?.let { label ->
+                    val schedule = state.scheduleLine
+                    if (state.fromSnapshot && schedule != null && !state.offline) {
+                        // Lista do que está salvo: a linha da atualização diária substitui o "Atualizado há X min".
+                        if (showScheduleInHeader) Text(schedule, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                    } else {
+                        UpdatedAgoRow(state.updatedAt, state.offline, backgroundRefresh = state.refreshing && !state.userRefreshing)
+                    }
+                    aiText?.let { label ->
                         Text(
                             label, style = MaterialTheme.typography.labelSmall,
                             color = if (state.aiFailure != null) LicitaColors.Yellow else LicitaColors.TextMuted,
@@ -156,18 +229,36 @@ internal fun LazyListScope.opportunityItems(
                     }
                 }
             }
-            items(state.items, key = { it.opportunity.id }) { item ->
-                OpportunityCard(
-                    item = item,
-                    busy = item.opportunity.id in state.busy,
-                    canAnalyze = state.canAnalyze,
-                    aiActive = state.aiTotal > 0,
-                    onInterest = { viewModel.onInterest(item) },
-                    onAnalyze = { viewModel.onAnalyze(item) },
-                    modifier = Modifier.padding(horizontal = 16.dp).animateItem(),
-                )
+            // Seções fixas: Hoje → Próximos dias → Vão abrir, com cabeçalho fixo (stickyHeader).
+            for (section in state.sections) {
+                stickyHeader(key = "section-${section.section.name}", contentType = "section") {
+                    SectionHeader(section.section.title, section.items.size)
+                }
+                items(section.items, key = { it.opportunity.id }, contentType = { "opportunity" }) { item ->
+                    OpportunityCard(
+                        item = item,
+                        busy = item.opportunity.id in state.busy,
+                        canAnalyze = state.canAnalyze,
+                        aiActive = state.aiTotal > 0,
+                        onInterest = { viewModel.onInterest(item) },
+                        onAnalyze = { viewModel.onAnalyze(item) },
+                        modifier = Modifier.padding(horizontal = 16.dp).animateItem(),
+                    )
+                }
             }
         }
+    }
+}
+
+/** Cabeçalho fixo de seção (fundo opaco para não sobrepor os cards ao rolar). */
+@Composable
+private fun SectionHeader(title: String, count: Int) {
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
+        Text(
+            remember(title, count) { "$title · $count" },
+            style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        )
     }
 }
 
@@ -224,6 +315,9 @@ internal fun OpportunityCard(
     aiActive: Boolean = false,
 ) {
     val op = item.opportunity
+    // Formatações (moeda/datas/linha da plataforma) só quando a oportunidade muda.
+    val minute = System.currentTimeMillis() / 60_000L
+    val texts = remember(op, minute) { CardTexts.of(op, minute * 60_000L) }
     LicitaCard(modifier.fillMaxWidth(), accent = if (item.interested) LicitaColors.Green else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -240,7 +334,7 @@ internal fun OpportunityCard(
                     PortalChip(op.portal)
                     StatusBadge(op.modality.label, Tone.NEUTRAL)
                 }
-                platformLine(op.portal, op.platformName, op.id)?.let { line ->
+                texts.platform?.let { line ->
                     Text(
                         line, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
@@ -263,17 +357,29 @@ internal fun OpportunityCard(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Valor estimado", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
-                Text(Formatters.brl(op.estimatedValue), style = MaterialTheme.typography.titleMedium, color = LicitaColors.GreenBright, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text(texts.value, style = MaterialTheme.typography.titleMedium, color = LicitaColors.GreenBright, fontWeight = FontWeight.Bold, maxLines = 1)
             }
             Icon(Icons.Outlined.Place, contentDescription = null, tint = LicitaColors.TextMuted, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(4.dp))
-            Text("${op.city}/${op.uf}", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, maxLines = 1)
+            Text(texts.place, style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, maxLines = 1)
         }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth()) {
-            DateCell("Publicação", Formatters.date(op.publishedAt), Modifier.weight(1f))
-            DateCell("Propostas até", if (op.hasProposalDeadline) Formatters.dateTime(op.proposalDeadline) else "prazo não informado", Modifier.weight(1.3f))
-            DateCell("Sessão", if (op.sessionAt > 0L) Formatters.dateTime(op.sessionAt) else "—", Modifier.weight(1.3f))
+            DateCell("Publicação", texts.published, Modifier.weight(1f))
+            DateCell("Propostas até", texts.deadline, Modifier.weight(1.3f))
+            DateCell("Sessão", texts.session, Modifier.weight(1.3f))
+        }
+        if (texts.status != null || texts.today) {
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (texts.today) StatusBadge("HOJE", Tone.WARNING)
+                texts.status?.let { status ->
+                    Text(
+                        status, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+                        color = if (texts.upcoming) LicitaColors.TextSecondary else LicitaColors.GreenBright, maxLines = 1,
+                    )
+                }
+            }
         }
         if (op.requiresLocalSupport || item.interested) {
             Spacer(Modifier.height(8.dp))
@@ -303,6 +409,35 @@ internal fun OpportunityCard(
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow, modifier = Modifier.padding(top = 6.dp),
             )
         }
+    }
+}
+
+/** Textos formatados do card (calculados uma vez por oportunidade). */
+internal class CardTexts(
+    val platform: String?,
+    val value: String,
+    val place: String,
+    val published: String,
+    val deadline: String,
+    val session: String,
+    /** "Abre em dd/MM HH:mm" / "Aberta · encerra em dd/MM HH:mm". */
+    val status: String? = null,
+    val upcoming: Boolean = false,
+    /** Encerramento/sessão hoje (destaque "HOJE"). */
+    val today: Boolean = false,
+) {
+    companion object {
+        fun of(op: Opportunity, now: Long) = CardTexts(
+            status = ProposalWindows.statusLabel(op, now),
+            upcoming = ProposalWindows.classify(op, now) == ProposalWindow.UPCOMING,
+            today = ProposalWindows.endsToday(op, now),
+            platform = platformLine(op.portal, op.platformName, op.id),
+            value = Formatters.brl(op.estimatedValue),
+            place = "${op.city}/${op.uf}",
+            published = Formatters.date(op.publishedAt),
+            deadline = if (op.hasProposalDeadline) Formatters.dateTime(op.proposalDeadline) else "prazo não informado",
+            session = if (op.sessionAt > 0L) Formatters.dateTime(op.sessionAt) else "—",
+        )
     }
 }
 

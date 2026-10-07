@@ -188,6 +188,36 @@ class PncpConnectorTest {
     }
 
     @Test
+    fun `mesma consulta em ate 10 min reaproveita a listagem e so depois volta a rede`() = runBlocking {
+        var clockNow = now
+        server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                synchronized(requests) { requests += request }
+                return if (request.requestUrl?.queryParameter("pagina") == "1") jsonResponse(fixture("contratacoes_proposta_mg_p1.json")) else noContent()
+            }
+        }
+        server.start()
+        connector = PncpConnector(OkHttpClient(), PncpConnector.defaultJson(), server.url("/"), clock = { clockNow }, pageDelayMs = 0, retryDelaysMs = listOf(0L))
+        val filter = OpportunityFilter(modality = Modality.CREDENCIAMENTO, ufs = setOf("MG"))
+
+        val first = connector.listOpportunities(filter)
+        assertEquals(2, requests.size)
+
+        // Atualizações de 2 e 5 min (tela/painel), inclusive com outro texto: nenhuma requisição nova.
+        requests.clear()
+        clockNow = now + 2 * 60_000L
+        assertEquals(first, connector.listOpportunities(filter))
+        clockNow = now + 5 * 60_000L
+        connector.listOpportunities(filter.copy(query = "laboratório"))
+        assertTrue(requests.isEmpty())
+
+        clockNow = now + 11 * 60_000L
+        connector.listOpportunities(filter)
+        assertEquals("cache expirado: lê de novo", 2, requests.size)
+    }
+
+    @Test
     fun `429 depois de ja ter resultados devolve o parcial em vez de falhar`() = runBlocking {
         val page1 = fixture("contratacoes_proposta_mg_p1.json")
         start { req -> if (req.query("pagina") == "1") jsonResponse(page1) else MockResponse().setResponseCode(429) }
@@ -197,6 +227,26 @@ class PncpConnectorTest {
         assertEquals(10, result.size)
         // Página 2: requisição original + 3 retentativas, depois devolve o parcial.
         assertEquals(listOf("1", "2", "2", "2", "2"), requests.map { it.query("pagina") })
+    }
+
+    @Test
+    fun `parcial do 429 e completado com a ultima listagem completa sem as encerradas`() {
+        fun o(id: String, deadline: Long) = com.licitaia.domain.model.Opportunity(
+            id = "PNCP:$id", portal = com.licitaia.domain.model.Portal.COMPRAS_GOV, number = id, agency = "Órgão", objectDescription = "Objeto $id",
+            modality = Modality.PREGAO_ELETRONICO, segment = com.licitaia.domain.model.Segment.TI, uf = "MG", city = "BH",
+            estimatedValue = 0.0, publishedAt = now - 86_400_000L, proposalDeadline = deadline, sessionAt = deadline,
+        )
+        val partial = listOf(o("a", now + 1_000_000L))
+        val lastComplete = listOf(
+            o("a", now + 500_000L), // duplicata: fica a versão nova (parcial)
+            o("b", now + 2_000_000L), // aberta: volta
+            o("c", now - 1_000L), // encerrou desde a última completa: não volta (só abertas e que vão abrir)
+            o("d", com.licitaia.domain.model.Opportunity.DEADLINE_UNKNOWN), // sem prazo: mantida (o app decide depois)
+        )
+        val merged = PncpConnector.mergePartial(partial, lastComplete, now)
+        assertEquals(listOf("PNCP:a", "PNCP:b", "PNCP:d"), merged.map { it.id })
+        assertEquals(now + 1_000_000L, merged.first().proposalDeadline)
+        assertEquals(partial, PncpConnector.mergePartial(partial, emptyList(), now))
     }
 
     @Test

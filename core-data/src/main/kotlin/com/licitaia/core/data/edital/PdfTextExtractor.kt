@@ -21,6 +21,8 @@ data class PdfExtraction(
     val pagesRead: Int,
     /** true = praticamente nenhum texto por página: PDF de imagem (precisa de OCR, indisponível). */
     val scanned: Boolean,
+    /** Texto de cada página lida (índice 0 = página 1), para a base de perguntas marcar documento/página. */
+    val pageTexts: List<String> = emptyList(),
 ) {
     val truncated: Boolean get() = pagesRead < totalPages
 }
@@ -62,6 +64,7 @@ class PdfTextExtractor @Inject constructor(@ApplicationContext private val conte
                 paragraphStart = "\n"
             }
             val builder = StringBuilder()
+            val pageTexts = ArrayList<String>(pages)
             var pagesWithText = 0
             // Página a página: permite cancelamento e mede quantas têm texto de verdade.
             for (page in 1..pages) {
@@ -75,13 +78,14 @@ class PdfTextExtractor @Inject constructor(@ApplicationContext private val conte
                 }
                 if (pageText.count { !it.isWhitespace() } >= MIN_CHARS_PER_TEXT_PAGE) pagesWithText++
                 builder.append(pageText)
+                pageTexts += pageText
                 if (page < pages) builder.append("\n\n")
                 if (builder.length > HARD_CHAR_LIMIT) break
             }
             val text = builder.toString()
             val meaningful = text.count { !it.isWhitespace() }
             val scanned = meaningful < MIN_TOTAL_CHARS || pagesWithText * 100 / pages < MIN_TEXT_PAGE_RATIO_PCT
-            PdfExtraction(text = text, totalPages = total, pagesRead = pages, scanned = scanned)
+            PdfExtraction(text = text, totalPages = total, pagesRead = pageTexts.size, scanned = scanned, pageTexts = pageTexts)
         }
     }
 

@@ -16,6 +16,23 @@ data class Company(
     val preferredAi: AiProviderType? = null,
     /** Empresa do espaço de demonstração: dados fictícios, visíveis apenas ao usuário demo. */
     val demo: Boolean = false,
+    // Dados da proposta comercial em PDF (versão 12 do banco). Vazio = não informado; nunca aparece no PDF.
+    /** Logradouro e número (ex.: "Rua das Flores, 123"). */
+    val street: String = "",
+    val complement: String = "",
+    val district: String = "",
+    /** CEP, somente dígitos (8). */
+    val zipCode: String = "",
+    /** Telefone com DDD, somente dígitos (10 ou 11). */
+    val phone: String = "",
+    val email: String = "",
+    val legalRepName: String = "",
+    /** CPF do representante legal, somente dígitos (11). */
+    val legalRepCpf: String = "",
+    val legalRepRole: String = "",
+    val bankName: String = "",
+    val bankAgency: String = "",
+    val bankAccount: String = "",
 )
 
 data class UserProfile(
@@ -95,6 +112,8 @@ data class Opportunity(
      * "Não se aplica"): não há proposta a enviar nem prazo. Oculta por padrão na Busca e nos Radares.
      */
     val noDispute: Boolean = false,
+    /** Início do recebimento de propostas (`dataAberturaProposta`); null = não informado. Futuro = "vai abrir". */
+    val proposalOpening: Long? = null,
 ) {
     /**
      * A fonte informou o fim do recebimento de propostas. false = "prazo não informado"
@@ -170,6 +189,13 @@ data class SearchOutcome(
     val sourceDiagnostics: Map<Portal, SourceDiagnostics> = emptyMap(),
     /** Dispensas sem disputa que casariam com a busca/radar, mas ficaram ocultas (opção desligada). */
     val hiddenNoDispute: Int = 0,
+    /** Itens sem data de encerramento confiável (mesmo após o PNCP), ocultos por padrão. */
+    val hiddenNoDeadline: Int = 0,
+    /**
+     * Leitura SÓ do que já está salvo no aparelho (abertura da tela): as fontes não foram consultadas de propósito — a
+     * atualização diária já baixou as novas. Diferente de [fromCache] por falha/sem internet.
+     */
+    val cacheSnapshot: Boolean = false,
 ) {
     /**
      * Ex.: "PNCP 120 · Compras.gov.br 8000 lidas · 34 candidatas · 12 abertas · 5 dispensas sem disputa ocultas" ou
@@ -177,14 +203,45 @@ data class SearchOutcome(
      */
     val sourceSummary: String?
         get() {
-            val parts = if (fromCache) listOf("Cache local (fontes não consultadas)")
+            val parts = if (cacheSnapshot) listOf("Licitações salvas no aparelho")
+            else if (fromCache) listOf("Cache local (fontes não consultadas)")
             else sourceCounts.entries.sortedBy { it.key.ordinal }.map { (portal, count) ->
                 sourceDiagnostics[portal]?.let { "${portal.displayName} ${it.summary}" } ?: "${portal.displayName} $count"
             } +
                 failedSources.filter { it !in sourceCounts }.sortedBy { it.ordinal }.map { "${it.displayName} indisponível agora" }
             val hidden = if (hiddenNoDispute <= 0) emptyList()
             else listOf(if (hiddenNoDispute == 1) "1 dispensa sem disputa oculta" else "$hiddenNoDispute dispensas sem disputa ocultas")
-            return (parts + hidden).joinToString(" · ").ifEmpty { null }
+            val noDeadline = if (hiddenNoDeadline <= 0) emptyList() else listOf("$hiddenNoDeadline sem prazo ocultas")
+            return (parts + hidden + noDeadline).joinToString(" · ").ifEmpty { null }
+        }
+
+    /** Alguma fonte devolveu resultado parcial porque a varredura completa ainda está em andamento. */
+    val syncing: Boolean get() = sourceDiagnostics.values.any { it.syncing }
+
+    /**
+     * Por que a lista ficou vazia, pela causa REAL (não um genérico "nenhum passou nos filtros"):
+     * sincronização em andamento/incompleta, nada casou com as palavras, tudo oculto (sem disputa/sem prazo) ou
+     * abaixo do score mínimo. null quando há itens.
+     */
+    val emptyReason: String?
+        get() {
+            if (items.isNotEmpty()) return null
+            val failure = sourceDiagnostics.values.firstNotNullOfOrNull { it.syncFailure }
+            val candidates = sourceDiagnostics.values.sumOf { it.candidates } +
+                sourceCounts.filterKeys { it !in sourceDiagnostics }.values.sum()
+            val hiddenParts = listOfNotNull(
+                hiddenNoDispute.takeIf { it > 0 }?.let { if (it == 1) "1 dispensa sem disputa" else "$it dispensas sem disputa" },
+                hiddenNoDeadline.takeIf { it > 0 }?.let { "$it sem prazo de propostas" },
+            )
+            return when {
+                syncing -> "sincronização do Compras.gov.br em andamento — resultado parcial; a lista será atualizada ao terminar"
+                failure != null -> "a leitura completa do Compras.gov.br não terminou ($failure) — resultado parcial; nova tentativa na próxima atualização"
+                cacheSnapshot -> "nada salvo no aparelho casou com a busca; puxe para atualizar"
+                fromCache -> "fontes não consultadas; só o cache local"
+                candidates == 0 -> "nenhuma licitação aberta das fontes casou com as palavras/filtros"
+                hiddenParts.isNotEmpty() -> "as que casaram estão ocultas: ${hiddenParts.joinToString(" e ")}"
+                else -> "nenhuma atingiu o score mínimo ou os demais filtros"
+            }
         }
 }
 
@@ -231,14 +288,23 @@ data class SourceDiagnostics(
     val open: Int,
     val unknownDeadline: Int = 0,
     val truncated: Boolean = false,
+    /**
+     * A varredura completa da janela ainda está em andamento (ou nunca terminou): [read] reflete só o que já está no
+     * cache — resultado PARCIAL; a lista é refeita quando a sincronização terminar.
+     */
+    val syncing: Boolean = false,
+    /** A varredura completa necessária falhou (ex.: limite de consultas/timeout) e o resultado veio só do cache parcial. */
+    val syncFailure: String? = null,
 ) {
-    /** "8000 lidas · 34 candidatas · 12 abertas" (+ "(3 sem prazo)" quando houver). */
+    /** "8000 lidas · 34 candidatas · 12 abertas" (+ "(3 sem prazo)" quando houver; + estado da sincronização). */
     val summary: String
         get() = buildString {
             append(read).append(if (truncated) "+ lidas" else " lidas")
             append(" · ").append(candidates).append(if (candidates == 1) " candidata" else " candidatas")
             append(" · ").append(open).append(if (open == 1) " aberta" else " abertas")
             if (unknownDeadline > 0) append(" (").append(unknownDeadline).append(" sem prazo)")
+            if (syncing) append(" · sincronização em andamento (parcial)")
+            else if (syncFailure != null) append(" · leitura completa não terminou (parcial)")
         }
 }
 
@@ -253,7 +319,13 @@ data class OpportunityFilter(
     val minScore: Int = 0,
     /** Inclui dispensas sem disputa ([Opportunity.noDispute]). Padrão: ocultas. */
     val showNoDispute: Boolean = false,
-)
+) {
+    /**
+     * Busca focada (texto digitado ou segmento escolhido): só então a Busca pede notas por IA. A busca geral sem
+     * texto usa apenas a heurística (e notas por IA já salvas), sem gastar a cota do provedor.
+     */
+    val focused: Boolean get() = query.isNotBlank() || segment != null
+}
 
 // ---------------------------------------------------------------- Licitação de interesse / análise
 
@@ -507,8 +579,22 @@ data class ProposalItem(
     val unit: String,
     val quantity: Double,
     val unitPrice: Double,
+    /** Número do item no edital (PNCP/Compras.gov.br); null = item livre (sem vínculo com o edital). */
+    val itemNumber: Int? = null,
+    val brand: String = "",
+    val manufacturer: String = "",
+    val model: String = "",
+    /** Valor unitário estimado pelo órgão (teto de referência); null = sigiloso/desconhecido. */
+    val estimatedUnitPrice: Double? = null,
+    /** Orçamento sigiloso no edital: o preço precisa ser definido pelo usuário. */
+    val confidentialBudget: Boolean = false,
 ) {
-    val total: Double get() = quantity * unitPrice
+    /** Total do item arredondado a centavos (evita diferenças de ponto flutuante no total geral). */
+    val total: Double
+        get() {
+            val raw = quantity * unitPrice
+            return if (raw.isFinite()) java.math.BigDecimal.valueOf(raw).setScale(2, java.math.RoundingMode.HALF_UP).toDouble() else 0.0
+        }
 }
 
 data class Proposal(
@@ -528,7 +614,11 @@ data class Proposal(
     val approvedAt: Long? = null,
     val rejectionReason: String? = null,
 ) {
-    val totalValue: Double get() = items.sumOf { it.total }
+    val totalValue: Double
+        get() = items.fold(java.math.BigDecimal.ZERO) { acc, i -> acc + java.math.BigDecimal.valueOf(i.total) }.toDouble()
+
+    /** Itens ainda sem preço (ex.: orçamento sigiloso marcado "definir"). */
+    val pendingPriceItems: List<ProposalItem> get() = items.filter { !(it.unitPrice > 0.0) }
 }
 
 // ---------------------------------------------------------------- Portais

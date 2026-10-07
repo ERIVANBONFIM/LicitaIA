@@ -1,6 +1,7 @@
 package com.licitaia.core.data.repository
 
 import com.licitaia.ai.api.AiGateway
+import com.licitaia.core.ai.withAiCompany
 import com.licitaia.connector.api.ConnectorRegistry
 import com.licitaia.connector.api.PortalAuthResult
 import com.licitaia.connector.api.PortalCredentials
@@ -199,8 +200,8 @@ class MessageRepositoryImpl @Inject constructor(
         val message = entity.toDomain()
         val company = companyDao.getById(message.companyId)?.toDomain()
             ?: return@withContext Result.failure(IllegalStateException("Empresa não encontrada."))
-        val provider = gateway.current()
-        val draft = runCatching { provider.draftMessage(message, company) }.getOrElse { error ->
+        val provider = withAiCompany(message.companyId) { gateway.current() }
+        val draft = runCatching { withAiCompany(message.companyId) { provider.draftMessage(message, company) } }.getOrElse { error ->
             audit.record(
                 AuditAction.MENSAGEM, result = AuditResult.FALHA, origin = AuditOrigin.IA, portal = message.portal,
                 tenderNumber = message.tenderNumber, reason = error.message, details = "Falha na assistência de IA (${provider.displayName})",

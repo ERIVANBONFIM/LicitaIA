@@ -1,4 +1,4 @@
-﻿import java.util.Properties
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -30,8 +30,8 @@ android {
     defaultConfig {
         applicationId = "com.licitaia.app"
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.4.4-personal"
+        versionCode = 11
+        versionName = "0.5.0"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
         // Inspeção do WebView (chrome://inspect) só em builds locais de diagnóstico: -Plicitaia.webviewDebug=true.
         // Releases publicados nunca usam essa flag.

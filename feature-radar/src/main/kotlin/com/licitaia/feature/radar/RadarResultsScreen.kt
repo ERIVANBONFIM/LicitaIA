@@ -30,6 +30,7 @@ import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.OpportunityRepository
 import com.licitaia.domain.repository.RadarRepository
 import com.licitaia.domain.repository.TenderRepository
+import com.licitaia.domain.sync.DailySyncRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,7 +45,10 @@ class RadarResultsViewModel @Inject constructor(
     private val radars: RadarRepository,
     private val opportunities: OpportunityRepository,
     connectivity: ConnectivityMonitor,
+    private val daily: DailySyncRepository,
 ) : OpportunityListViewModel(auth, tenders, connectivity) {
+
+    override val dailySync: DailySyncRepository get() = daily
 
     val radarId: Long = savedStateHandle.longArg("radarId") ?: -1L
 
@@ -55,14 +59,17 @@ class RadarResultsViewModel @Inject constructor(
         start()
     }
 
-    override suspend fun fetch(companyId: Long): Result<com.licitaia.domain.model.SearchOutcome> {
+    override suspend fun fetch(companyId: Long, cacheOnly: Boolean): Result<com.licitaia.domain.model.SearchOutcome> {
         val radar = radars.getRadar(radarId)?.takeIf { it.companyId == companyId }
             ?: return Result.failure(IllegalStateException("Radar não encontrado para a empresa ativa."))
         _radar.value = radar
-        return opportunities.runRadarWithSources(radarId)
+        // Abrir os resultados: o que está salvo (atualização diária); o botão/puxar consulta as fontes.
+        return if (cacheOnly) opportunities.runRadarCached(radarId) else opportunities.runRadarWithSources(radarId)
     }
 
     override fun aiScores(request: com.licitaia.domain.model.AiScoringRequest) = opportunities.scoreWithAi(request)
+
+    override fun sourceSync() = opportunities.observeSourceSync()
 }
 
 @Composable

@@ -56,6 +56,7 @@ import com.licitaia.core.ui.components.tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.documents.DocumentValidity
 import com.licitaia.domain.model.DocumentStatus
 import com.licitaia.domain.model.DocumentType
 import com.licitaia.domain.util.Formatters
@@ -163,19 +164,21 @@ fun DocumentsScreen(viewModel: DocumentsViewModel = hiltViewModel()) {
                         item(key = "missing") { MissingTypesCard(state.missingTypes, state.canEdit) { navigator.navigate(Routes.documentEdit(newDocumentIdFor(it))) } }
                     }
 
-                    item(key = "ocr") {
-                        LicitaCard(Modifier.fillMaxWidth()) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconBubble(Icons.Outlined.DocumentScanner, LicitaColors.Purple)
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text("OCR (em breve)", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
-                                    Text(
-                                        "Leitura automática de emissor e validade a partir do anexo estará disponível em uma próxima versão.",
-                                        style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
-                                    )
+                    if (state.canEdit) {
+                        item(key = "ocr") {
+                            LicitaCard(Modifier.fillMaxWidth(), onClick = { navigator.navigate(Routes.documentEdit()) }) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconBubble(Icons.Outlined.DocumentScanner, LicitaColors.Purple)
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Leitura automática", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+                                        Text(
+                                            "Anexe o PDF, uma foto ou imagens da galeria: o LicitaIA identifica o tipo e lê emissor, número, CNPJ e validade. Você confere antes de salvar.",
+                                            style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                                        )
+                                    }
+                                    StatusBadge("OCR", Tone.SUCCESS)
                                 }
-                                StatusBadge("Em breve", Tone.NEUTRAL)
                             }
                         }
                     }
@@ -223,7 +226,7 @@ private fun DocumentCard(row: DocumentRow, modifier: Modifier, onClick: () -> Un
                 doc.type.label.uppercase(), style = MaterialTheme.typography.labelSmall, color = LicitaColors.BlueBright,
                 modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            StatusBadge(row.status.label, tone, pulsing = row.status == DocumentStatus.VENCIDO)
+            StatusBadge(DocumentValidity.badge(row.status, row.daysToExpire), tone, pulsing = row.status == DocumentStatus.VENCIDO)
         }
         Spacer(Modifier.height(6.dp))
         Text(doc.title.ifBlank { doc.type.label }, style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)

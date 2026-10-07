@@ -27,6 +27,8 @@ data class OcrResult(
     val totalPages: Int,
     val pagesProcessed: Int,
     val pagesWithText: Int,
+    /** Texto reconhecido de cada página (índice 0 = página 1). */
+    val pageTexts: List<String> = emptyList(),
 ) {
     val truncated: Boolean get() = pagesProcessed < totalPages
     val usable: Boolean get() = EditalOcrSupport.isUsable(text)
@@ -91,6 +93,7 @@ class PdfOcrEngine @Inject constructor() {
                 totalPages = total,
                 pagesProcessed = pages,
                 pagesWithText = EditalOcrSupport.pagesWithText(texts),
+                pageTexts = texts,
             )
         } finally {
             runCatching { recognizer.close() }

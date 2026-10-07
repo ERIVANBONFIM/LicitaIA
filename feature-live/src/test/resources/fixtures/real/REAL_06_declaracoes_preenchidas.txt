@@ -1,0 +1,53 @@
+# FIXTURE REAL: dump do DevTools no aparelho logado (Compras.gov.br, 2026). Dados pessoais do fornecedor substituídos.
+URL: https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/cadastro-propostas?compra=92731205000032026
+h1 .  @0,-232 :: Compras eletrônicas
+button .br-button ml-auto type=button aria-label=Tela inicial icon.fa fa-home opcao-home @12,-216 :: 
+button .br-button type=button aria-label=Recarregar página icon.fas fa-sync-alt @308,-158 :: 
+button .br-button ml-auto secondary type=button aria-label=Adicionar aos favoritos icon.fa-heart far @148,83 :: 
+button .br-button ml-auto secondary type=button aria-label=Documentos e demais informações da contratação no PNCP icon.fa-file-alt fas @188,83 :: 
+button .br-button ml-auto secondary type=button icon.fa-times-circle fas @228,83 :: 
+button .br-button ml-auto secondary type=button aria-label=Quadro Informativo icon.fa-clipboard fas @268,83 :: 
+button .br-button ml-auto secondary type=button aria-label=Informações adicionais da compra icon.fa-info-circle fas @308,83 :: 
+label .col-auto m-0 pr-1 conteudo-div-centralizado  @12,123 :: Objeto:
+label .pr-1  @20,146 :: Data limite de entrega de propostas:
+label .  @20,219 :: Endereço do fornecedor
+button .br-button ml-auto type=button icon.fa-info-circle fas @182,213 :: 
+button .mini br-button type=button @159,310 :: Sincronizar endereço
+label .  @20,385 :: Termo/declarações
+input .p-checkbox-input type=checkbox @36,425 :: on
+a .align-middle cursor-pointer  @40,449 :: Termo de Aceitação.
+button .header pt-1 pb-1 align-items-center type=button icon.icon mr-0 @40,563 :: Declaração para fornecedores ME/EPP e equiparados
+label .  @76,574 :: Declaração para fornecedores ME/EPP e equiparados
+label .pr-4  @64,645 :: Sim
+input .p-radiobutton-input id=labelSimMeepp type=radio @64,646 :: true
+label .  @144,645 :: Não
+input .p-radiobutton-input id=labelNaoMeepp type=radio @144,646 :: false
+button .header pt-1 pb-1 type=button icon.icon mr-0 @40,1438 :: Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.1
+label .  @76,1450 :: Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.1
+label .pr-4  @64,1541 :: Sim
+input .p-radiobutton-input id=declaracaoEquidadeGeneroSim type=radio @64,1541 :: false
+label .  @141,1541 :: Não
+input .p-radiobutton-input id=declaracaoEquidadeGeneroNao type=radio @141,1541 :: true
+button .br-button ml-auto type=button icon.fa-info-circle fas @215,1903 :: 
+label .pr-4  @64,1946 :: Sim
+input .p-radiobutton-input id=declaracaoProgramasIntegridadeSim type=radio @64,1947 :: true
+label .  @141,1946 :: Não
+input .p-radiobutton-input id=declaracaoProgramasIntegridadeNao type=radio @141,1947 :: false
+button .br-button ml-auto type=button icon.fa-info-circle fas @215,2227 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel ng-star-i  icon.fa-heart far @31,2347 :: 1 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @229,2452 :: 
+button .br-button ng-tns-c501112478-22 ng-trigger ng-trigger-animationRotate18  icon.ng-tns-c501112478-22 fas fa-chevron-down @261,2452 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel ng-star-i  icon.fa-heart far @31,2508 :: 2 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @229,2614 :: 
+button .br-button ng-tns-c501112478-23 ng-trigger ng-trigger-animationRotate18  icon.ng-tns-c501112478-23 fas fa-chevron-down @261,2614 :: 
+button .br-button ml-auto type=button icon.fa-info-circle fas @269,2779 :: 
+label .cp-texto-item  @63,2845 :: Quantidade ofertada
+label .cp-texto-item  @63,2901 :: Valor unitário (R$)
+input .ng-untouched ng-pristine ng-valid p-component p-inputtext  @63,2920 :: 
+label .cp-texto-item  @63,2972 :: Valor total
+footer .br-modal-footer justify-content-end ng-star-inserted  @63,3024 :: Salvar
+button .mini br-button ml-2 mb-1 ng-star-inserted type=button @195,3032 :: Salvar
+div .outline-color text-right pr-3 role=tab @63,7 :: FORNECEDOR DE TESTE | 000.000.000-00 EMPRESA DE TESTE LTDA | 00.000.000/0
+button .br-button type=button role=tab icon.fas fa-bell @230,14 :: 
+button .br-sign-in p-1 id=avatar-dropdown-trigger type=button icon.br-tag icon avatarUsuario @290,10 :: 
+TEXTO: Compras eletrônicas Cadastrar propostas Cadastrar propostas Pregão Eletrônico N° 3/2026 (Lei 14.133/2021) UASG 927312 - SERVIÇO APOIO A MICROS E PEQUENAS EMPRESAS-PA Critério julgamento: Menor Preço / Maior Desconto Modo disputa: Aberto Objeto: Contratação de empresas para prestação de serviços, em regime de locação mensal, da conexão ao backbone da rede mundial – Internet, através de link dedicado de dados, de uso ilimitado, com alta qualidade e performance, através de serviço de IP, estabelecimento de circuito de acesso entre as dependências do Sebrae/PA e as dependências da prestadora de serviços (“last mile”), com utilização de fibra óptica. Data limite de entrega de propostas: 13/10/2026 08:59 Endereço do fornecedor Logradouro: RUA DE TESTE, 1 Município: Cidade UF: XX Sincronizar endereço Termo/declarações Termo de Aceitação. Declaro que cumpro e estou ciente de todas as declarações contidas no termo de aceitação. Declaração para fornecedores ME/EPP e equiparados Sim Não Declaro, sob as penas da Lei, que não ultrapassei o limite de faturamento e cumpro os requisitos estabelecidos no Art. 3º da Lei Complementar nº 123, de 14 de dezembro de 2006, sendo apto a usufruir do tratamento favorecido estabelecido nos artigos 42 ao 49 da referida Lei Complementar, caso ele seja aplicado nessa contratação, observado o Art. 4º da Lei nº 14.133/2021. Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.133/2021. Sim Não Declaro que desen

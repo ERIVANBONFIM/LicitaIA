@@ -1,0 +1,6 @@
+# FIXTURE REAL: dump do DevTools no aparelho logado (Compras.gov.br, 2026). Dados pessoais do fornecedor substituídos.
+URL: https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/cadastro-propostas?compra=92731205000032026
+campo=[] disabled=false | Quantidade ofertada 1 Valor unitário (R$) Valor total R$ 0,0000 Salvar
+  BTN Salvar cls=mini br-button ml-2 mb-1 ng-star-inserted dis=false
+ITENS: 1 ACESSO A INTERNET VIA CABO < apelido > Quantidade solicitada Unidade fornecimento 1 Valor estimado (unitário) Meu valor (unitário) R$ 151.000,0000 R$ 150.999, ## 2 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (unitário) R$ 151.000,0000 Proposta não cadastrada Descrição detalhada 
+aviso: p-toast-message p-toast-message-success :: Operação realizada com sucesso!

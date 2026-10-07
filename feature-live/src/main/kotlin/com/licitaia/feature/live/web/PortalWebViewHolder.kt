@@ -47,6 +47,9 @@ import kotlin.coroutines.resume
  * retido:
  * - a tela do portal ANEXA/DESANEXA este mesmo WebView (o `baseContext` do [MutableContextWrapper] vira a Activity ao
  *   exibir e volta ao Application ao sair — sem vazar a Activity);
+ * - fora da tela do portal, o WebView fica ESTACIONADO num host invisível atrás do conteúdo da MainActivity
+ *   ([installHost]) — continua numa janela e carrega páginas (o robô e "Buscar minhas licitações" usam ESTE WebView);
+ *   com o app fechado/tela apagada pode não carregar, e o robô avisa "abra o app" ([isLive]);
  * - o "Manter sessão ativa" faz o "toque" NESTE WebView ([keepAliveTouch]): `reload()` na mesma aba (sessionStorage
  *   sobrevive a reload) ou, com a aba vazia (processo recriado), abre a ENTRADA OFICIAL do Comprasnet — nunca o cnetmobile
  *   direto num WebView sem estado ([PortalWebPolicy.EntryGate]).
@@ -64,6 +67,8 @@ import kotlin.coroutines.resume
 class PortalWebViewHolder @Inject constructor(
     @ApplicationContext private val app: Context,
     private val secrets: SecretStore,
+    /** Modo mapear do robô: snapshot estrutural de cada página do portal (só quando ligado). */
+    private val automation: com.licitaia.feature.live.automation.PortalAutomationStorage,
 ) {
     /** WebView retido de uma empresa/portal. */
     class Entry internal constructor(
@@ -79,6 +84,9 @@ class PortalWebViewHolder @Inject constructor(
             internal set
         /** Tela em primeiro plano (RESUMED) exibindo este WebView. */
         var visible: Boolean = false
+            internal set
+        /** Estacionado no host invisível da Activity (anexado a uma janela, atrás do conteúdo do app). */
+        var parked: Boolean = false
             internal set
         internal var keepAlive = false
         internal var paused = false
@@ -162,7 +170,70 @@ class PortalWebViewHolder @Inject constructor(
         webView.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY))
         webView.layout(0, 0, 1080, 1920)
         entries[companyId to portal] = entry
+        park(entry)
         return entry
+    }
+
+    // ------------------------------------------------------------------ host invisível (WebView sempre numa janela)
+
+    /**
+     * Um WebView que NÃO está numa janela visível não carrega: a navegação fica em `document.readyState="loading"`
+     * para sempre (responseEnd=0, visibilityState=hidden) — diagnosticado no aparelho. Por isso, enquanto o app está
+     * aberto, o WebView retido fica ESTACIONADO num host do tamanho da tela, atrás do conteúdo da Activity (alpha
+     * quase zero, sem receber toques nem acessibilidade) e é movido para a tela do portal quando ela o exibe — nunca
+     * com dois pais ao mesmo tempo. Com o app fechado/tela apagada a janela some e o portal pode não carregar: o
+     * robô e a busca avisam "abra o app" ([isLive]).
+     */
+    private var host: ViewGroup? = null
+    private var hostActivity: Activity? = null
+
+    /** MainActivity.onCreate (depois do setContent): cria o host atrás do conteúdo e estaciona os WebViews retidos. */
+    fun installHost(activity: Activity) {
+        if (hostActivity === activity && host != null) return
+        hostActivity?.let { uninstallHost(it) }
+        val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
+        val h = PortalHostLayout(activity)
+        content.addView(h, 0, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        host = h
+        hostActivity = activity
+        entries.values.forEach { park(it) }
+    }
+
+    /** MainActivity.onDestroy: tira os WebViews estacionados do host (sem destruir) e solta a Activity. */
+    fun uninstallHost(activity: Activity) {
+        if (hostActivity !== activity) return
+        val h = host
+        entries.values.filter { it.parked }.forEach { e ->
+            (e.webView.parent as? ViewGroup)?.removeView(e.webView)
+            e.parked = false
+            if (!e.attached) e.wrapper.baseContext = app
+        }
+        (h?.parent as? ViewGroup)?.removeView(h)
+        host = null
+        hostActivity = null
+    }
+
+    /** Estaciona [entry] no host (se há host e a tela do portal não o exibe). */
+    private fun park(entry: Entry) {
+        val h = host ?: return
+        if (entry.attached || entry.discarded) return
+        if (entry.webView.parent === h) { entry.parked = true; return }
+        (entry.webView.parent as? ViewGroup)?.removeView(entry.webView)
+        entry.wrapper.baseContext = hostActivity ?: app
+        h.addView(entry.webView, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        entry.parked = true
+    }
+
+    /** O WebView está numa janela VISÍVEL (app aberto, tela ligada) — só assim o portal carrega e o robô opera. */
+    fun isLive(entry: Entry): Boolean =
+        !entry.discarded && runCatching { entry.webView.isAttachedToWindow && entry.webView.windowVisibility == View.VISIBLE }.getOrDefault(false)
+
+    /** Prepara o WebView retido para o robô/busca: cria, estaciona (se a tela não o exibe), retoma. true = vivo. */
+    fun prepareForAutomation(companyId: Long, portal: Portal): Boolean {
+        val entry = obtain(companyId, portal)
+        park(entry)
+        resume(entry)
+        return isLive(entry)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -197,7 +268,9 @@ class PortalWebViewHolder @Inject constructor(
      * O chamador instala o próprio WebViewClient (subclasse de [RetainedPortalClient]) e WebChromeClient.
      */
     fun attach(entry: Entry, activity: Activity?) {
+        // Sai do host invisível (um pai por vez) e vai para a tela do portal.
         (entry.webView.parent as? ViewGroup)?.removeView(entry.webView)
+        entry.parked = false
         entry.wrapper.baseContext = activity ?: app
         entry.attached = true
         resume(entry)
@@ -223,6 +296,9 @@ class PortalWebViewHolder @Inject constructor(
         runCatching { entry.webView.setDownloadListener(null) }
         PortalWebSessions.flush(entry.companyId)
         if (!entry.keepAlive) pause(entry)
+        // Volta ao host invisível (fica numa janela: o robô/busca continuam funcionando com o app aberto). Depois do
+        // descarte da AndroidView, para não mexer na hierarquia durante a composição.
+        main.post { if (!entry.attached && !entry.discarded) park(entry) }
     }
 
     /**
@@ -267,6 +343,8 @@ class PortalWebViewHolder @Inject constructor(
         entry.probe = null
         cancelAutoLogin(entry)
         PortalWebSessions.flush(entry.companyId)
+        runCatching { (entry.webView.parent as? ViewGroup)?.removeView(entry.webView) }
+        entry.parked = false
         runCatching { entry.webView.stopLoading() }
         runCatching { entry.webView.webViewClient = WebViewClient() }
         runCatching { entry.webView.webChromeClient = null }
@@ -798,7 +876,37 @@ class PortalWebViewHolder @Inject constructor(
         }
     }
 
+    // ------------------------------------------------------------------ modo mapear (robô)
+
+    /**
+     * Página do portal carregada (onPageFinished) ou rota da SPA trocada (pushState): com o MODO MAPEAR ligado, grava
+     * um snapshot estrutural depois que a tela monta ([com.licitaia.feature.live.automation.AutomationScripts.snapshot]:
+     * sem valores digitados, sem campos ocultos, sem query strings; sanitizado antes de gravar).
+     */
+    internal fun onPageForMapping(entry: Entry, url: String) {
+        if (!automation.mapMode.value || entry.discarded) return
+        main.postDelayed({
+            if (entry.discarded || runCatching { entry.webView.url }.getOrNull() != url) return@postDelayed
+            captureSnapshot(entry, "auto")
+        }, MAP_DELAY_MS)
+    }
+
+    /** "Mapear esta tela": snapshot imediato da página atual do WebView retido. */
+    fun captureSnapshot(entry: Entry, reason: String = "manual", onDone: (Boolean) -> Unit = {}) {
+        val url = runCatching { entry.webView.url }.getOrNull()
+        if (url == null || !PortalWebPolicy.isAllowed(entry.portal, url)) { onDone(false); return }
+        runCatching {
+            entry.webView.evaluateJavascript(com.licitaia.feature.live.automation.AutomationScripts.snapshot()) { raw ->
+                val text = com.licitaia.feature.live.automation.AutomationJson.snapshotText(raw)
+                if (text == null) { onDone(false); return@evaluateJavascript }
+                scope.launch { onDone(automation.recordSnapshot(url, text, reason)) }
+            }
+        }.onFailure { onDone(false) }
+    }
+
     private companion object {
+        /** Espera para a SPA montar a tela antes do snapshot do modo mapear. */
+        const val MAP_DELAY_MS = 2_500L
         const val TIMEOUT_MS = 60_000L
         /** Espera após cada onPageFinished: redirecionamentos de SSO e renderização da SPA. */
         const val SETTLE_MS = 2_500L
@@ -822,6 +930,27 @@ class PortalWebViewHolder @Inject constructor(
         /** Mesma página de 503 avaliada de novo dentro deste intervalo não gera novo evento. */
         const val UNSTABLE_DEDUP_MS = 10_000L
     }
+}
+
+/**
+ * Host invisível do WebView retido: tamanho da tela, atrás do conteúdo da Activity, quase transparente (alpha > 0
+ * para o WebView continuar desenhando quadros — animações/rAF da SPA dependem disso), não recebe toques nem foco de
+ * acessibilidade. Os eventos do robô vão direto ao WebView (dispatchKeyEvent/dispatchTouchEvent).
+ */
+@SuppressLint("ViewConstructor")
+internal class PortalHostLayout(context: Context) : android.widget.FrameLayout(context) {
+    init {
+        alpha = 0.01f
+        isClickable = false
+        isFocusable = false
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    }
+
+    override fun onInterceptTouchEvent(ev: android.view.MotionEvent?): Boolean = true
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: android.view.MotionEvent?): Boolean = false
 }
 
 /**
@@ -880,9 +1009,15 @@ open class RetainedPortalClient(
         // Grava cookies renovados pelo portal a cada navegação concluída.
         PortalWebSessions.flush(entry.companyId)
         entry.probe?.invoke(PortalWebViewHolder.ProbeEvent.Finished(url))
+        holder.onPageForMapping(entry, url)
         // Entrada do Comprasnet com o 503 do portal → "Compras.gov.br instável". Login automático com certificado (se
         // houver tentativa em andamento): decide a etapa e clica (ou para com PORTAL_UNSTABLE).
         holder.onPageDone(entry, url)
+    }
+
+    /** Troca de rota da SPA (pushState) não dispara onPageFinished: o modo mapear também acompanha estas. */
+    override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+        if (allowed(url)) holder.onPageForMapping(entry, url)
     }
 
     // Falha de carga do documento (sem rede, DNS, timeout) = inconclusivo, nunca "sessão encerrada".

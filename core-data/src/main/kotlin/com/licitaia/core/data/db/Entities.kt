@@ -3,8 +3,10 @@ package com.licitaia.core.data.db
 import androidx.room.ColumnInfo
 import androidx.room.Embedded
 import androidx.room.Entity
+import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.licitaia.domain.edital.EditalQuestionStatus
 import com.licitaia.domain.model.AiAuthMode
 import com.licitaia.domain.model.AiProviderType
 import com.licitaia.domain.model.AuditAction
@@ -41,6 +43,19 @@ data class CompanyEntity(
     val preferredAi: AiProviderType?,
     /** Versão 6: empresa do espaço de demonstração. Default casa com DatabaseMigrations.FROM_5_TO_6. */
     @ColumnInfo(defaultValue = "0") val demo: Boolean = false,
+    // Versão 12: dados da proposta comercial em PDF. Defaults casam com DatabaseMigrations.FROM_11_TO_12.
+    @ColumnInfo(defaultValue = "") val street: String = "",
+    @ColumnInfo(defaultValue = "") val complement: String = "",
+    @ColumnInfo(defaultValue = "") val district: String = "",
+    @ColumnInfo(defaultValue = "") val zipCode: String = "",
+    @ColumnInfo(defaultValue = "") val phone: String = "",
+    @ColumnInfo(defaultValue = "") val email: String = "",
+    @ColumnInfo(defaultValue = "") val legalRepName: String = "",
+    @ColumnInfo(defaultValue = "") val legalRepCpf: String = "",
+    @ColumnInfo(defaultValue = "") val legalRepRole: String = "",
+    @ColumnInfo(defaultValue = "") val bankName: String = "",
+    @ColumnInfo(defaultValue = "") val bankAgency: String = "",
+    @ColumnInfo(defaultValue = "") val bankAccount: String = "",
 )
 
 @Entity(tableName = "users", indices = [Index(value = ["email"], unique = true)])
@@ -112,6 +127,49 @@ data class OpportunityEntity(
     @androidx.room.ColumnInfo(defaultValue = "NULL") val platformName: String? = null,
     /** Dispensa sem disputa (contratação direta). Versão 9. */
     @androidx.room.ColumnInfo(defaultValue = "0") val noDispute: Boolean = false,
+    /** Início do recebimento de propostas ("vai abrir"). Versão 10. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL") val proposalOpening: Long? = null,
+)
+
+/**
+ * Versão 10: cache persistente das linhas do Compras.gov.br (janela de 60 dias, ~20 mil linhas), sincronizado de forma
+ * incremental. Só oportunidades ainda vivas; o que sai da janela/encerra é removido. NÃO entra no backup.
+ */
+@Entity(
+    tableName = "comprasgov_rows",
+    indices = [Index(value = ["modalityCode", "uf", "publishedAt"])],
+)
+data class ComprasGovRowEntity(
+    @PrimaryKey val id: String,
+    /** Código de modalidade do Compras.gov.br (3 Concorrência, 5 Pregão, 6 Dispensa). */
+    val modalityCode: Int,
+    val uf: String,
+    val publishedAt: Long,
+    val proposalDeadline: Long,
+    val sessionAt: Long,
+    val number: String,
+    val agency: String,
+    val objectDescription: String,
+    val modality: Modality,
+    val segment: Segment,
+    val city: String,
+    val estimatedValue: Double,
+    val keywords: List<String>,
+    val editalUrl: String?,
+    val noDispute: Boolean,
+    val fetchedAt: Long,
+    /** Início do recebimento de propostas (null = não informado). */
+    val proposalOpening: Long?,
+)
+
+/** Versão 10: última sincronização por partição (modalidade + UF; UF vazia = país inteiro). NÃO entra no backup. */
+@Entity(tableName = "comprasgov_sync", primaryKeys = ["modalityCode", "uf"])
+data class ComprasGovSyncEntity(
+    val modalityCode: Int,
+    val uf: String,
+    val lastFullSyncAt: Long,
+    val lastSyncAt: Long,
+    val truncated: Boolean,
 )
 
 @Entity(
@@ -143,6 +201,31 @@ data class TenderEntity(
     @ColumnInfo(defaultValue = "0") val editalChars: Int = 0,
     @ColumnInfo(defaultValue = "NULL") val editalPages: Int? = null,
     @ColumnInfo(defaultValue = "0") val editalScanned: Boolean = false,
+)
+
+/**
+ * Versão 13: histórico do "Pergunte ao edital" por licitação. Some junto com a licitação (FK com CASCADE) e entra no
+ * backup da empresa. [sources] = citações "Fonte: ..." separadas por quebra de linha. DDL igual a
+ * DatabaseMigrations.CREATE_EDITAL_QUESTIONS.
+ */
+@Entity(
+    tableName = "edital_questions",
+    foreignKeys = [
+        ForeignKey(entity = TenderEntity::class, parentColumns = ["id"], childColumns = ["tenderId"], onDelete = ForeignKey.CASCADE),
+    ],
+    indices = [Index("tenderId")],
+)
+data class EditalQuestionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val companyId: Long,
+    val tenderId: Long,
+    val question: String,
+    val answer: String,
+    val provider: String,
+    val model: String?,
+    val sources: String,
+    val createdAt: Long,
+    val status: EditalQuestionStatus,
 )
 
 /** Análise completa serializada (edital extraído, fit, checklist...) + colunas de consulta rápida. */
@@ -347,6 +430,49 @@ data class CompetitionEntity(
     val ourMarginPct: Double,
     val bidsCount: Int,
     val behavior: String,
+)
+
+/**
+ * Versão 11: licitações da própria empresa lidas da sessão logada do Comprasnet ("Minhas licitações").
+ * Chave (empresa, `<uasg>-<número>-<ano>`). Cache recriável (nova leitura do portal): NÃO entra no backup.
+ */
+@Entity(tableName = "portal_my_tenders", primaryKeys = ["companyId", "tenderKey"], indices = [Index("companyId")])
+data class PortalMyTenderEntity(
+    val companyId: Long,
+    val tenderKey: String,
+    val portal: Portal,
+    val uasg: String,
+    val number: String,
+    val year: Int,
+    val modality: String,
+    val objectDescription: String,
+    val openingAt: Long?,
+    val situation: String,
+    val hasProposal: Boolean,
+    val sources: List<String>,
+    val pncpControl: String?,
+    val matchedOpportunityId: String?,
+    val matchedTenderId: Long?,
+    val firstSeenAt: Long,
+    val updatedAt: Long,
+)
+
+/**
+ * Versão 11: plano do robô (itens da proposta, parâmetros do lance, agenda) por licitação da empresa.
+ * [itemsJson]/[bidJson]/[proposalLogJson] = JSON (kotlinx.serialization). NÃO entra no backup (configuração operacional).
+ */
+@Entity(tableName = "portal_robot_plans", primaryKeys = ["companyId", "tenderKey"], indices = [Index("companyId")])
+data class PortalRobotPlanEntity(
+    val companyId: Long,
+    val tenderKey: String,
+    val itemsJson: String,
+    val proposalStatus: String,
+    val proposalLogJson: String,
+    val bidJson: String,
+    val bidArmedAt: Long?,
+    val sessionAt: Long?,
+    val liveSessionId: String?,
+    val updatedAt: Long,
 )
 
 /**

@@ -2,6 +2,11 @@ package com.licitaia.feature.competition
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.domain.competition.CompetitionResultsSync
+import com.licitaia.domain.competition.CompetitionSyncReport
+import com.licitaia.domain.competition.CompetitorRanking
+import com.licitaia.domain.competition.MarketSnapshot
+import com.licitaia.domain.competition.MarketSummary
 import com.licitaia.domain.model.CompetitionRecord
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.Segment
@@ -17,6 +22,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -29,6 +36,14 @@ import javax.inject.Inject
 internal val CompetitionRecord.discountPct: Double
     get() = if (estimatedValue <= 0.0) 0.0 else (estimatedValue - closingValue) / estimatedValue * 100.0
 
+/** Registro importado automaticamente do PNCP (custo/margem e lances não são públicos). */
+internal val CompetitionRecord.isPublicImport: Boolean
+    get() = behavior.contains(CompetitionResultsSync.PUBLIC_RESULT_TAG)
+
+/** A margem do registro é conhecida (registro manual/da sessão com nosso lance). */
+internal val CompetitionRecord.hasKnownMargin: Boolean
+    get() = !isPublicImport && ourFinalBid > 0.0
+
 data class DiscountBand(val label: String, val count: Int, val wins: Int)
 
 data class SegmentStats(
@@ -38,7 +53,8 @@ data class SegmentStats(
     val avgCompetitors: Double,
     val avgDiscountPct: Double,
     val avgClosing: Double,
-    val avgMarginPct: Double,
+    /** null = nenhum registro do segmento com margem conhecida. */
+    val avgMarginPct: Double?,
 )
 
 data class BehaviorStat(val text: String, val count: Int)
@@ -50,9 +66,11 @@ data class CompetitionStats(
     val winRatePct: Double,
     val avgCompetitors: Double,
     val avgDiscountPct: Double,
-    val avgMarginPct: Double,
-    val avgBids: Double,
-    /** Ordem cronológica — base do gráfico de evolução da margem. */
+    /** null = nenhum registro com margem conhecida (só resultados públicos). */
+    val avgMarginPct: Double?,
+    /** null = nenhum registro com lances contados. */
+    val avgBids: Double?,
+    /** Ordem cronológica, só registros com margem conhecida — base do gráfico de evolução da margem. */
     val timeline: List<CompetitionRecord>,
     val bands: List<DiscountBand>,
     val bySegment: List<SegmentStats>,
@@ -66,6 +84,7 @@ data class CompetitionUiState(
     val hasAny: Boolean = false,
     val companyId: Long = 0,
     val companySegment: Segment? = null,
+    val demo: Boolean = false,
     val segments: List<Segment> = emptyList(),
     val portals: List<Portal> = emptyList(),
     val segmentFilter: Segment? = null,
@@ -75,15 +94,24 @@ data class CompetitionUiState(
     val stats: CompetitionStats? = null,
     /** Gravação/exclusão em andamento. */
     val saving: Boolean = false,
+    /** Busca de resultados no PNCP em andamento. */
+    val syncing: Boolean = false,
+    val lastReport: CompetitionSyncReport? = null,
+    val market: MarketSummary = MarketSummary.EMPTY,
+    val marketUpdatedAt: Long? = null,
+    val marketKeywords: List<String> = emptyList(),
 )
 
 private data class Filters(val segment: Segment? = null, val portal: Portal? = null, val retry: Int = 0)
 
+private data class SyncInfo(val report: CompetitionSyncReport? = null, val market: MarketSnapshot = MarketSnapshot(), val summary: MarketSummary = MarketSummary.EMPTY)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class CompetitionViewModel @Inject constructor(
-    auth: AuthRepository,
+    private val auth: AuthRepository,
     private val competition: CompetitionRepository,
+    private val sync: CompetitionResultsSync,
 ) : ViewModel() {
 
     private val filters = MutableStateFlow(Filters())
@@ -107,6 +135,7 @@ class CompetitionViewModel @Inject constructor(
                         CompetitionUiState(
                             loading = false, hasAny = all.isNotEmpty(), segments = segments, portals = portals,
                             companyId = session.activeCompany.id, companySegment = session.activeCompany.segment,
+                            demo = session.user.demo || session.activeCompany.demo,
                             segmentFilter = segment, portalFilter = portal,
                             records = filtered.sortedByDescending { it.date },
                             stats = if (filtered.isEmpty()) null else computeStats(filtered),
@@ -116,12 +145,58 @@ class CompetitionViewModel @Inject constructor(
             }
         }
 
-    val state: StateFlow<CompetitionUiState> = combine(remote, saving) { s, busy -> s.copy(saving = busy) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CompetitionUiState())
+    private val syncInfo = auth.session.flatMapLatest { session ->
+        if (session == null) flowOf(SyncInfo())
+        else combine(sync.observeLastReport(session.activeCompany.id), sync.observeMarket(session.activeCompany.id)) { report, market ->
+            SyncInfo(report, market, CompetitorRanking.summarize(market.results, session.activeCompany.cnpj))
+        }.catch { emit(SyncInfo()) }
+    }
+
+    val state: StateFlow<CompetitionUiState> = combine(remote, saving, sync.running, syncInfo) { s, busy, running, info ->
+        s.copy(
+            saving = busy, syncing = running, lastReport = info.report,
+            market = info.summary, marketUpdatedAt = info.market.updatedAt, marketKeywords = info.market.keywords,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CompetitionUiState())
+
+    init {
+        // Execução automática: ao abrir a tela, se a última atualização tem mais de 1 dia (o Worker diário também roda).
+        viewModelScope.launch {
+            auth.session.filterNotNull().map { it }.distinctUntilChanged { a, b -> a.activeCompany.id == b.activeCompany.id }.collect { session ->
+                if (!session.user.demo && !session.activeCompany.demo) runCatching { sync.refreshIfDue(session.activeCompany.id) }
+            }
+        }
+    }
 
     fun setSegment(segment: Segment?) = filters.update { it.copy(segment = segment) }
     fun setPortal(portal: Portal?) = filters.update { it.copy(portal = portal) }
     fun retry() = filters.update { it.copy(retry = it.retry + 1) }
+
+    /** Botão "Atualizar resultados": consulta o PNCP agora. */
+    fun refreshResults() {
+        val session = auth.session.value ?: return
+        if (session.user.demo || session.activeCompany.demo) {
+            _messages.tryEmit("Na demonstração os resultados são de exemplo. Entre com a empresa real para buscar no PNCP.")
+            return
+        }
+        if (sync.running.value) {
+            _messages.tryEmit("A atualização de resultados já está em andamento.")
+            return
+        }
+        viewModelScope.launch {
+            val result = try {
+                sync.refresh(session.activeCompany.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            result.fold(
+                onSuccess = { _messages.tryEmit("Resultados atualizados: ${it.summary}.") },
+                onFailure = { _messages.tryEmit(it.message?.takeIf(String::isNotBlank) ?: "Não foi possível consultar o PNCP agora.") },
+            )
+        }
+    }
 
     /** Registro manual de resultado (formulário da tela Concorrência). */
     fun insert(record: CompetitionRecord) = run("Não foi possível registrar o resultado.") {
@@ -168,6 +243,8 @@ internal fun computeStats(records: List<CompetitionRecord>): CompetitionStats {
         }
         DiscountBand(label, inBand.size, inBand.count { it.won })
     }
+    val withMargin = records.filter { it.hasKnownMargin }
+    val withBids = records.filter { !it.isPublicImport && it.bidsCount > 0 }
     val bySegment = records.groupBy { it.segment }.map { (segment, list) ->
         SegmentStats(
             segment = segment, count = list.size,
@@ -175,10 +252,10 @@ internal fun computeStats(records: List<CompetitionRecord>): CompetitionStats {
             avgCompetitors = list.map { it.competitors }.average(),
             avgDiscountPct = list.map { it.discountPct }.average(),
             avgClosing = list.map { it.closingValue }.average(),
-            avgMarginPct = list.map { it.ourMarginPct }.average(),
+            avgMarginPct = list.filter { it.hasKnownMargin }.map { it.ourMarginPct }.takeIf { it.isNotEmpty() }?.average(),
         )
     }.sortedByDescending { it.count }
-    val behaviors = records.filter { it.behavior.isNotBlank() }
+    val behaviors = records.filter { it.behavior.isNotBlank() && !it.isPublicImport }
         .groupBy { it.behavior.trim() }
         .map { BehaviorStat(it.key, it.value.size) }
         .sortedByDescending { it.count }
@@ -188,9 +265,9 @@ internal fun computeStats(records: List<CompetitionRecord>): CompetitionStats {
         winRatePct = wins * 100.0 / records.size,
         avgCompetitors = records.map { it.competitors }.average(),
         avgDiscountPct = records.map { it.discountPct }.average(),
-        avgMarginPct = records.map { it.ourMarginPct }.average(),
-        avgBids = records.map { it.bidsCount }.average(),
-        timeline = records.sortedBy { it.date },
+        avgMarginPct = withMargin.map { it.ourMarginPct }.takeIf { it.isNotEmpty() }?.average(),
+        avgBids = withBids.map { it.bidsCount }.takeIf { it.isNotEmpty() }?.average(),
+        timeline = withMargin.sortedBy { it.date },
         bands = bands, bySegment = bySegment, behaviors = behaviors,
     )
 }

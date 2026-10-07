@@ -224,6 +224,7 @@ internal object ComprasGovMapper {
             proposalDeadline = deadline,
             // A API não publica data da sessão de disputa: usa-se o fim do recebimento de propostas.
             sessionAt = deadline,
+            proposalOpening = parseDate(dto.dataAberturaPropostaPncp),
             requiresLocalSupport = false,
             keywords = keywords,
             editalUrl = pncpRef?.publicPageUrl ?: Portal.COMPRAS_GOV.publicUrl,
@@ -249,6 +250,42 @@ internal object ComprasGovMapper {
             else item.valorUnitarioEstimado?.let { append(", R$ ").append(formatMoney(it)).append(" unit.") }
             append(')')
         }
+    }
+
+    /** Item oficial para a proposta (fallback do PNCP); null sem número ou quando o item foi cancelado/deserto/fracassado. */
+    fun toOfficialItem(item: ComprasGovItem): com.licitaia.domain.proposal.OfficialTenderItem? {
+        val number = (item.numeroItemPncp ?: item.numeroItemCompra)?.takeIf { it > 0 } ?: return null
+        val situation = item.situacaoCompraItemNome.orEmpty().lowercase()
+        if (listOf("cancelad", "desert", "fracassad", "anulad", "revogad").any { it in situation }) return null
+        val sigiloso = item.orcamentoSigiloso == true
+        return com.licitaia.domain.proposal.OfficialTenderItem(
+            number = number,
+            description = item.descricaodetalhada?.trim()?.takeIf { it.isNotEmpty() } ?: item.descricaoResumida?.trim().orEmpty(),
+            quantity = item.quantidade?.takeIf { it > 0 } ?: 1.0,
+            unit = item.unidadeMedida?.trim().orEmpty().ifEmpty { "un" },
+            estimatedUnitPrice = item.valorUnitarioEstimado?.takeIf { it > 0 && !sigiloso },
+            estimatedTotal = item.valorTotal?.takeIf { it > 0 && !sigiloso },
+            confidentialBudget = sigiloso,
+            materialOrService = item.materialOuServicoNome,
+            judgingCriterion = item.criterioJulgamentoNome,
+            benefit = item.tipoBeneficioNome?.trim()?.takeIf { it.isNotEmpty() },
+            situation = item.situacaoCompraItemNome?.trim()?.takeIf { it.isNotEmpty() },
+            category = item.itemCategoriaNome?.trim()?.takeIf { it.isNotEmpty() },
+            catalogName = item.nomePdm?.trim()?.takeIf { it.isNotEmpty() }
+                ?.let { pdm -> "PDM" + (item.codigoPdm?.trim()?.takeIf { it.isNotEmpty() }?.let { " $it" } ?: "") + " — $pdm" },
+            catalogCode = item.codItemCatalogo?.trim()?.takeIf { it.isNotEmpty() },
+            ncmNbsCode = item.codigoNCM?.trim()?.takeIf { it.isNotEmpty() },
+            ncmNbsDescription = item.descricaoNCM?.trim()?.takeIf { it.isNotEmpty() },
+            preferenceMargin = com.licitaia.domain.proposal.OfficialItemFields.preferenceMargin(
+                item.margemPreferenciaNormal, item.percentualMargemPreferenciaNormal,
+                item.margemPreferenciaAdicional, item.percentualMargemPreferenciaAdicional,
+            ),
+            productiveIncentive = item.incentivoProdutivoBasico,
+            includedAt = item.dataInclusaoPncp?.trim()?.takeIf { it.isNotEmpty() },
+            updatedAt = item.dataAtualizacaoPncp?.trim()?.takeIf { it.isNotEmpty() },
+            hasResult = item.temResultado,
+            supplier = item.nomeFornecedor?.trim()?.takeIf { it.isNotEmpty() },
+        )
     }
 
     // ------------------------------------------------------------------ legado (Lei 8.666)

@@ -39,8 +39,10 @@ class PncpEditalSelectorTest {
 
         val request = mock.takeRequest()
         assertEquals("/api/pncp/v1/orgaos/45132495000140/compras/2024/942/arquivos", request.requestUrl!!.encodedPath)
-        assertEquals(1, docs.size) // "Outros Documentos" (orçamento) não são anexos relevantes
-        val main = docs.single()
+        // Todos os documentos ativos entram na base de perguntas; a outra versão do "Edital" (republicação) fica de fora.
+        assertEquals(3, docs.size)
+        assertEquals(listOf("lucindakuhl_orc_dc2_cro_053_23_r04.pdf", "lucindakuhl_orc_dci_po_053_23_r04.pdf"), docs.drop(1).map { it.title })
+        val main = docs.first()
         assertEquals(OfficialDocument.Role.EDITAL, main.role)
         assertEquals("edital.200-24-pre.180-24-seguranca.incendio.pdf", main.title)
         assertEquals("https://pncp.gov.br/pncp-api/v1/orgaos/45132495000140/compras/2024/942/arquivos/2", main.url)
@@ -48,7 +50,7 @@ class PncpEditalSelectorTest {
     }
 
     @Test
-    fun `tipo Edital vence titulo e anexos relevantes vem depois com TR primeiro`() {
+    fun `tipo Edital vence titulo e os demais documentos vem por prioridade com TR primeiro`() {
         val docs = PncpEditalSelector.select(
             listOf(
                 doc(1, "aviso.pdf", 16, "Outros Documentos"),
@@ -58,7 +60,8 @@ class PncpEditalSelectorTest {
                 doc(5, "edital antigo.pdf", 2, "Edital", ativo = false),
             ),
         )
-        assertEquals(listOf("documento_convocatorio.pdf", "tr.pdf", "Anexo I - Planilha.pdf"), docs.map { it.title })
+        assertEquals(listOf("documento_convocatorio.pdf", "tr.pdf", "Anexo I - Planilha.pdf", "aviso.pdf"), docs.map { it.title })
+        assertEquals(4L, docs[1].typeId)
         assertEquals(OfficialDocument.Role.EDITAL, docs[0].role)
         assertTrue(docs.drop(1).all { it.role == OfficialDocument.Role.ANEXO })
     }
@@ -83,9 +86,27 @@ class PncpEditalSelectorTest {
     }
 
     @Test
+    fun `sem tipo Edital nunca escolhe o ETP como principal e o ETP vem depois do TR`() {
+        val docs = PncpEditalSelector.select(
+            listOf(
+                doc(1, "ETP - Estudo Tecnico Preliminar.pdf", 7, "Estudo Técnico Preliminar"),
+                doc(2, "Termo de Referencia.pdf", 16, "Outros Documentos"),
+                doc(3, "Aviso de dispensa.pdf", 16, "Outros Documentos"),
+            ),
+        )
+        assertEquals("Aviso de dispensa.pdf", docs.first().title)
+        assertEquals(listOf("Termo de Referencia.pdf", "ETP - Estudo Tecnico Preliminar.pdf"), docs.drop(1).map { it.title })
+
+        val onlyEtpAndPlanilha = PncpEditalSelector.select(
+            listOf(doc(1, "etp.pdf", 7, "Estudo Técnico Preliminar"), doc(2, "planilha.pdf", 16, "Outros Documentos")),
+        )
+        assertEquals("planilha.pdf", onlyEtpAndPlanilha.first().title)
+    }
+
+    @Test
     fun `limita a quantidade de anexos`() {
         val docs = PncpEditalSelector.select(
-            listOf(doc(1, "edital.pdf", 2, "Edital")) + (2..8).map { doc(it, "anexo $it.pdf", 16, "Outros Documentos") },
+            listOf(doc(1, "edital.pdf", 2, "Edital")) + (2..20).map { doc(it, "anexo $it.pdf", 16, "Outros Documentos") },
         )
         assertEquals(1 + PncpEditalSelector.MAX_ANNEXES, docs.size)
     }

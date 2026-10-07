@@ -5,6 +5,11 @@ import com.licitaia.ai.api.TenderAnalysisRequest
 import com.licitaia.connector.api.ConnectorRegistry
 import com.licitaia.connector.api.OfficialDocument
 import com.licitaia.connector.api.OfficialDocumentSource
+import com.licitaia.core.ai.withAiCompany
+import com.licitaia.domain.edital.EditalDocKind
+import com.licitaia.domain.edital.EditalDocumentBase
+import com.licitaia.domain.edital.EditalSourceDocument
+import kotlinx.coroutines.delay
 import com.licitaia.core.data.edital.EditalDownloadException
 import com.licitaia.core.data.edital.EditalDownloader
 import com.licitaia.domain.model.PncpControlNumbers
@@ -71,6 +76,7 @@ class TenderRepositoryImpl @Inject constructor(
     private val tenderDao: TenderDao,
     private val analysisDao: TenderAnalysisDao,
     private val proposalDao: ProposalDao,
+    private val questionDao: com.licitaia.core.data.db.EditalQuestionDao,
     private val opportunityDao: OpportunityDao,
     private val companyDao: CompanyDao,
     private val documentDao: DocumentDao,
@@ -159,6 +165,8 @@ class TenderRepositoryImpl @Inject constructor(
             access.requireCompany(tender.companyId)
             proposalDao.deleteByTender(tenderId)
             analysisDao.delete(tenderId)
+            // A FK de edital_questions já apaga em cascata; explícito para não depender do PRAGMA foreign_keys.
+            questionDao.deleteByTender(tenderId)
             tenderDao.delete(tenderId)
             runCatching { editalStore.delete(tender.companyId, tenderId) }
             audit.record(
@@ -286,7 +294,10 @@ class TenderRepositoryImpl @Inject constructor(
         return job.await()
     }
 
-    /** Resolve o edital oficial na lista de arquivos do PNCP e o baixa (com anexos relevantes) pelo fluxo [EditalSource.Remote]. */
+    /**
+     * Lista TODOS os arquivos da contratação no PNCP e monta a base de documentos (edital, TR, anexos, ETP...) usada pelo
+     * "Pergunte ao edital" e pela análise — ver [buildDocumentBase].
+     */
     private suspend fun doFetchOfficialEdital(tenderId: Long): Result<EditalImportResult> {
         val entity = tenderDao.getById(tenderId)
             ?: return Result.failure(IllegalArgumentException("Licitação não encontrada."))
@@ -308,8 +319,8 @@ class TenderRepositoryImpl @Inject constructor(
             } catch (e: Exception) {
                 throw EditalDownloadException(e.message?.takeIf(String::isNotBlank) ?: "Falha ao consultar os arquivos da contratação no PNCP.", e)
             }
-            if (listed.none { it.role == OfficialDocument.Role.EDITAL }) {
-                throw IllegalStateException("O PNCP não tem o arquivo do edital publicado para esta contratação.")
+            if (listed.isEmpty()) {
+                throw IllegalStateException("O PNCP não tem arquivos publicados para esta contratação (edital, termo de referência ou anexos).")
             }
             listed
         } catch (e: CancellationException) {
@@ -323,8 +334,125 @@ class TenderRepositoryImpl @Inject constructor(
             }
             return Result.failure(error)
         }
-        val main = documents.first { it.role == OfficialDocument.Role.EDITAL }
-        return doAttachEdital(tenderId, EditalSource.Remote(main.url), annexes = documents.filter { it.role == OfficialDocument.Role.ANEXO })
+        return buildDocumentBase(tender, documents)
+    }
+
+    /**
+     * Baixa os documentos (principal primeiro, guardado como o PDF do edital; os demais em arquivo temporário), extrai o
+     * texto página a página (OCR local quando escaneado, com limite de páginas) e grava UM texto com os marcadores
+     * `=== DOCUMENTO: <tipo — título> (página N) ===` na ordem Edital → TR → Anexos → Minuta → ETP → outros.
+     * Limites: [EditalDocumentBase.MAX_DOCUMENTS] documentos, [MAX_BASE_BYTES] baixados, [EditalDocumentBase.MAX_PAGES_PER_DOC]
+     * páginas por documento, [MAX_OCR_PAGES_TOTAL] páginas de OCR; [DOC_SPACING_MS] entre downloads (não sobrecarrega o PNCP).
+     * Falha num documento não derruba os demais: ele só fica de fora (citado na auditoria).
+     */
+    private suspend fun buildDocumentBase(tender: Tender, documents: List<OfficialDocument>): Result<EditalImportResult> {
+        val tenderId = tender.id
+        return try {
+            access.requireCompany(tender.companyId, Permission.ANALISAR)
+            val mainPdf = editalStore.pdfFile(tender.companyId, tenderId)
+            val temp = File(editalStore.directory(tender.companyId), "$tenderId.doc.pdf")
+            val sources = mutableListOf<EditalSourceDocument>()
+            val skipped = mutableListOf<String>()
+            var downloadedBytes = 0L
+            var ocrPages = 0
+            var mainPages: Int? = null
+            var mainOk = false
+            val list = documents.take(EditalDocumentBase.MAX_DOCUMENTS)
+            for ((index, doc) in list.withIndex()) {
+                val isMain = index == 0
+                val kind = EditalDocumentBase.classify(doc.title, doc.typeName, doc.typeId)
+                    .let { if (isMain && doc.role == OfficialDocument.Role.EDITAL && it == EditalDocKind.OUTRO) EditalDocKind.EDITAL else it }
+                if (downloadedBytes >= MAX_BASE_BYTES) {
+                    skipped += "${doc.title} (limite total de download)"
+                    continue
+                }
+                if (index > 0) delay(DOC_SPACING_MS)
+                val file = if (isMain) mainPdf else temp
+                try {
+                    publishProgress(tenderId, EditalImportProgress.Stage.BAIXANDO, index + 1, list.size)
+                    editalDownloader.download(doc.url, file)
+                    downloadedBytes += file.length()
+                    publishProgress(tenderId, EditalImportProgress.Stage.EXTRAINDO, index + 1, list.size)
+                    val extraction = pdfExtractor.extract(file, maxPages = EditalDocumentBase.MAX_PAGES_PER_DOC)
+                    var pages = extraction.pageTexts.map(EditalTextPreparer::normalize)
+                    var ocr = false
+                    if (EditalOcrSupport.needsOcr(extraction.scanned, pages.sumOf { EditalOcrSupport.meaningfulChars(it) })) {
+                        val allowance = minOf(OCR_PAGES_PER_DOC, MAX_OCR_PAGES_TOTAL - ocrPages)
+                        pages = emptyList()
+                        if (allowance <= 0 || (!isMain && kind.priority > EditalDocKind.ANEXO.priority)) {
+                            skipped += "${doc.title} (escaneado; OCR não executado para economizar tempo)"
+                        } else {
+                            val result = pdfOcrEngine.recognize(file, maxPages = allowance) { done, total ->
+                                publishProgress(tenderId, EditalImportProgress.Stage.OCR, done, total)
+                            }
+                            ocrPages += result.pagesProcessed
+                            if (result.usable) {
+                                pages = result.pageTexts.map(EditalTextPreparer::normalize)
+                                ocr = true
+                            } else {
+                                skipped += "${doc.title} (OCR sem texto legível)"
+                            }
+                        }
+                    }
+                    if (isMain) {
+                        mainPages = extraction.totalPages
+                        mainOk = true
+                    }
+                    if (pages.isNotEmpty()) sources += EditalSourceDocument(doc.title, kind, pages, extraction.totalPages, ocr)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    skipped += "${doc.title} (${e.message?.takeIf(String::isNotBlank) ?: "falha"})"
+                } finally {
+                    if (!isMain) temp.delete()
+                }
+            }
+            val base = EditalDocumentBase.build(sources, maxChars = minOf(EditalDocumentBase.DEFAULT_MAX_CHARS, PdfTextExtractor.HARD_CHAR_LIMIT))
+            val allSkipped = (skipped + base.skipped).distinct()
+            if (base.text.isBlank()) {
+                throw PdfExtractionException(
+                    "Nenhum documento publicado no PNCP tinha texto legível" +
+                        (if (allSkipped.isNotEmpty()) " (${allSkipped.joinToString("; ")})" else "") +
+                        ". Importe o PDF do edital ou cole o texto na tela da licitação.",
+                )
+            }
+            val anyOcr = base.documents.any { it.ocr }
+            val textFile = editalStore.writeText(tender.companyId, tenderId, base.text)
+            tenderDao.updateEdital(
+                id = tenderId,
+                pdfPath = mainPdf.takeIf { mainOk && it.exists() }?.absolutePath ?: tender.editalPdfPath,
+                textPath = textFile.absolutePath, chars = base.text.length,
+                pages = mainPages ?: tender.editalPages, scanned = anyOcr, registered = true, now = System.currentTimeMillis(),
+            )
+            audit.record(
+                AuditAction.GERACAO_DOCUMENTO, portal = tender.portal, tenderNumber = tender.number,
+                newValue = "${base.documents.size} documento(s) · ${base.text.length} caractere(s)",
+                details = "Base de documentos do PNCP montada: " +
+                    base.documents.joinToString("; ") { "${it.displayName} (${it.pagesIncluded} pág.${if (it.ocr) ", OCR" else ""}${if (it.truncated) ", cortado" else ""})" } +
+                    (if (allSkipped.isNotEmpty()) "; fora da base: ${allSkipped.joinToString("; ")}" else ""),
+            )
+            Result.success(
+                EditalImportResult(
+                    chars = base.text.length, pages = mainPages, scanned = anyOcr,
+                    storedPath = mainPdf.takeIf { mainOk }?.absolutePath ?: tender.editalPdfPath ?: textFile.absolutePath, ocr = anyOcr,
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (error: Exception) {
+            runCatching {
+                audit.record(
+                    AuditAction.GERACAO_DOCUMENTO, result = AuditResult.FALHA, portal = tender.portal, tenderNumber = tender.number,
+                    reason = error.message, details = "Falha ao montar a base de documentos do PNCP",
+                )
+            }
+            Result.failure(
+                when (error) {
+                    is PdfExtractionException, is IOException, is IllegalArgumentException, is IllegalStateException -> error
+                    else -> IllegalStateException(error.message ?: "Não foi possível baixar os documentos.", error)
+                },
+            )
+        }
     }
 
     private fun publishProgress(tenderId: Long, stage: EditalImportProgress.Stage, page: Int = 0, total: Int = 0) {
@@ -588,10 +716,11 @@ class TenderRepositoryImpl @Inject constructor(
         val documents = documentDao.getByCompany(tender.companyId).map { it.toDomain() }
         val request = TenderAnalysisRequest(tender, company, documents, editalText, now)
 
-        val provider = gateway.current()
+        // Credenciais/preferência da empresa DA LICITAÇÃO, mesmo sem sessão aberta (análise retomada na abertura do app).
+        val provider = withAiCompany(tender.companyId) { gateway.current() }
         val heuristic = provider.type == AiProviderType.MOCK
         val outcome = try {
-            Result.success(provider.analyzeTender(request))
+            Result.success(withAiCompany(tender.companyId) { provider.analyzeTender(request) })
         } catch (e: CancellationException) {
             if (earlyStage) runCatching { tenderDao.updateStatus(tenderId, previousStatus, System.currentTimeMillis()) }
             throw e
@@ -670,5 +799,12 @@ class TenderRepositoryImpl @Inject constructor(
         // ~50 mil tokens: cabe com folga nos modelos atuais (GPT, Claude, Gemini) e cobre editais completos com TR.
         const val MAX_PROMPT_CHARS = 200_000
         const val MIN_PASTED_CHARS = 200
+        /** Teto do que é baixado por licitação ao montar a base de documentos. */
+        const val MAX_BASE_BYTES = 120L * 1024 * 1024
+        /** OCR (lento) por documento escaneado e no total da base. */
+        const val OCR_PAGES_PER_DOC = 40
+        const val MAX_OCR_PAGES_TOTAL = 80
+        /** Espaçamento entre downloads de arquivos do PNCP. */
+        const val DOC_SPACING_MS = 400L
     }
 }

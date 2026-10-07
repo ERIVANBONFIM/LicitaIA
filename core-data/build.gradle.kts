@@ -39,4 +39,6 @@ dependencies {
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // SQLite real na JVM para validar a migração 12→13 e o ON DELETE CASCADE (mesma versão usada pelo room-compiler).
+    testImplementation("org.xerial:sqlite-jdbc:3.41.2.2")
 }

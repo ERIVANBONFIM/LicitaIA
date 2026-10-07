@@ -53,6 +53,9 @@ class AiRelevanceScorerTest {
         override suspend fun deleteByCompany(companyId: Long) {
             rows.values.removeAll { it.companyId == companyId }
         }
+        override suspend fun deleteForOpportunities(ids: List<String>) {
+            rows.values.removeAll { it.opportunityId in ids }
+        }
     }
 
     private fun scored(i: Int, score: Int = 72) = ScoredOpportunity(

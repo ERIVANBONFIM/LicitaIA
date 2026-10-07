@@ -66,6 +66,8 @@ data class AiSettingsUiState(
     val editDeviceDefault: Boolean = false,
     val configs: List<AiConfig> = emptyList(),
     val active: AiProviderType = AiProviderType.MOCK,
+    /** Provedor efetivamente usado em todo o app agora (MOCK = nenhum provedor real disponível). */
+    val effective: AiProviderType = AiProviderType.MOCK,
     val tests: Map<AiProviderType, TestState> = emptyMap(),
     val saving: Set<AiProviderType> = emptySet(),
     val oauth: Map<AiProviderType, OAuthFlowState> = emptyMap(),
@@ -111,9 +113,11 @@ class AiSettingsViewModel @Inject constructor(
 
     private val sessionConfigs = combine(auth.session, configs, aiConfig.observeActive()) { session, configs, active -> Triple(session, configs, active) }
 
+    private val effective = aiConfig.observeEffective().catch { emit(AiProviderType.MOCK) }
+
     val state: StateFlow<AiSettingsUiState> = combine(
-        sessionConfigs, local, chatGpt.state,
-    ) { (session, configs, active), l, login ->
+        sessionConfigs, local, chatGpt.state, effective,
+    ) { (session, configs, active), l, login, inUse ->
         if (session == null) {
             AiSettingsUiState(loading = false, noSession = true)
         } else {
@@ -125,7 +129,7 @@ class AiSettingsViewModel @Inject constructor(
                 demo = demo,
                 companyId = session.activeCompany.id,
                 companyName = session.activeCompany.tradeName.ifBlank { session.activeCompany.name },
-                configs = configs, active = active,
+                configs = configs, active = active, effective = inUse,
                 chatGptLogin = login,
             )
         }
@@ -205,13 +209,24 @@ class AiSettingsViewModel @Inject constructor(
                     }
                 }
                 local.update { it.copy(chatGptAccount = login.account, chatGptModels = login.models.take(40)) }
-                _events.send("ChatGPT conectado: $account")
+                adoptAsActiveIfNone(AiProviderType.OPENAI, s)
+                _events.send("ChatGPT conectado: $account — usado em todo o app")
             }
             .onFailure {
                 runCatching { chatGpt.revoke(login.companyId) }
                 setOAuth(AiProviderType.OPENAI, OAuthFlowState.Error(it.message ?: "Não foi possível registrar a conta ChatGPT."))
             }
         chatGpt.acknowledge()
+    }
+
+    /**
+     * Ao conectar uma conta/chave, se o provedor global ainda for o de demonstração (ou um sem credencial), passa a
+     * ser este: assim Configurações mostra o mesmo provedor que o app inteiro usa.
+     */
+    private suspend fun adoptAsActiveIfNone(provider: AiProviderType, s: AiSettingsUiState) {
+        if (s.active == provider) return
+        if (s.active != AiProviderType.MOCK && s.config(s.active).isConfigured) return
+        runCatching { aiConfig.setActive(provider) }
     }
 
     /** Escopo das credenciais OAuth no cofre: 0 = padrão do aparelho; senão a empresa ativa. */
@@ -276,6 +291,7 @@ class AiSettingsViewModel @Inject constructor(
             val scopeLabel = if (s.editDeviceDefault) "padrão do aparelho" else s.companyName
             runCatching { aiConfig.saveConfig(provider, trimmedModel, trimmedUrl, key, project, deviceDefault = s.editDeviceDefault) }
                 .onSuccess {
+                    if (key != null) adoptAsActiveIfNone(provider, s)
                     _events.send("${provider.label}: configuração salva ($scopeLabel)" + if (key != null) " e chave cifrada no Keystore" else "")
                 }
                 .onFailure { _events.send(it.message ?: "Não foi possível salvar a configuração") }
@@ -361,6 +377,7 @@ class AiSettingsViewModel @Inject constructor(
                 runCatching { aiConfig.saveOAuth(provider, account, project, deviceDefault = state.value.editDeviceDefault) }
                     .onSuccess {
                         setOAuth(provider, OAuthFlowState.Idle)
+                        adoptAsActiveIfNone(provider, state.value)
                         _events.send("${provider.label}: conta $account autorizada")
                     }
                     .onFailure {

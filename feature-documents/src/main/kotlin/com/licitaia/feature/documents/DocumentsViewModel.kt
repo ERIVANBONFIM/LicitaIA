@@ -2,6 +2,7 @@ package com.licitaia.feature.documents
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.domain.documents.DocumentValidity
 import com.licitaia.domain.model.CompanyDocument
 import com.licitaia.domain.model.DocumentStatus
 import com.licitaia.domain.model.DocumentType
@@ -10,7 +11,9 @@ import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.DocumentRepository
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
+import com.licitaia.feature.documents.files.DocumentFileStore
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,7 +74,10 @@ private data class Filters(val status: DocumentStatus? = null, val type: Documen
 class DocumentsViewModel @Inject constructor(
     auth: AuthRepository,
     private val documents: DocumentRepository,
+    private val files: DocumentFileStore,
 ) : ViewModel() {
+
+    private val swept = mutableSetOf<Long>()
 
     private val filters = MutableStateFlow(Filters())
     private val retry = MutableStateFlow(0)
@@ -81,10 +87,16 @@ class DocumentsViewModel @Inject constructor(
             if (session == null) {
                 flowOf(DocumentsUiState(loading = false, noSession = true))
             } else {
-                val base: Flow<DocumentsUiState> = documents.observeDocuments(session.activeCompany.id).map { list ->
+                val companyId = session.activeCompany.id
+                val base: Flow<DocumentsUiState> = documents.observeDocuments(companyId).map { list ->
                     val now = System.currentTimeMillis()
-                    val rows = list.map { DocumentRow(it, it.status(now), it.daysToExpire(now)) }
-                        .sortedWith(compareBy({ statusOrder(it.status) }, { it.daysToExpire ?: Long.MAX_VALUE }))
+                    if (swept.add(companyId)) {
+                        // Limpeza leve de anexos de edições abandonadas (só a pasta desta empresa).
+                        viewModelScope.launch { runCatching { files.sweepOrphans(companyId, list.map { it.attachmentUri }) } }
+                    }
+                    // Vencidos, vencendo (mais próximo primeiro), ausentes, válidos por vencimento, sem validade por último.
+                    val rows = list.sortedWith(compareBy({ DocumentValidity.sortKey(it, now).first }, { DocumentValidity.sortKey(it, now).second }))
+                        .map { DocumentRow(it, it.status(now), it.daysToExpire(now)) }
                     val present = list.map { it.type }.toSet()
                     DocumentsUiState(
                         loading = false,
@@ -110,11 +122,4 @@ class DocumentsViewModel @Inject constructor(
     fun setStatusFilter(status: DocumentStatus?) = filters.update { it.copy(status = status) }
     fun setTypeFilter(type: DocumentType?) = filters.update { it.copy(type = type) }
     fun retry() = retry.update { it + 1 }
-
-    private fun statusOrder(status: DocumentStatus) = when (status) {
-        DocumentStatus.VENCIDO -> 0
-        DocumentStatus.VENCE_EM_BREVE -> 1
-        DocumentStatus.AUSENTE -> 2
-        DocumentStatus.VALIDO -> 3
-    }
 }

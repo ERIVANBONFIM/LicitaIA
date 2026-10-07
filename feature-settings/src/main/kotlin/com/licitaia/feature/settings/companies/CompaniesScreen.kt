@@ -86,7 +86,9 @@ import com.licitaia.domain.model.UserProfile
 import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
+import com.licitaia.domain.util.BrDocuments
 import com.licitaia.domain.util.Formatters
+import com.licitaia.domain.util.missingProposalData
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -239,6 +241,12 @@ private fun CompanyCard(
             StatusBadge("${company.city}/${company.uf}", Tone.NEUTRAL)
             StatusBadge("IA: ${company.preferredAi?.label?.substringBefore(" /")?.substringBefore(" (") ?: "global"}", Tone.NEUTRAL)
         }
+        company.missingProposalData().takeIf { it.isNotEmpty() && canManage }?.let { missing ->
+            Text(
+                "Para o PDF da proposta, complete: ${missing.joinToString(" e ")}.",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow, modifier = Modifier.padding(top = 6.dp),
+            )
+        }
         if (!isActive) {
             Spacer(Modifier.height(10.dp))
             SecondaryButton(
@@ -388,12 +396,52 @@ private fun CompanyEditor(form: CompanyForm, viewModel: CompaniesViewModel) {
             value = form.city, onValueChange = { v -> viewModel.updateCompanyForm { it.copy(city = v.take(80)) } },
             label = { Text("Cidade") }, singleLine = true, isError = form.errors.containsKey("city"),
             supportingText = form.errors["city"]?.let { { Text(it) } }, enabled = !form.busy,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done), modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next), modifier = Modifier.fillMaxWidth(),
         )
         Text("IA preferida", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SelectChip("Provedor global", form.preferredAi == null, { viewModel.updateCompanyForm { it.copy(preferredAi = null) } })
-            AiProviderType.entries.forEach { p -> SelectChip(p.label, form.preferredAi == p, { viewModel.updateCompanyForm { it.copy(preferredAi = p) } }, color = LicitaColors.Purple) }
+            AiProviderType.entries.filter { it != AiProviderType.MOCK }.forEach { p -> SelectChip(p.label, form.preferredAi == p, { viewModel.updateCompanyForm { it.copy(preferredAi = p) } }, color = LicitaColors.Purple) }
+        }
+
+        // Dados que saem na proposta comercial em PDF (opcionais; campos vazios não aparecem no documento).
+        FormSection("Endereço", "Sai no cabeçalho e na qualificação da proponente no PDF da proposta.")
+        FormField(form, "Logradouro e número", form.street, { v -> viewModel.updateCompanyForm { it.copy(street = v.take(150)) } }, capitalization = KeyboardCapitalization.Words)
+        FormField(form, "Complemento", form.complement, { v -> viewModel.updateCompanyForm { it.copy(complement = v.take(80)) } }, capitalization = KeyboardCapitalization.Sentences)
+        FormField(form, "Bairro", form.district, { v -> viewModel.updateCompanyForm { it.copy(district = v.take(80)) } }, capitalization = KeyboardCapitalization.Words)
+        FormField(
+            form, "CEP", form.zipDigits, { v -> viewModel.updateCompanyForm { it.copy(zipDigits = v.filter { c -> c.isDigit() }.take(8)) } },
+            errorKey = "zip", keyboardType = KeyboardType.Number, mask = CepMask,
+            hint = "Cidade/UF: ${listOf(form.city.trim(), form.uf).filter { it.isNotEmpty() }.joinToString("/")}",
+        )
+
+        FormSection("Contato")
+        FormField(
+            form, "Telefone com DDD", form.phoneDigits, { v -> viewModel.updateCompanyForm { it.copy(phoneDigits = v.filter { c -> c.isDigit() }.take(11)) } },
+            errorKey = "phone", keyboardType = KeyboardType.Phone, mask = PhoneMask,
+        )
+        FormField(form, "E-mail", form.email, { v -> viewModel.updateCompanyForm { it.copy(email = v.trim().take(120)) } }, errorKey = "email", keyboardType = KeyboardType.Email)
+
+        FormSection("Representante legal", "Assina a proposta: nome, CPF e cargo saem no bloco de assinatura.")
+        FormField(form, "Nome completo", form.legalRepName, { v -> viewModel.updateCompanyForm { it.copy(legalRepName = v.take(120)) } }, capitalization = KeyboardCapitalization.Words)
+        FormField(
+            form, "CPF", form.legalRepCpfDigits, { v -> viewModel.updateCompanyForm { it.copy(legalRepCpfDigits = v.filter { c -> c.isDigit() }.take(11)) } },
+            errorKey = "cpf", keyboardType = KeyboardType.Number, mask = CpfMask,
+            hint = when {
+                form.legalRepCpfDigits.isEmpty() -> null
+                form.legalRepCpfDigits.length < 11 -> "${form.legalRepCpfDigits.length}/11 dígitos"
+                BrDocuments.isValidCpf(form.legalRepCpfDigits) -> "CPF com dígitos verificadores válidos"
+                else -> "Atenção: dígitos verificadores não conferem"
+            },
+        )
+        FormField(form, "Cargo", form.legalRepRole, { v -> viewModel.updateCompanyForm { it.copy(legalRepRole = v.take(80)) } }, capitalization = KeyboardCapitalization.Sentences)
+
+        FormSection("Dados bancários (opcional)", "Para pagamento: aparecem na proposta somente se preenchidos.")
+        FormField(form, "Banco", form.bankName, { v -> viewModel.updateCompanyForm { it.copy(bankName = v.take(80)) } }, capitalization = KeyboardCapitalization.Words)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Texto livre: agência/conta podem ter dígito verificador com hífen ou "X".
+            FormField(form, "Agência", form.bankAgency, { v -> viewModel.updateCompanyForm { it.copy(bankAgency = v.take(12)) } }, Modifier.weight(1f))
+            FormField(form, "Conta", form.bankAccount, { v -> viewModel.updateCompanyForm { it.copy(bankAccount = v.take(20)) } }, Modifier.weight(1f), imeAction = ImeAction.Done)
         }
         Spacer(Modifier.height(4.dp))
         ButtonRow {
@@ -456,6 +504,81 @@ private fun UserEditor(form: UserForm, companies: List<Company>, viewModel: Comp
             SecondaryButton("Cancelar", viewModel::dismissUserForm, Modifier.weight(1f), enabled = !form.busy, tone = Tone.NEUTRAL)
             PrimaryButton(if (form.isNew) "Criar usuário" else "Salvar", viewModel::saveUser, Modifier.weight(1f), loading = form.busy)
         }
+    }
+}
+
+@Composable
+private fun FormSection(title: String, hint: String? = null) {
+    Spacer(Modifier.height(6.dp))
+    Text(title, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+    hint?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+}
+
+/** Campo de texto do editor da empresa: erro por [errorKey] (prioritário) ou [hint] no texto de apoio. */
+@Composable
+private fun FormField(
+    form: CompanyForm,
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    errorKey: String? = null,
+    hint: String? = null,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    capitalization: KeyboardCapitalization = KeyboardCapitalization.None,
+    imeAction: ImeAction = ImeAction.Next,
+    mask: VisualTransformation = VisualTransformation.None,
+) {
+    val error = errorKey?.let { form.errors[it] }
+    OutlinedTextField(
+        value = value, onValueChange = onValueChange, label = { Text(label) }, singleLine = true, enabled = !form.busy,
+        isError = error != null, visualTransformation = mask,
+        supportingText = (error ?: hint)?.let { { Text(it) } },
+        keyboardOptions = KeyboardOptions(capitalization = capitalization, keyboardType = keyboardType, imeAction = imeAction),
+        modifier = modifier,
+    )
+}
+
+private val CepMask = DigitMaskTransformation { "#####-###" }
+private val CpfMask = DigitMaskTransformation { "###.###.###-##" }
+/** Fixo (DD) ####-#### até 10 dígitos; celular (DD) #####-#### com 11. */
+private val PhoneMask = DigitMaskTransformation { length -> if (length <= 10) "(##) ####-####" else "(##) #####-####" }
+
+/**
+ * Máscara de exibição sobre um texto só de dígitos: cada `#` de [maskFor] (escolhida pelo nº de dígitos) recebe um
+ * dígito; os separadores só aparecem até o último dígito digitado. O valor guardado continua só com dígitos.
+ */
+internal class DigitMaskTransformation(private val maskFor: (Int) -> String) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val (out, positions) = apply(text.text)
+        val mapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int = positions[offset.coerceIn(0, positions.lastIndex)]
+            override fun transformedToOriginal(offset: Int): Int {
+                val o = offset.coerceIn(0, out.length)
+                return (0 until positions.lastIndex).count { positions[it] < o }
+            }
+        }
+        return TransformedText(AnnotatedString(out), mapping)
+    }
+
+    /** Texto mascarado e, para cada offset original (0..n), a posição correspondente no texto mascarado. */
+    fun apply(digits: String): Pair<String, IntArray> {
+        val mask = maskFor(digits.length)
+        val out = StringBuilder()
+        val positions = IntArray(digits.length + 1)
+        var i = 0
+        for (m in mask) {
+            if (i >= digits.length) break
+            if (m == '#') {
+                positions[i] = out.length
+                out.append(digits[i++])
+            } else {
+                out.append(m)
+            }
+        }
+        while (i < digits.length) { positions[i] = out.length; out.append(digits[i++]) }
+        positions[digits.length] = out.length
+        return out.toString() to positions
     }
 }
 

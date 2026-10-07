@@ -38,6 +38,13 @@ interface AIProvider {
      */
     suspend fun rateRelevance(company: Company, radarHint: String, items: List<RelevanceItem>): List<RelevanceScore> = emptyList()
 
+    /**
+     * "Pergunte ao edital": responde em texto livre a [EditalQuestionRequest.prompt] (já com o edital/recorte e as
+     * instruções de [EditalQuestionRequest.system]). Erros sobem como [AiProviderException]. Padrão: não suportado.
+     */
+    suspend fun askEdital(request: EditalQuestionRequest): EditalAnswer =
+        throw AiProviderException("$displayName não responde perguntas sobre o edital.")
+
     companion object {
         const val MAX_RELEVANCE_BATCH = 25
     }
@@ -56,6 +63,20 @@ data class RelevanceScore(
     val id: String,
     val score: Int,
     val reason: String,
+)
+
+/** Pergunta ao edital já montada (ver `EditalQuestionPrompt`); [editalExcerpt] é o texto/recorte enviado. */
+data class EditalQuestionRequest(
+    val system: String,
+    val prompt: String,
+    val question: String,
+    val editalExcerpt: String,
+)
+
+/** Resposta em texto (com as linhas "Fonte: ...") e o modelo que respondeu, quando conhecido. */
+data class EditalAnswer(
+    val text: String,
+    val model: String? = null,
 )
 
 data class TenderAnalysisRequest(
@@ -96,10 +117,12 @@ data class DocumentComparison(
 class AiProviderException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
- * Resolve o provedor ativo (empresa → global). Sem chave configurada, SEMPRE cai no mock,
- * de modo que o app funcione sem nenhuma credencial.
+ * Resolve o provedor ativo de todo o app (empresa explícita → global → qualquer conta/chave configurada).
+ * Sem nenhuma credencial, cai no mock (heurística local), de modo que o app funcione sem IA real.
  */
 interface AiGateway {
     suspend fun current(): AIProvider
     fun provider(type: AiProviderType): AIProvider
+    /** Tipo do provedor que [current] usaria agora (MOCK = nenhum provedor real disponível). */
+    suspend fun activeType(): AiProviderType = current().type
 }

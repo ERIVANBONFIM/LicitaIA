@@ -383,7 +383,7 @@ class LiveSessionManagerImpl @Inject constructor(
             if (restored) {
                 log(BidEventType.SESSION_OPENED, "Acompanhamento restaurado. Cronômetro parado; registre os lances atuais do portal para atualizar a telemetria.")
             } else {
-                log(BidEventType.SESSION_OPENED, "Acompanhamento assistido iniciado por ${currentUserName()}. Nenhum lance é enviado pelo app: opere no portal e registre aqui.", actor = currentUserName())
+                log(BidEventType.SESSION_OPENED, "Acompanhamento assistido iniciado por ${currentUserName()}. Lances só são enviados pelo robô de lance quando armado por você; no modo manual, opere no portal e registre aqui.", actor = currentUserName())
                 auditRecord(AuditAction.CADASTRO, details = "Sessão assistida criada — piso ${Formatters.brl(state.rule.floorPrice)}, custo ${Formatters.brl(state.rule.costPrice)}")
             }
         }

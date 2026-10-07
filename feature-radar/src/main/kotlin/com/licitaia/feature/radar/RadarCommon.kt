@@ -1,4 +1,4 @@
-﻿package com.licitaia.feature.radar
+package com.licitaia.feature.radar
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -6,7 +6,10 @@ import androidx.lifecycle.viewModelScope
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.domain.model.AiScoreUpdate
 import com.licitaia.domain.model.AiScoringRequest
+import com.licitaia.domain.model.LowAdherence
+import com.licitaia.domain.model.ProposalWindows
 import com.licitaia.domain.model.ScoredOpportunity
+import com.licitaia.domain.model.SectionedOpportunities
 import com.licitaia.domain.model.SearchOutcome
 import com.licitaia.domain.scoring.AiScoreMerge
 import com.licitaia.domain.network.ConnectivityMonitor
@@ -16,8 +19,16 @@ import com.licitaia.domain.security.Permission
 import com.licitaia.domain.security.Rbac
 import java.util.Calendar
 import java.util.TimeZone
+import com.licitaia.domain.sync.DailySyncRepository
+import com.licitaia.domain.sync.DailySyncSchedule
+import com.licitaia.domain.sync.DailySyncSettings
+import com.licitaia.domain.sync.DailySyncStatus
+import com.licitaia.domain.sync.ForegroundListingRefresh
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.Flow
@@ -100,9 +111,33 @@ data class OpportunityListState(
     val aiRated: Int = 0,
     /** A IA parou (sem rede/erro): os itens restantes ficam com a nota heurística. */
     val aiFailure: String? = null,
+    /** [items] agrupados nas seções fixas Hoje → Próximos dias → Vão abrir (pelo relógio da última atualização). */
+    val sections: List<SectionedOpportunities> = emptyList(),
+    /** Andamento da sincronização das fontes ("Sincronizando Compras.gov.br… 4.500 linhas"); null sem sincronização. */
+    val syncLabel: String? = null,
+    /** O último resultado é PARCIAL (varredura completa em andamento): refeito automaticamente ao terminar. */
+    val partialSync: Boolean = false,
+    /** Causa real da lista vazia (sincronizando, nada casou, tudo oculto, abaixo do score). */
+    val emptyReason: String? = null,
+    /** Atualização pedida pelo usuário (puxar/botão): só ela mostra o indicador grande do pull-to-refresh. */
+    val userRefreshing: Boolean = false,
+    /** Itens de baixa aderência (nota < [com.licitaia.domain.model.LowAdherence.THRESHOLD]) ocultos (só na Busca). */
+    val hiddenLow: List<ScoredOpportunity> = emptyList(),
+    /** "Mostrar baixa aderência" ligado. */
+    val showLowAdherence: Boolean = false,
+    /**
+     * Linha da atualização diária: "Atualizado hoje às 05:30 · Próxima atualização automática: amanhã 05:30" (null sem
+     * atualização diária nesta tela).
+     */
+    val scheduleLine: String? = null,
+    /** A lista atual veio só do que está salvo no aparelho (abertura da tela), sem consultar as fontes. */
+    val fromSnapshot: Boolean = false,
 ) {
     /** Há itens aguardando a nota por IA. */
     val aiPending: Boolean get() = aiTotal > 0 && aiRated < aiTotal && aiFailure == null
+
+    /** Todos os itens (visíveis + baixa aderência ocultos) — base das mesclagens de nota. */
+    val allItems: List<ScoredOpportunity> get() = if (hiddenLow.isEmpty()) items else items + hiddenLow
 }
 
 /** Base das telas que listam oportunidades (busca e resultados de radar). */
@@ -122,10 +157,44 @@ abstract class OpportunityListViewModel(
     private var loadJob: Job? = null
     private var aiJob: Job? = null
 
-    protected abstract suspend fun fetch(companyId: Long): Result<SearchOutcome>
+    /**
+     * [cacheOnly] = abertura da tela/atualização diária concluída: só o que já está salvo no aparelho (sem consultar as
+     * fontes). false = puxar para atualizar/botão/busca digitada: consulta as fontes (incremental leve).
+     */
+    protected abstract suspend fun fetch(companyId: Long, cacheOnly: Boolean): Result<SearchOutcome>
 
     /** Notas por IA para os candidatos da última consulta (padrão: nenhuma). */
     protected open fun aiScores(request: AiScoringRequest): Flow<AiScoreUpdate> = emptyFlow()
+
+    /** Andamento da sincronização das fontes (padrão: nenhum). */
+    protected open fun sourceSync(): Flow<String?> = emptyFlow()
+
+    /** Atualização diária (05:30): configuração e estado; null = tela sem atualização diária. */
+    protected open val dailySync: DailySyncRepository? get() = null
+
+    /** Último [DailySyncStatus.lastCompletedAt] visto (a lista é relida do cache quando ele avança). */
+    private var lastDailyCompletedAt: Long? = null
+    private var dailySeen = false
+    private var dailySettings: DailySyncSettings = DailySyncSettings()
+    private var dailyStatus: DailySyncStatus = DailySyncStatus()
+
+    /**
+     * Nota abaixo da qual os itens ficam ocultos por padrão (null = sem filtro; os radares usam o próprio score mínimo).
+     */
+    protected open val lowAdherenceThreshold: Int? get() = null
+
+    /** Liga/desliga "Mostrar baixa aderência" (reagrupa a lista atual, sem nova consulta). */
+    fun setShowLowAdherence(show: Boolean) {
+        if (_list.value.showLowAdherence == show) return
+        viewModelScope.launch {
+            val base = _list.value
+            val g = grouped(base.allItems, show)
+            _list.update { state ->
+                val r = if (state.items === base.items && state.hiddenLow === base.hiddenLow) g else group(state.allItems, show)
+                state.copy(showLowAdherence = show, items = r.items, sections = r.sections, hiddenLow = r.hiddenLow)
+            }
+        }
+    }
 
     /**
      * Pede as notas por IA SEM bloquear a lista: os resultados heurísticos já estão visíveis e cada lote recebido
@@ -137,9 +206,14 @@ abstract class OpportunityListViewModel(
         aiJob = viewModelScope.launch {
             try {
                 aiScores(request).collect { update ->
+                    // Mescla/ordena fora da main thread; se a lista mudou nesse meio-tempo, refaz sobre a atual.
+                    val base = _list.value
+                    val merged = grouped(AiScoreMerge.merge(base.allItems, update.rated, request.minScore), base.showLowAdherence)
                     _list.update { state ->
+                        val g = if (state.items === base.items && state.hiddenLow === base.hiddenLow && state.showLowAdherence == base.showLowAdherence) merged
+                        else group(AiScoreMerge.merge(state.allItems, update.rated, request.minScore), state.showLowAdherence)
                         state.copy(
-                            items = AiScoreMerge.merge(state.items, update.rated, request.minScore),
+                            items = g.items, sections = g.sections, hiddenLow = g.hiddenLow,
                             aiRated = (state.aiRated + update.rated.size).coerceAtMost(state.aiTotal),
                             aiFailure = update.failure ?: state.aiFailure,
                         )
@@ -159,86 +233,164 @@ abstract class OpportunityListViewModel(
      */
     protected fun start() {
         viewModelScope.launch {
-            auth.session.map { it?.activeCompany?.id }.distinctUntilChanged().collect { reload() }
+            // Abrir a tela / trocar de empresa: mostra na hora o que já está salvo (sem baixar tudo de novo).
+            auth.session.map { it?.activeCompany?.id }.distinctUntilChanged().collect { load(silent = false, cacheOnly = true) }
+        }
+        dailySync?.let { daily ->
+            // Recuperação (a das 05:30 não rodou) e limpeza do dia, em segundo plano, sem bloquear a tela.
+            daily.onAppOpened()
+            viewModelScope.launch {
+                combine(daily.settings, daily.status) { settings, status -> settings to status }.collect { (settings, status) ->
+                    dailySettings = settings
+                    dailyStatus = status
+                    _list.update { it.copy(scheduleLine = DailySyncSchedule.sourceLine(status, settings, clock())) }
+                    // A atualização diária (ou a de recuperação) terminou com a tela aberta: relê o cache, sem rede.
+                    val completed = status.lastCompletedAt
+                    val previous = lastDailyCompletedAt
+                    val first = !dailySeen
+                    dailySeen = true
+                    lastDailyCompletedAt = completed
+                    if (!first && completed != null && completed != previous && loadJob?.isActive != true) {
+                        load(silent = _list.value.allItems.isNotEmpty(), cacheOnly = true)
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
+            // Progresso da varredura completa; ao terminar, refaz a lista se a última era parcial.
+            sourceSync().distinctUntilChanged().collect { label ->
+                val before = _list.value
+                _list.update { it.copy(syncLabel = label) }
+                if (label == null && before.syncLabel != null && before.partialSync && !before.loading && loadJob?.isActive != true) {
+                    load(silent = before.allItems.isNotEmpty())
+                }
+            }
         }
         viewModelScope.launch {
             connectivity.online.drop(1).collect { online ->
                 _list.update { it.copy(offline = !online) }
                 val s = _list.value
-                if (online && !s.loading && (s.error != null || s.updatedAt == null || s.offline)) load(silent = s.items.isNotEmpty())
+                // A internet voltou depois de uma falha: tenta de novo (o que está salvo já aparece sem rede).
+                if (online && !s.loading && s.error != null) load(silent = s.allItems.isNotEmpty())
             }
         }
     }
 
-    /** Recarrega mostrando o esqueleto de carregamento (troca de filtros, tentar novamente). */
-    fun reload() = load(silent = false)
+    /**
+     * Recarrega mostrando o esqueleto de carregamento (troca de filtros, tentar novamente). Filtros sobre o que já está
+     * salvo; a subclasse decide consultar as fontes (ex.: texto digitado).
+     */
+    fun reload() = load(silent = false, cacheOnly = true)
 
-    /** Puxar para atualizar: mantém a lista visível enquanto consulta. */
-    fun refresh() = load(silent = _list.value.items.isNotEmpty())
+    /** Puxar para atualizar (ou botão): consulta as fontes (incremental leve), mantendo a lista visível e o indicador grande. */
+    fun refresh() = load(silent = _list.value.allItems.isNotEmpty(), user = true)
 
     /**
-     * Atualização automática enquanto a tela está visível (o chamador cancela ao sair): a cada
-     * [AUTO_REFRESH_MS] desde a última atualização, só com internet e sem outra consulta em andamento.
+     * Enquanto a tela está visível (o chamador cancela ao sair): a cada [CLOCK_REFRESH_MS] re-filtra a lista pelo
+     * relógio, SEM rede — o que encerrou some, "Hoje" acompanha a virada do dia e a linha da atualização diária
+     * ("Atualizado hoje às 05:30…") é refeita. Novas licitações chegam pela atualização diária (ou puxando para atualizar).
      */
-    suspend fun autoRefreshLoop() {
+    suspend fun clockRefreshLoop() {
         while (true) {
-            val last = _list.value.updatedAt ?: clock()
-            delay((last + AUTO_REFRESH_MS - clock()).coerceAtLeast(MIN_AUTO_DELAY_MS))
-            val s = _list.value
-            if (connectivity.isOnline && !s.loading && !s.refreshing && loadJob?.isActive != true) load(silent = s.items.isNotEmpty())
+            delay(CLOCK_REFRESH_MS)
+            val current = _list.value
+            val g = grouped(current.allItems, current.showLowAdherence)
+            _list.update {
+                val line = if (dailySync != null) DailySyncSchedule.sourceLine(dailyStatus, dailySettings, clock()) else it.scheduleLine
+                if (it.items === current.items && it.hiddenLow === current.hiddenLow && it.showLowAdherence == current.showLowAdherence) {
+                    it.copy(items = g.items, sections = g.sections, hiddenLow = g.hiddenLow, scheduleLine = line)
+                } else it.copy(scheduleLine = line)
+            }
         }
     }
 
-    private fun load(silent: Boolean) {
+    private fun load(silent: Boolean, user: Boolean = false, cacheOnly: Boolean = false) {
         loadJob?.cancel()
         aiJob?.cancel()
-        loadJob = viewModelScope.launch {
+        val job = viewModelScope.launch {
             val session = auth.session.value
             if (session == null) {
-                _list.update { it.copy(loading = false, refreshing = false, error = "Sessão encerrada. Entre novamente.", items = emptyList()) }
+                _list.update {
+                    it.copy(
+                        loading = false, refreshing = false, userRefreshing = false, error = "Sessão encerrada. Entre novamente.",
+                        items = emptyList(), sections = emptyList(), hiddenLow = emptyList(),
+                    )
+                }
                 return@launch
             }
             val online = connectivity.isOnline
             _list.update {
                 if (silent) {
-                    it.copy(refreshing = true, offline = !online, canAnalyze = Rbac.can(session.user.role, Permission.ANALISAR))
+                    it.copy(refreshing = true, userRefreshing = user, offline = !online, canAnalyze = Rbac.can(session.user.role, Permission.ANALISAR))
                 } else {
-                    it.copy(loading = true, error = null, offline = !online, canAnalyze = Rbac.can(session.user.role, Permission.ANALISAR))
+                    it.copy(loading = true, refreshing = false, userRefreshing = false, error = null, offline = !online, canAnalyze = Rbac.can(session.user.role, Permission.ANALISAR))
                 }
             }
             // Sem internet o repositório responde na hora (cache local ou erro "Sem internet"), sem esperar timeout.
             val result = try {
-                fetch(session.activeCompany.id)
+                if (cacheOnly) fetch(session.activeCompany.id, cacheOnly = true)
+                // Consulta às fontes pedida pelo usuário: o Worker de alertas não concorre enquanto ela roda.
+                else ForegroundListingRefresh.track { fetch(session.activeCompany.id, cacheOnly = false) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Result.failure(e)
             }
+            // Dedup e texto de diagnóstico calculados uma vez, fora da main thread.
+            val showLow = _list.value.showLowAdherence
+            val prepared = result.getOrNull()?.let { outcome ->
+                grouped(outcome.items, showLow) to withContext(Dispatchers.Default) { outcome.sourceSummary }
+            }
             _list.update { state ->
                 result.fold(
                     onSuccess = {
+                        val g = prepared?.first?.let { g -> if (state.showLowAdherence == showLow) g else group(it.items, state.showLowAdherence) }
                         state.copy(
-                            loading = false, refreshing = false, items = it.items.distinctBy { s -> s.opportunity.id }, error = null,
-                            updatedAt = if (online) clock() else state.updatedAt, offline = !online,
-                            sourceSummary = it.sourceSummary,
+                            loading = false, refreshing = false, userRefreshing = false, items = g?.items.orEmpty(),
+                            sections = g?.sections.orEmpty(), hiddenLow = g?.hiddenLow.orEmpty(), error = null,
+                            // Só o que está salvo: "atualizado" = fim da última atualização diária (ou o que já se sabia).
+                            updatedAt = when {
+                                it.cacheSnapshot -> dailyStatus.lastCompletedAt ?: state.updatedAt
+                                online -> clock()
+                                else -> state.updatedAt
+                            },
+                            fromSnapshot = it.cacheSnapshot,
+                            offline = !online,
+                            sourceSummary = prepared?.second,
                             aiTotal = it.aiRequest?.total ?: 0,
                             aiRated = it.aiRequest?.alreadyRated ?: 0,
                             aiFailure = null,
+                            partialSync = it.syncing,
+                            emptyReason = it.emptyReason,
                         )
                     },
                     onFailure = {
                         val message = it.message?.takeIf(String::isNotBlank) ?: "Falha ao consultar os portais. Tente novamente."
-                        if (silent && state.items.isNotEmpty()) {
+                        if (silent && state.allItems.isNotEmpty()) {
                             // Atualização em segundo plano falhou: mantém a lista atual e avisa discretamente.
                             if (online) _events.tryEmit(OpportunityEvent.Message("Não foi possível atualizar agora: $message"))
-                            state.copy(loading = false, refreshing = false, offline = !online)
+                            state.copy(loading = false, refreshing = false, userRefreshing = false, offline = !online)
                         } else {
-                            state.copy(loading = false, refreshing = false, items = emptyList(), error = message, offline = !online)
+                            state.copy(
+                                loading = false, refreshing = false, userRefreshing = false, items = emptyList(), sections = emptyList(),
+                                hiddenLow = emptyList(), error = message, offline = !online,
+                            )
                         }
                     },
                 )
             }
             startAiScoring(result.getOrNull()?.aiRequest)
+            // Parcial e a sincronização já terminou antes de a lista ser aplicada: refaz logo (sem esperar 2 min).
+            val s = _list.value
+            if (s.partialSync && s.syncLabel == null) {
+                delay(PARTIAL_RETRY_MS)
+                if (_list.value.partialSync && _list.value.syncLabel == null) load(silent = _list.value.allItems.isNotEmpty())
+            }
+        }
+        loadJob = job
+        // Consulta cancelada sem substituta (ex.: tela fechada): nunca deixa um indicador de atualização "preso".
+        job.invokeOnCompletion { cause ->
+            if (cause != null && loadJob === job) _list.update { it.copy(refreshing = false, userRefreshing = false) }
         }
     }
 
@@ -264,8 +416,23 @@ abstract class OpportunityListViewModel(
     }
 
     private fun markInterested(opportunityId: String) = _list.update { state ->
-        state.copy(items = state.items.map { if (it.opportunity.id == opportunityId) it.copy(interested = true) else it })
+        fun List<ScoredOpportunity>.mark() = map { if (it.opportunity.id == opportunityId) it.copy(interested = true) else it }
+        state.copy(
+            items = state.items.mark(), sections = state.sections.map { it.copy(items = it.items.mark()) },
+            hiddenLow = state.hiddenLow.mark(),
+        )
     }
+
+    /**
+     * Separa a baixa aderência (só com [lowAdherenceThreshold]), agrupa (Hoje / Próximos dias / Vão abrir) e ordena
+     * cada seção por nota e horário; encerradas somem.
+     */
+    private fun group(items: List<ScoredOpportunity>, showLow: Boolean): LowAdherence.Grouped =
+        LowAdherence.group(items, clock(), lowAdherenceThreshold, showLow)
+
+    /** [group] fora da main thread. */
+    private suspend fun grouped(items: List<ScoredOpportunity>, showLow: Boolean) =
+        withContext(Dispatchers.Default) { group(items, showLow) }
 
     private fun withBusy(item: ScoredOpportunity, block: suspend (companyId: Long) -> Unit) {
         val key = item.opportunity.id
@@ -289,8 +456,8 @@ abstract class OpportunityListViewModel(
     }
 
     internal companion object {
-        /** Atualização automática da busca/resultados com a tela aberta. */
-        const val AUTO_REFRESH_MS = 2L * 60 * 1000
-        const val MIN_AUTO_DELAY_MS = 5_000L
+        /** Re-filtro local (sem rede) da lista pelo relógio com a tela aberta. */
+        const val CLOCK_REFRESH_MS = 60L * 1000
+        const val PARTIAL_RETRY_MS = 5_000L
     }
 }

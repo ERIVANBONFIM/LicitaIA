@@ -101,6 +101,7 @@ class DatabaseSeeder @Inject constructor(private val db: LicitaDatabase) {
         db.documentDao().deleteByCompany(companyId)
         db.tenderAnalysisDao().deleteByCompany(companyId)
         db.proposalDao().deleteByCompany(companyId)
+        db.editalQuestionDao().deleteByCompany(companyId)
         db.tenderDao().getByCompany(companyId).forEach { db.tenderDao().delete(it.id) }
         db.portalSessionDao().deleteByCompany(companyId)
         db.messageDao().deleteByCompany(companyId)
@@ -109,6 +110,8 @@ class DatabaseSeeder @Inject constructor(private val db: LicitaDatabase) {
         db.liveSessionDao().deleteByCompany(companyId)
         db.notificationDao().deleteByCompany(companyId)
         db.aiConfigDao().deleteByCompany(companyId)
+        db.portalRobotDao().deleteMyTendersByCompany(companyId)
+        db.portalRobotDao().deletePlansByCompany(companyId)
         db.companyDao().delete(companyId)
     }
 

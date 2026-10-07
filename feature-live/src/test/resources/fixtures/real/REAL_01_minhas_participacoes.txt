@@ -1,0 +1,70 @@
+# FIXTURE REAL: dump do DevTools no aparelho logado (Compras.gov.br, 2026). Dados pessoais do fornecedor substituídos.
+URL: https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=
+h1 .  @0,50 :: Compras eletrônicas
+button .br-button type=button aria-label=Recarregar página icon.fas fa-sync-alt @196,106 :: 
+p-tab .p-ripple p-tab p-tab-active id=pn_id_2_tab_0 role=tab @12,174 :: Minhas participações
+p-tab .p-ripple p-tab id=pn_id_2_tab_1 role=tab @220,174 :: Todas as compras
+button .p-ripple p-tablist-nav-button p-tablist-next-button type=button aria-label=Próximo icon.p-icon @308,174 :: 
+span .p-select-label aria-label=Em andamento role=combobox @180,264 :: Em andamento
+div .p-select-dropdown aria-label=dropdown trigger role=button icon.p-select-dropdown-icon p-icon @299,264 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,313 :: DISPENSA ELETRÔNICA N° 3/2025 389243 - CONSELHO REGIONAL DE ODONTOLOGIA/TO Etapa: Seleção 
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @193,403 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,403 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,403 :: 
+button .br-button ng-tns-c2676136113-0 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-0 @289,403 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,459 :: DISPENSA ELETRÔNICA N° 103/2025 ME/EPP 929185 - CONSELHO REGIONAL DE NUTRICAO 11ª REGIAO/C
+a .cursor-pointer  @51,549 :: COMPRA SUSPENSA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @193,565 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,565 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,565 :: 
+button .br-button ng-tns-c2676136113-1 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-1 @289,565 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,621 :: PREGÃO ELETRÔNICO N° 90005/2025 929304 - MPR-CAMARA MUNICIPAL DE RIO NEGRO Menor Preço / M
+a .cursor-pointer  @51,712 :: COMPRA ANULADA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @193,728 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,728 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,728 :: 
+button .br-button ng-tns-c2676136113-2 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-2 @289,728 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,784 :: PREGÃO ELETRÔNICO N° 90007/2025 927976 - CAMARA MUNICIPAL DE FAZENDA RIO GRANDE - PR Menor
+a .cursor-pointer  @51,874 :: COMPRA REVOGADA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @193,890 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,890 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,890 :: 
+button .br-button ng-tns-c2676136113-3 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-3 @289,890 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,946 :: PREGÃO ELETRÔNICO N° 90046/2025 980786 - PREFEITURA MUNICIPAL DE SEROPÉRDICA - RJ Menor Pr
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @193,1055 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,1055 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,1055 :: 
+button .br-button ng-tns-c2676136113-4 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-4 @289,1055 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart fas @23,1111 :: PREGÃO ELETRÔNICO N° 90052/2025 983847 - PREFEITURA MUNI DE SALINAS DA MARGARIDA Menor Pre
+button .br-button ml-auto type=button aria-label=Remover dos favoritos icon.fa-heart fas @193,1237 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,1237 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,1237 :: 
+button .br-button ng-tns-c2676136113-5 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-5 @289,1237 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,1293 :: PREGÃO ELETRÔNICO N° 90073/2025 987805 - PREFEITURA DE REALEZA - PR Menor Preço / Maior De
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @225,1402 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,1402 :: 
+button .br-button ng-tns-c2676136113-6 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-6 @289,1402 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,1458 :: PREGÃO ELETRÔNICO N° 91226/2025 925998 - EAL-AGENCIA DE MODERNIZACAO DA GEST. PROCESSO Men
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @193,1566 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,1566 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,1566 :: 
+button .br-button ng-tns-c2676136113-7 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-7 @289,1566 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @23,1622 :: DISPENSA ELETRÔNICA N° 1/2026 ME/EPP 928778 - ASSOCIAÇÃO A.C.E.BART. BUENO DE PIUM/TO Etap
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @225,1731 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,1731 :: 
+button .br-button ng-tns-c2676136113-8 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-8 @289,1731 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart fas @23,1787 :: PREGÃO ELETRÔNICO N° 10/2026 926483 - SERVICO SOCIAL DO COMERCIO - SESC AR/MG Menor Preço 
+button .br-button ml-auto type=button aria-label=Remover dos favoritos icon.fa-heart fas @193,1895 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @225,1895 :: 
+button .br-button ml-auto type=button aria-label=Participar/acompanhar compra icon.fa-plus-square fas @257,1895 :: 
+button .br-button ng-tns-c2676136113-9 ng-trigger ng-trigger-animationRotate18 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-9 @289,1895 :: 
+button .p-ripple p-disabled p-paginator-first ng-star-inserted type=button aria-label=Primeira Página icon.p-paginator-first-icon p-icon ng-star-inserted @74,1976 :: 
+button .p-ripple p-disabled p-paginator-prev type=button aria-label=Página Anterior icon.p-paginator-prev-icon p-icon ng-star-inserted @110,1976 :: 
+button .p-ripple p-paginator-page p-paginator-page-selected ng-star-inserted type=button aria-label=Página 1 @146,1976 :: 1
+button .p-ripple p-paginator-page ng-star-inserted type=button aria-label=Página 2 @182,1976 :: 2
+button .p-ripple p-paginator-next type=button aria-label=Próxima Página icon.p-paginator-next-icon p-icon ng-star-inserted @218,1976 :: 
+button .p-ripple p-paginator-last ng-star-inserted type=button aria-label=Última Página icon.p-paginator-last-icon p-icon ng-star-inserted @254,1976 :: 
+div .outline-color text-right pr-3 role=tab @63,7 :: FORNECEDOR DE TESTE | 000.000.000-00 EMPRESA DE TESTE LTDA | 00.000.000/0
+button .br-button type=button role=tab icon.fas fa-bell @230,14 :: 
+button .br-sign-in p-1 id=avatar-dropdown-trigger type=button icon.br-tag icon avatarUsuario @290,10 :: 
+TEXTO: Compras eletrônicas Compras eletrônicas Compras eletrônicas Minhas participações Todas as compras Exibindo 10 de 16 registro(s) Em andamento DISPENSA ELETRÔNICA N° 3/2025 389243 - CONSELHO REGIONAL DE ODONTOLOGIA/TO Etapa: Seleção de fornecedores DISPENSA ELETRÔNICA N° 103/2025 ME/EPP 929185 - CONSELHO REGIONAL DE NUTRICAO 11ª REGIAO/CE COMPRA SUSPENSA PREGÃO ELETRÔNICO N° 90005/2025 929304 - MPR-CAMARA MUNICIPAL DE RIO NEGRO Menor Preço / Maior Desconto COMPRA ANULADA PREGÃO ELETRÔNICO N° 90007/2025 927976 - CAMARA MUNICIPAL DE FAZENDA RIO GRANDE - PR Menor Preço / Maior Desconto COMPRA REVOGADA PREGÃO ELETRÔNICO N° 90046/2025 980786 - PREFEITURA MUNICIPAL DE SEROPÉRDICA - RJ Menor Preço / Maior Desconto Etapa: Seleção de fornecedores PREGÃO ELETRÔNICO N° 90052/2025 983847 - PREFEITURA MUNI DE SALINAS DA MARGARIDA Menor Preço / Maior Desconto Etapa: Início: Disputa agendada Sem prazo definido PREGÃO ELETRÔNICO N° 90073/2025 987805 - PREFEITURA DE REALEZA - PR Menor Preço / Maior Desconto Etapa: Seleção de fornecedores PREGÃO ELETRÔNICO N° 91226/2025 925998 - EAL-AGENCIA DE MODERNIZACAO DA GEST. PROCESSO Menor Preço / Maior Desconto Etapa: Seleção de fornecedores DISPENSA ELETRÔNICA N° 1/2026 ME/EPP 928778 - ASSOCIAÇÃO A.C.E.BART. BUENO DE PIUM/TO Etapa: Seleção de fornecedores PREGÃO ELETRÔNICO N° 10/2026 926483 - SERVICO SOCIAL DO COMERCIO - SESC AR/MG Menor Preço / Maior Desconto Etapa: Seleção de fornecedores 1 2 FORNECEDOR DE TESTE | 000.000.000-00 EMPRESA DE TESTE

@@ -1,32 +1,31 @@
 package com.licitaia.connector.pncp
 
 import com.licitaia.connector.api.OfficialDocument
-import java.text.Normalizer
-import java.util.Locale
+import com.licitaia.domain.edital.EditalDocKind
+import com.licitaia.domain.edital.EditalDocumentBase
 
 /**
- * Escolha do edital oficial na lista de arquivos de uma contratação do PNCP
- * (`GET /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos`).
+ * Documentos oficiais de uma contratação do PNCP (`GET /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos`)
+ * para a base de perguntas e a análise.
  *
  * Campos reais observados em 06/10/2026: `url`/`uri` (https://pncp.gov.br/pncp-api/v1/orgaos/.../arquivos/{n}),
  * `titulo` (às vezes entre aspas: "\"pre180-24instalacao.pdf\""), `tipoDocumentoId`/`tipoDocumentoNome`
- * (2 = "Edital", 4 = "Termo de Referência", 16 = "Outros Documentos"), `statusAtivo`, `dataPublicacaoPncp`,
- * `sequencialDocumento`. O download devolve `application/octet-stream` com `content-disposition`.
+ * (2 = "Edital", 4 = "Termo de Referência", 7 = "Estudo Técnico Preliminar", 16 = "Outros Documentos"), `statusAtivo`,
+ * `dataPublicacaoPncp`, `sequencialDocumento`. O download devolve `application/octet-stream` com `content-disposition`.
  *
  * Regras (lógica pura e testável):
- * 1. Principal = documento do tipo "Edital" (id 2 ou nome "Edital"); entre vários, prefere título com "edital"
- *    e depois o mais recente (republicações). Sem tipo "Edital": título com "edital"; senão o primeiro PDF; senão o primeiro.
- * 2. Anexos = Termo de Referência, Minuta do Contrato, Anteprojeto, Projeto Básico, ou título com "anexo"/"termo de
- *    referência"/"projeto básico" — no máximo [MAX_ANNEXES]. Outras versões do tipo "Edital" não são anexadas.
+ * 1. Principal = documento do tipo "Edital" (id 2 ou nome "Edital"); entre vários, prefere título com "edital" e depois o
+ *    mais recente (republicações). Sem tipo "Edital": documento classificado como edital/aviso pelo título; senão o
+ *    primeiro PDF que NÃO seja Estudo Técnico Preliminar; senão o primeiro.
+ * 2. Demais documentos = TODOS os outros ativos (termo de referência, anexos, projeto básico, minuta, ETP, outros), na
+ *    ordem de prioridade de [EditalDocumentBase] — no máximo [MAX_ANNEXES]. Outras versões do tipo "Edital" ficam de fora
+ *    (republicação substituída poderia trazer datas/valores antigos).
  */
 internal object PncpEditalSelector {
 
     const val TIPO_EDITAL = 2L
-    /** Minuta do Contrato (3), Termo de Referência (4), Anteprojeto (5), Projeto Básico (6) — `/v1/tipos-documentos`. */
-    val ANNEX_TYPES: Set<Long> = setOf(3L, 4L, 5L, 6L)
-    const val MAX_ANNEXES = 3
-
-    private val ANNEX_TITLE_TERMS = listOf("termo de referencia", "anexo", "projeto basico", "minuta")
+    /** Documentos além do principal (a base inteira tem até [EditalDocumentBase.MAX_DOCUMENTS]). */
+    const val MAX_ANNEXES = EditalDocumentBase.MAX_DOCUMENTS - 1
 
     fun select(documents: List<PncpDocumento>): List<OfficialDocument> {
         val usable = documents.filter { it.statusAtivo != false && downloadUrl(it) != null }
@@ -34,24 +33,22 @@ internal object PncpEditalSelector {
 
         val editais = usable.filter(::isEditalType)
         val main = editais.sortedWith(
-            compareByDescending<PncpDocumento> { fold(cleanTitle(it)).contains("edital") }
+            compareByDescending<PncpDocumento> { kindOf(it) == EditalDocKind.EDITAL && cleanTitle(it).contains("edital", ignoreCase = true) }
                 .thenByDescending { it.dataPublicacaoPncp.orEmpty() }
                 .thenByDescending { it.sequencialDocumento ?: 0 },
         ).firstOrNull()
-            ?: usable.firstOrNull { fold(cleanTitle(it)).contains("edital") }
-            ?: usable.firstOrNull { cleanTitle(it).endsWith(".pdf", ignoreCase = true) }
+            ?: usable.firstOrNull { kindOf(it) == EditalDocKind.EDITAL }
+            ?: usable.firstOrNull { cleanTitle(it).endsWith(".pdf", ignoreCase = true) && kindOf(it) != EditalDocKind.ETP }
             ?: usable.first()
 
-        val annexes = usable.asSequence()
-            .filter { it !== main && !isEditalType(it) }
-            .filter { doc -> doc.tipoDocumentoId in ANNEX_TYPES || ANNEX_TITLE_TERMS.any { fold(cleanTitle(doc)).contains(it) } }
-            .sortedWith(compareBy<PncpDocumento> { if (it.tipoDocumentoId == 4L) 0 else 1 }.thenBy { it.sequencialDocumento ?: Int.MAX_VALUE })
-            .distinctBy { downloadUrl(it) }
+        val others = usable.filter { it !== main && !isEditalType(it) }.distinctBy { downloadUrl(it) }
+        val ordered = EditalDocumentBase.prioritize(others.sortedBy { it.sequencialDocumento ?: Int.MAX_VALUE }) { kindOf(it) }
             .take(MAX_ANNEXES)
-            .toList()
 
-        return listOf(main.toOfficial(OfficialDocument.Role.EDITAL)) + annexes.map { it.toOfficial(OfficialDocument.Role.ANEXO) }
+        return listOf(main.toOfficial(OfficialDocument.Role.EDITAL)) + ordered.map { it.toOfficial(OfficialDocument.Role.ANEXO) }
     }
+
+    fun kindOf(doc: PncpDocumento): EditalDocKind = EditalDocumentBase.classify(cleanTitle(doc), doc.tipoDocumentoNome, doc.tipoDocumentoId)
 
     private fun isEditalType(doc: PncpDocumento): Boolean =
         doc.tipoDocumentoId == TIPO_EDITAL || doc.tipoDocumentoNome?.trim().equals("Edital", ignoreCase = true)
@@ -69,9 +66,6 @@ internal object PncpEditalSelector {
         url = downloadUrl(this)!!,
         typeName = tipoDocumentoNome?.trim()?.takeIf { it.isNotEmpty() },
         role = role,
+        typeId = tipoDocumentoId,
     )
-
-    private fun fold(text: String): String =
-        Normalizer.normalize(text, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT)
-            .replace('_', ' ').replace('-', ' ')
 }

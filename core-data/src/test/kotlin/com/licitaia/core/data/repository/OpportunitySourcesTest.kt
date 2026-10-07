@@ -248,6 +248,43 @@ class OpportunitySourcesTest {
         assertEquals(listOf(cached.id), repoWithCache.search(1, OpportunityFilter(portals = setOf(Portal.BLL))).getOrThrow().map { it.opportunity.id })
     }
 
+    // ------------------------------------------------------------ tráfego ao PNCP na mesma busca
+
+    @Test
+    fun `consultas de prazo do Compras gov br so liberam depois da listagem do PNCP`() = runBlocking {
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val pncp = mockk<PortalConnector>(relaxed = true) {
+            every { portal } returns Portal.PNCP
+            every { searchablePortals } returns ALL_VIA_PNCP
+            every { capabilities } returns caps(false)
+            coEvery { listOpportunities(any()) } coAnswers {
+                kotlinx.coroutines.delay(200)
+                events += "pncp-listagem"
+                listOf(opp("PNCP:22222222000122-1-000002/2026", Portal.COMPRAS_GOV, platform = "Compras.gov.br"))
+            }
+        }
+        val compras = mockk<PortalConnector>(relaxed = true, moreInterfaces = arrayOf(ScreenedOpportunitySource::class)) {
+            every { portal } returns Portal.COMPRAS_GOV
+            every { searchablePortals } returns setOf(Portal.COMPRAS_GOV)
+            every { capabilities } returns caps(false)
+        }
+        var gateOpenAtStart: Boolean? = null
+        coEvery { (compras as ScreenedOpportunitySource).listScreened(any(), any()) } coAnswers {
+            val gate = kotlin.coroutines.coroutineContext[com.licitaia.connector.api.PncpTrafficGate]!!
+            gateOpenAtStart = gate.listingDone.isCompleted
+            gate.listingDone.await()
+            events += "compras-prazos"
+            ScreenedListing(listOf(opp("COMPRAS_GOV:$CONTROL", Portal.COMPRAS_GOV)), SourceDiagnostics(read = 10, candidates = 1, open = 1))
+        }
+        val (repo, _) = repository(listOf(pncp, compras))
+
+        repo.searchWithSources(1, OpportunityFilter(portals = setOf(Portal.COMPRAS_GOV))).getOrThrow()
+
+        assertEquals(false, gateOpenAtStart)
+        assertEquals(listOf("pncp-listagem", "compras-prazos"), events.toList())
+        assertEquals("Sincronizando Compras.gov.br… 4.500 linhas", SourceSyncLabel.of(Portal.COMPRAS_GOV, 4500))
+    }
+
     // ------------------------------------------------------------ triagem + funil do Compras.gov.br
 
     @Test

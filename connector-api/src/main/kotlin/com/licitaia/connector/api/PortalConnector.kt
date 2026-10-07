@@ -61,6 +61,8 @@ data class OfficialDocument(
     /** Tipo informado pela fonte (ex.: "Edital", "Termo de Referência"); null quando ausente. */
     val typeName: String?,
     val role: Role,
+    /** Id do tipo na fonte (PNCP `/v1/tipos-documentos`: 2 = Edital, 4 = Termo de Referência, 7 = ETP...). */
+    val typeId: Long? = null,
 ) {
     enum class Role { EDITAL, ANEXO }
 }
@@ -72,6 +74,17 @@ data class OfficialDocument(
  */
 interface OfficialDocumentSource {
     suspend fun officialEditalDocuments(pncpControlNumber: String): List<OfficialDocument>
+}
+
+/**
+ * Fonte dos ITENS oficiais de uma contratação (nº, descrição, quantidade, unidade, valor estimado) pelo número de
+ * controle PNCP (`<cnpj>-1-<sequencial>/<ano>`). Lista vazia = nenhum item publicado. Falhas de rede sobem como exceção.
+ */
+interface OfficialItemsSource {
+    suspend fun officialItems(pncpControlNumber: String): List<com.licitaia.domain.proposal.OfficialTenderItem>
+
+    /** Órgão/unidade compradora (razão social, CNPJ, UASG, município/UF); null quando a fonte não informa. */
+    suspend fun officialBuyer(pncpControlNumber: String): com.licitaia.domain.proposal.OfficialBuyer? = null
 }
 
 /**

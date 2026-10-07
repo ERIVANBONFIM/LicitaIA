@@ -2,7 +2,9 @@
 
 import com.licitaia.connector.api.ConnectorRegistry
 import com.licitaia.connector.api.HttpStatusFailure
+import com.licitaia.connector.api.ListingSyncProgressSource
 import com.licitaia.connector.api.OpportunityScreen
+import com.licitaia.connector.api.PncpTrafficGate
 import com.licitaia.connector.api.ScreenedOpportunitySource
 import com.licitaia.connector.api.PortalConnector
 import com.licitaia.core.data.db.CompanyDao
@@ -17,6 +19,7 @@ import com.licitaia.domain.model.Company
 import com.licitaia.domain.model.Opportunity
 import com.licitaia.domain.model.OpportunityFilter
 import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.ProposalWindows
 import com.licitaia.domain.model.Radar
 import com.licitaia.domain.model.ScoreSource
 import com.licitaia.domain.model.ScoredOpportunity
@@ -94,6 +97,16 @@ class OpportunityRepositoryImpl @Inject constructor(
         searchWithSources(companyId, filter).map { it.items }
 
     override suspend fun searchWithSources(companyId: Long, filter: OpportunityFilter): Result<SearchOutcome> =
+        searchInternal(companyId, filter, cacheOnly = false)
+
+    override suspend fun searchCached(companyId: Long, filter: OpportunityFilter): Result<SearchOutcome> =
+        searchInternal(companyId, filter, cacheOnly = true)
+
+    /**
+     * [cacheOnly] = abertura da tela: só o que já está salvo no aparelho (a atualização diária baixou as novas), sem
+     * consultar as fontes nem pedir notas por IA; sem nada salvo, consulta as fontes normalmente.
+     */
+    private suspend fun searchInternal(companyId: Long, filter: OpportunityFilter, cacheOnly: Boolean): Result<SearchOutcome> =
         withContext(Dispatchers.IO) {
             runCatching { access.requireCompany(companyId, Permission.BUSCAR) }.onFailure { return@withContext Result.failure(it) }
             val company = companyDao.getById(companyId)?.toDomain()
@@ -102,21 +115,31 @@ class OpportunityRepositoryImpl @Inject constructor(
             val portals = filter.portals.ifEmpty { Portal.entries.toSet() }
             // As fontes devolvem também as dispensas sem disputa (para contar as ocultas); o filtro real vem depois.
             val withNoDispute = filter.copy(showNoDispute = true)
-            fetch(portals, withNoDispute, CandidateScreens.forSearch(withNoDispute, company, radars)).map { fetched ->
+            fetch(portals, withNoDispute, CandidateScreens.forSearch(withNoDispute, company, radars), cacheOnly).map { fetched ->
                 val interested = tenderDao.opportunityIds(companyId).toSet()
                 val split = NoDisputeVisibility.split(fetched.opportunities, filter.showNoDispute) { OpportunityFilterMatcher.matches(withNoDispute, it) }
+                // Só abertas e as que vão abrir; sem prazo confiável ficam ocultas (contadas).
+                val window = ProposalWindows.visible(split.visible, System.currentTimeMillis(), filter.showNoDispute)
                 val (items, aiRequest) = scoreAll(
                     company, radars, radarId = null, minScore = filter.minScore,
-                    opportunities = split.visible,
-                    interested = interested, allowAi = true,
+                    opportunities = window.items,
+                    // IA só na busca focada (texto/segmento); a geral fica na heurística + notas já salvas.
+                    interested = interested, allowAi = filter.focused && !fetched.snapshot,
                 )
-                SearchOutcome(items, fetched.sourceCounts, fetched.fromCache, fetched.failedSources, aiRequest, fetched.diagnostics, split.hidden)
+                SearchOutcome(
+                    items, fetched.sourceCounts, fetched.fromCache, fetched.failedSources, aiRequest, fetched.diagnostics, split.hidden,
+                    hiddenNoDeadline = window.hiddenNoDeadline, cacheSnapshot = fetched.snapshot,
+                )
             }
         }
 
     override suspend fun runRadar(radarId: Long): Result<List<ScoredOpportunity>> = runRadarWithSources(radarId).map { it.items }
 
-    override suspend fun runRadarWithSources(radarId: Long): Result<SearchOutcome> = withContext(Dispatchers.IO) {
+    override suspend fun runRadarWithSources(radarId: Long): Result<SearchOutcome> = runRadarInternal(radarId, cacheOnly = false)
+
+    override suspend fun runRadarCached(radarId: Long): Result<SearchOutcome> = runRadarInternal(radarId, cacheOnly = true)
+
+    private suspend fun runRadarInternal(radarId: Long, cacheOnly: Boolean): Result<SearchOutcome> = withContext(Dispatchers.IO) {
         // Uma busca por vez para cada radar (tela aberta + atualização automática + Worker não se sobrepõem).
         radarLocks.getOrPut(radarId) { Mutex() }.withLock {
             val radar = radarDao.getById(radarId)?.toDomain()
@@ -126,13 +149,22 @@ class OpportunityRepositoryImpl @Inject constructor(
                 ?: return@withContext Result.failure(IllegalArgumentException("Empresa não encontrada."))
             // Triagem com as dispensas sem disputa incluídas (para contar as ocultas); o radar real decide depois.
             val withNoDispute = radar.copy(showNoDispute = true)
-            fetch(radarPortals(radar), radarFilter(radar), CandidateScreens.forRadars(listOf(withNoDispute), company)).map { fetched ->
+            fetch(radarPortals(radar), radarFilter(radar), CandidateScreens.forRadars(listOf(withNoDispute), company), cacheOnly).map { fetched ->
                 val interested = tenderDao.opportunityIds(company.id).toSet()
                 val hidden = NoDisputeVisibility.split(fetched.opportunities, radar.showNoDispute) {
                     RadarMatcher.matches(withNoDispute, it, company.uf)
                 }.hidden
-                val (items, aiRequest) = matchRadar(radar, company, fetched.opportunities, interested, allowAi = true)
-                SearchOutcome(items, fetched.sourceCounts, fetched.fromCache, fetched.failedSources, aiRequest, fetched.diagnostics, hidden)
+                // Só abertas e as que vão abrir; sem prazo confiável ficam ocultas (contadas).
+                val window = withContext(Dispatchers.Default) {
+                    ProposalWindows.visible(
+                        fetched.opportunities.filter { RadarMatcher.matches(radar, it, company.uf) }, System.currentTimeMillis(), radar.showNoDispute,
+                    )
+                }
+                val (items, aiRequest) = matchRadar(radar, company, window.items, interested, allowAi = !fetched.snapshot)
+                SearchOutcome(
+                    items, fetched.sourceCounts, fetched.fromCache, fetched.failedSources, aiRequest, fetched.diagnostics, hidden,
+                    hiddenNoDeadline = window.hiddenNoDeadline, cacheSnapshot = fetched.snapshot,
+                )
             }
         }
     }
@@ -167,47 +199,48 @@ class OpportunityRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Contagem para o painel. Consulta as fontes reais ao começar a observar (abrir o app/painel), a cada
-     * [COUNT_REFRESH_MS] enquanto houver alguém observando (primeiro plano) e quando a internet volta;
-     * mudanças nos radares entre essas consultas usam o cache local (evita rajadas de rede).
+     * Contagem para o painel, SÓ com o cache local (nenhuma consulta às fontes ao abrir o app: a atualização diária das
+     * 05:30 e as atualizações pedidas na busca alimentam o cache). Recalcula ao mudar os radares e a cada
+     * [COUNT_REFRESH_MS] (leitura local: o que encerrou sai e o que a atualização diária trouxe entra).
      */
     override fun observeRadarMatchCount(companyId: Long): Flow<Int> {
-        var lastFetchedTick = -1L
-        var lastOnline = false
         val ticker = flow {
-            var tick = 0L
             while (true) {
-                emit(tick++)
+                emit(Unit)
                 delay(COUNT_REFRESH_MS)
             }
         }
-        return combine(radarDao.observeActive(companyId), ticker, connectivity.online) { radars, tick, online -> Triple(radars, tick, online) }
-            .mapLatest { (radarEntities, tick, online) ->
-                val reconnected = online && !lastOnline
-                lastOnline = online
+        return combine(radarDao.observeActive(companyId), ticker) { radars, _ -> radars }
+            .mapLatest { radarEntities ->
                 if (!access.owns(companyId)) return@mapLatest 0
                 if (radarEntities.isEmpty()) return@mapLatest 0
                 val company = companyDao.getById(companyId)?.toDomain() ?: return@mapLatest 0
                 val radars = radarEntities.map { it.toDomain() }
                 val portals = radars.flatMap { radarPortals(it) }.toSet()
                 if (searchSources(portals).isEmpty()) return@mapLatest 0
-                val cached = cachedFor(portals)
-                val shouldFetch = online && (tick != lastFetchedTick || reconnected || cached.isEmpty())
-                val opportunities = if (shouldFetch) {
-                    lastFetchedTick = tick
-                    // showNoDispute = true: cada radar decide (RadarMatcher) se as dispensas sem disputa entram.
-                    fetch(portals, OpportunityFilter(showNoDispute = true), CandidateScreens.forRadars(radars, company)).getOrNull()?.opportunities ?: cached
-                } else {
-                    cached
-                }
+                val opportunities = cachedFor(portals)
                 val interested = tenderDao.opportunityIds(companyId).toSet()
-                radars.flatMap { radar -> matchRadar(radar, company, opportunities, interested, allowAi = false).first }
+                val now = System.currentTimeMillis()
+                radars.flatMap { radar ->
+                    val visible = ProposalWindows.visible(opportunities, now, radar.showNoDispute).items
+                    matchRadar(radar, company, visible, interested, allowAi = false).first
+                }
                     .distinctBy { it.opportunity.id }
                     .size
             }
             .catch { emit(0) }
             .distinctUntilChanged()
             .flowOn(Dispatchers.IO)
+    }
+
+    override fun observeSourceSync(): Flow<String?> {
+        val sources = runCatching { registry.all() }.getOrDefault(emptyList())
+            .filter { !it.capabilities.isMock }
+            .mapNotNull { c -> (c as? ListingSyncProgressSource)?.let { c.portal to it.syncProgress } }
+        if (sources.isEmpty()) return kotlinx.coroutines.flow.flowOf(null)
+        return combine(sources.map { it.second }) { progress ->
+            sources.indices.firstNotNullOfOrNull { i -> progress[i]?.let { SourceSyncLabel.of(sources[i].first, it.rows) } }
+        }.distinctUntilChanged()
     }
 
     // ------------------------------------------------------------------ apoio
@@ -233,7 +266,7 @@ class OpportunityRepositoryImpl @Inject constructor(
         allowAi: Boolean,
     ): Pair<List<ScoredOpportunity>, AiScoringRequest?> = scoreAll(
         company, listOf(radar), radarId = radar.id, minScore = radar.minScore,
-        opportunities = opportunities.filter { RadarMatcher.matches(radar, it, company.uf) },
+        opportunities = withContext(Dispatchers.Default) { opportunities.filter { RadarMatcher.matches(radar, it, company.uf) } },
         interested = interested, allowAi = allowAi,
     )
 
@@ -251,24 +284,25 @@ class OpportunityRepositoryImpl @Inject constructor(
         opportunities: List<Opportunity>,
         interested: Set<String>,
         allowAi: Boolean,
-    ): Pair<List<ScoredOpportunity>, AiScoringRequest?> {
+    ): Pair<List<ScoredOpportunity>, AiScoringRequest?> = withContext(Dispatchers.Default) {
+        // Score/ordenação são CPU: Dispatchers.Default (nunca Main; o IO fica para rede/banco).
         val context = RelevanceContext.of(company, radars)
         val assessments = opportunities.map { OpportunityScorer.assess(it, company, radars) }
         val heuristic = opportunities.mapIndexed { i, o -> ScoredOpportunity(o, assessments[i].score, o.id in interested) }
         val scored = relevance.applyCached(company.id, context.signature, heuristic)
         val visible = scored.filter { it.score >= minScore }.sortedWith(OpportunityDeadlines.ORDER)
-        if (!allowAi) return visible to null
+        if (!allowAi) return@withContext visible to null
         val eligible = scored.filterIndexed { i, _ -> assessments[i].isCandidate }
         val cachedCount = eligible.count { it.scoreSource == ScoreSource.AI }
         val pending = eligible.filter { it.scoreSource == ScoreSource.HEURISTIC }
-        if ((pending.isEmpty() && cachedCount == 0) || !relevance.aiAvailable()) return visible to null
+        if ((pending.isEmpty() && cachedCount == 0) || !relevance.aiAvailable()) return@withContext visible to null
         val request = AiScoringRequest(
             companyId = company.id, radarId = radarId, minScore = minScore,
             radarSignature = context.signature, radarHint = context.hint,
             candidates = AiScoreMerge.prioritize(pending, AiRelevanceScorer.MAX_PER_RUN),
             alreadyRated = cachedCount,
         )
-        return visible to request
+        visible to request
     }
 
     /** Conector do portal somente se for REAL (isMock = false); mocks nunca alimentam a busca. */
@@ -279,10 +313,15 @@ class OpportunityRepositoryImpl @Inject constructor(
     private fun searchSources(portals: Set<Portal>): List<PortalConnector> =
         SearchSources.select(runCatching { registry.all() }.getOrDefault(emptyList()), portals)
 
-    private suspend fun cachedFor(portals: Set<Portal>): List<Opportunity> = OpportunityDeadlines.dropClosed(
-        OpportunityDeduplicator.dedupe(opportunityDao.getAll().map { it.toDomain() }.filter { it.portal in portals }),
-        System.currentTimeMillis(),
-    )
+    private suspend fun cachedFor(portals: Set<Portal>): List<Opportunity> {
+        val rows = opportunityDao.getAll()
+        return withContext(Dispatchers.Default) {
+            OpportunityDeadlines.dropClosed(
+                OpportunityDeduplicator.dedupe(rows.map { it.toDomain() }.filter { it.portal in portals }),
+                System.currentTimeMillis(),
+            )
+        }
+    }
 
     /**
      * Consulta as fontes reais em paralelo. Fontes com falha (ou em backoff) são ignoradas; se todas falharem,
@@ -297,6 +336,8 @@ class OpportunityRepositoryImpl @Inject constructor(
         val failedSources: Set<Portal> = emptySet(),
         /** Funil das fontes com triagem local (Compras.gov.br): lidas → candidatas → abertas. */
         val diagnostics: Map<Portal, SourceDiagnostics> = emptyMap(),
+        /** Leitura proposital só do cache (abertura da tela), não por falha/sem internet. */
+        val snapshot: Boolean = false,
     )
 
     /**
@@ -307,7 +348,14 @@ class OpportunityRepositoryImpl @Inject constructor(
         portals: Set<Portal>,
         filter: OpportunityFilter,
         screen: OpportunityScreen = OpportunityScreen.ACCEPT_ALL,
+        cacheOnly: Boolean = false,
     ): Result<Fetched> = coroutineScope {
+        // Abertura da tela: mostra na hora o que já está salvo (a atualização diária baixou as novas); só sem nada
+        // salvo (primeiro uso) consulta as fontes.
+        if (cacheOnly) {
+            val cached = cachedFor(portals)
+            if (cached.isNotEmpty()) return@coroutineScope Result.success(Fetched(cached, fromCache = true, snapshot = true))
+        }
         val sources = searchSources(portals)
         // Os conectores recebem os portais pedidos (também no radar): com só "Compras.gov" eles leem mais páginas
         // dessa plataforma (PNCP classificado por usuarioNome + dados abertos do Compras.gov.br).
@@ -330,20 +378,25 @@ class OpportunityRepositoryImpl @Inject constructor(
         }
         val now = System.currentTimeMillis()
         val diagnostics = ConcurrentHashMap<Portal, SourceDiagnostics>()
+        // Listagem do PNCP e consultas de prazo do Compras.gov.br no mesmo host: as de prazo esperam a listagem.
+        val gate = PncpTrafficGate()
+        val gated = sources.any { it !is ScreenedOpportunitySource && it.portal == Portal.PNCP }
+        if (!gated) gate.listingDone.complete(Unit)
         val results = sources.map { connector ->
             async {
-                val wait = backoff.remainingMs(connector.portal, now)
-                if (wait > 0) {
-                    return@async Result.failure<List<Opportunity>>(
-                        IOException(
-                            "${connector.portal.displayName} limitou as consultas; nova tentativa automática em " +
-                                "${(wait / 60_000L).coerceAtLeast(1)} min.",
-                        ),
-                    )
-                }
                 try {
+                    val wait = backoff.remainingMs(connector.portal, now)
+                    if (wait > 0) {
+                        return@async Result.failure<List<Opportunity>>(
+                            IOException(
+                                "${connector.portal.displayName} limitou as consultas; nova tentativa automática em " +
+                                    "${(wait / 60_000L).coerceAtLeast(1)} min.",
+                            ),
+                        )
+                    }
                     val list = if (connector is ScreenedOpportunitySource) {
-                        connector.listScreened(sourceFilter, screen).also { diagnostics[connector.portal] = it.diagnostics }.opportunities
+                        withContext(gate) { connector.listScreened(sourceFilter, screen) }
+                            .also { diagnostics[connector.portal] = it.diagnostics }.opportunities
                     } else {
                         connector.listOpportunities(sourceFilter)
                     }
@@ -353,6 +406,8 @@ class OpportunityRepositoryImpl @Inject constructor(
                 } catch (e: Exception) {
                     backoff.onFailure(connector.portal, e, System.currentTimeMillis())
                     Result.failure(e)
+                } finally {
+                    if (connector.portal == Portal.PNCP && connector !is ScreenedOpportunitySource) gate.listingDone.complete(Unit)
                 }
             }
         }.awaitAll()
@@ -360,10 +415,12 @@ class OpportunityRepositoryImpl @Inject constructor(
             r.getOrNull()?.let { list -> connector.portal to list.count { it.portal in portals } }
         }.toMap()
         // Dedup ANTES do corte por prazo: o registro do Compras.gov.br sem encerramento herda o prazo do PNCP.
-        val fetched = OpportunityDeadlines.dropClosed(
-            OpportunityDeduplicator.dedupe(results.mapNotNull { it.getOrNull() }.flatten().filter { it.portal in portals }),
-            System.currentTimeMillis(),
-        )
+        val fetched = withContext(Dispatchers.Default) {
+            OpportunityDeadlines.dropClosed(
+                OpportunityDeduplicator.dedupe(results.mapNotNull { it.getOrNull() }.flatten().filter { it.portal in portals }),
+                System.currentTimeMillis(),
+            )
+        }
         val allFailed = results.all { it.isFailure }
         if (!allFailed) {
             if (fetched.isNotEmpty()) {
@@ -431,6 +488,12 @@ internal object NoDisputeVisibility {
     }
 }
 
+/** Texto do andamento da sincronização (lógica pura, testável). */
+internal object SourceSyncLabel {
+    fun of(portal: Portal, rows: Int): String =
+        "Sincronizando ${portal.displayName}… " + String.format(java.util.Locale.forLanguageTag("pt-BR"), "%,d", rows) + " linhas"
+}
+
 /** Seleção das fontes de busca para um conjunto de portais (lógica pura, testável). */
 internal object SearchSources {
     fun select(all: List<PortalConnector>, portals: Set<Portal>): List<PortalConnector> =
@@ -482,9 +545,11 @@ internal object OpportunityDeduplicator {
     private val COMPRAS_GOV_PREFIX = Portal.COMPRAS_GOV.name + ":"
 
     /** Chave de deduplicação: número de controle PNCP quando o id o contém; senão o próprio id. */
-    fun key(opportunity: Opportunity): String {
-        val ref = opportunity.id.substringAfter(':', missingDelimiterValue = "")
-        return if (PNCP_CONTROL_NUMBER.matches(ref)) "pncp:$ref" else opportunity.id
+    fun key(opportunity: Opportunity): String = keyOfId(opportunity.id)
+
+    fun keyOfId(id: String): String {
+        val ref = id.substringAfter(':', missingDelimiterValue = "")
+        return if (PNCP_CONTROL_NUMBER.matches(ref)) "pncp:$ref" else id
     }
 
     private fun fromComprasGovConnector(o: Opportunity) = o.id.startsWith(COMPRAS_GOV_PREFIX)
@@ -518,7 +583,10 @@ internal object OpportunityDeduplicator {
                 sessionAt = if (kept.sessionAt > Opportunity.DEADLINE_UNKNOWN) kept.sessionAt else other.sessionAt,
                 // Com prazo de propostas conhecido há disputa: só continua "sem disputa" se as duas fontes disserem.
                 noDispute = kept.noDispute && other.noDispute,
+                proposalOpening = kept.proposalOpening ?: other.proposalOpening,
             )
+        } else if (kept.proposalOpening == null && other.proposalOpening != null) {
+            kept.copy(proposalOpening = other.proposalOpening)
         } else {
             kept
         }

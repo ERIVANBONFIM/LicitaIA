@@ -40,7 +40,7 @@ data class MessageDetailUiState(
     /** O texto no editor difere do que está salvo. */
     val dirty: Boolean get() = draft.trim() != (message?.replyDraft ?: "").trim()
 
-    /** Só envia o texto exatamente como foi aprovado. */
+    /** Só leva ao portal o texto exatamente como foi aprovado. */
     val canSend: Boolean get() = canReply && approved && !dirty && draft.isNotBlank() && !busy
 }
 
@@ -145,15 +145,6 @@ class MessageDetailViewModel @Inject constructor(
         if (s.dirty || s.message?.replyStatus == ReplyStatus.NENHUMA) messages.saveReplyDraft(id, s.draft.trim())
         // A auditoria (APROVACAO) é registrada pelo repositório.
         messages.approveReply(id)
-    }
-
-    /** Só deve ser chamado após o BindingConfirmDialog. */
-    fun sendConfirmed() {
-        if (!_state.value.canSend) return
-        runAction("Resposta enviada (SIMULAÇÃO)") { id, _ ->
-            // A auditoria (MENSAGEM) é registrada pelo repositório.
-            messages.sendReplySimulated(id).getOrThrow()
-        }
     }
 
     private fun runAction(success: String, block: suspend (Long, MessageDetailUiState) -> Unit) {

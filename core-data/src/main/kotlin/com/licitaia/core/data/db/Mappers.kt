@@ -33,8 +33,18 @@ private inline fun <reified E : Enum<E>> enumOr(name: String, fallback: E): E =
 
 // ---------------------------------------------------------------- empresa / usuário
 
-fun CompanyEntity.toDomain() = Company(id, name, tradeName, cnpj, segment, uf, city, preferredAi, demo)
-fun Company.toEntity() = CompanyEntity(id, name, tradeName, cnpj, segment, uf, city, preferredAi, demo)
+fun CompanyEntity.toDomain() = Company(
+    id, name, tradeName, cnpj, segment, uf, city, preferredAi, demo,
+    street = street, complement = complement, district = district, zipCode = zipCode, phone = phone, email = email,
+    legalRepName = legalRepName, legalRepCpf = legalRepCpf, legalRepRole = legalRepRole,
+    bankName = bankName, bankAgency = bankAgency, bankAccount = bankAccount,
+)
+fun Company.toEntity() = CompanyEntity(
+    id, name, tradeName, cnpj, segment, uf, city, preferredAi, demo,
+    street = street, complement = complement, district = district, zipCode = zipCode, phone = phone, email = email,
+    legalRepName = legalRepName, legalRepCpf = legalRepCpf, legalRepRole = legalRepRole,
+    bankName = bankName, bankAgency = bankAgency, bankAccount = bankAccount,
+)
 
 fun UserEntity.toDomain() = UserProfile(
     id, name, email, role, companyIds,
@@ -59,12 +69,12 @@ fun Radar.toEntity() = RadarEntity(
 
 fun OpportunityEntity.toDomain() = Opportunity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
-    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, platformName, noDispute,
+    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, platformName, noDispute, proposalOpening,
 )
 
 fun Opportunity.toEntity(now: Long) = OpportunityEntity(
     id, portal, number, agency, objectDescription, modality, segment, uf, city, estimatedValue, publishedAt,
-    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now, platformName, noDispute,
+    proposalDeadline, sessionAt, requiresLocalSupport, keywords, editalUrl, now, platformName, noDispute, proposalOpening,
 )
 
 // ---------------------------------------------------------------- licitação / análise
@@ -157,12 +167,24 @@ fun CompanyDocument.toEntity() =
     DocumentEntity(id, companyId, type, title, issuer, issuedAt, expiresAt, attachmentUri, tags, notes, createdAt)
 
 fun ProposalEntity.toDomain() = Proposal(
-    id, tenderId, companyId, version, items.map { ProposalItem(it.description, it.unit, it.quantity, it.unitPrice) },
+    id, tenderId, companyId, version,
+    items.map {
+        ProposalItem(
+            it.description, it.unit, it.quantity, it.unitPrice, it.itemNumber, it.brand, it.manufacturer, it.model,
+            it.estimatedUnitPrice, it.confidentialBudget,
+        )
+    },
     deliveryDays, validityDays, notes, status, pdfPath, createdBy, createdAt, approvedBy, approvedAt, rejectionReason,
 )
 
 fun Proposal.toEntity() = ProposalEntity(
-    id, tenderId, companyId, version, items.map { ProposalItemDto(it.description, it.unit, it.quantity, it.unitPrice) },
+    id, tenderId, companyId, version,
+    items.map {
+        ProposalItemDto(
+            it.description, it.unit, it.quantity, it.unitPrice, it.itemNumber, it.brand, it.manufacturer, it.model,
+            it.estimatedUnitPrice, it.confidentialBudget,
+        )
+    },
     deliveryDays, validityDays, notes, status, pdfPath, createdBy, createdAt, approvedBy, approvedAt, rejectionReason,
 )
 
@@ -234,4 +256,15 @@ fun CompetitionEntity.toDomain() = CompetitionRecord(
 fun CompetitionRecord.toEntity() = CompetitionEntity(
     id, companyId, portal, tenderNumber, agency, segment, objectSummary, date, competitors, estimatedValue,
     closingValue, ourFinalBid, won, ourMarginPct, bidsCount, behavior,
+)
+
+// "Pergunte ao edital" (v13): citações gravadas uma por linha.
+fun EditalQuestionEntity.toDomain() = com.licitaia.domain.edital.EditalQuestion(
+    id = id, companyId = companyId, tenderId = tenderId, question = question, answer = answer, provider = provider, model = model,
+    sources = sources.lines().map { it.trim() }.filter { it.isNotEmpty() }, createdAt = createdAt, status = status,
+)
+
+fun com.licitaia.domain.edital.EditalQuestion.toEntity() = EditalQuestionEntity(
+    id = id, companyId = companyId, tenderId = tenderId, question = question, answer = answer, provider = provider, model = model,
+    sources = sources.joinToString("\n") { it.replace('\n', ' ').trim() }, createdAt = createdAt, status = status,
 )

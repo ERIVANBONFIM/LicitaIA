@@ -34,7 +34,7 @@ class CompanyBackupRepository @Inject constructor(
     private val room: LicitaDatabase,
     private val holder: SessionHolder,
 ) : BackupRepository {
-    private val companyTables = listOf("radars", "tenders", "documents", "proposals", "competition_records", "audit_events")
+    private val companyTables = listOf("radars", "tenders", "documents", "proposals", "competition_records", "audit_events", "edital_questions")
     private val limit = 64 * 1024 * 1024
 
     private companion object {
@@ -42,8 +42,19 @@ class CompanyBackupRepository @Inject constructor(
          * Versão de schema gravada no backup = versão atual do Room; restauração aceita versões anteriores.
          * v8 só acrescentou o cache `relevance_scores`, que NÃO entra no backup (é refeito pela IA).
          * v9 acrescentou `radars.showNoDispute` e `opportunities.noDispute` (backups antigos recebem o DEFAULT 0).
+         * v10 só acrescentou o cache do Compras.gov.br (`comprasgov_rows`, `comprasgov_sync`), que NÃO entra no backup
+         * (é baixado de novo das fontes públicas).
+         * v11 só acrescentou `portal_my_tenders` (lidas de novo da sessão do Comprasnet) e `portal_robot_plans`
+         * (configuração operacional do robô); nenhuma das duas entra no backup.
+         * v12 só acrescentou colunas em `companies` (endereço, contato, representante legal, banco), tabela que NÃO
+         * entra no backup (o cadastro da empresa fica no aparelho de destino); backups 2..11 continuam aceitos.
+         * v13 acrescentou `edital_questions` (histórico do "Pergunte ao edital"), que ENTRA no backup e é restaurada com o
+         * novo id da licitação; backups 2..12 não têm a tabela e são restaurados sem ela.
          */
-        const val BACKUP_SCHEMA = 9
+        const val BACKUP_SCHEMA = 13
+
+        /** Tabelas que podem faltar em backups de versões anteriores. */
+        val OPTIONAL_TABLES = setOf("edital_questions")
     }
 
     private fun session() = requireNotNull(holder.current) { "Entre em sua conta." }.also {
@@ -117,10 +128,13 @@ class CompanyBackupRepository @Inject constructor(
             var count = 0
             db.beginTransaction()
             try {
-                val order = listOf("opportunities", "radars", "tenders", "tender_analyses", "documents", "proposals", "competition_records", "audit_events")
+                val order = listOf(
+                    "opportunities", "radars", "tenders", "tender_analyses", "edital_questions", "documents", "proposals", "competition_records", "audit_events",
+                )
                 order.forEach { table ->
                     val columns = db.query("PRAGMA table_info($table)").use { c -> buildSet { while (c.moveToNext()) add(c.getString(c.getColumnIndexOrThrow("name"))) } }
-                    val records = tables.getJSONArray(table)
+                    // Tabelas criadas depois do backup (ex.: edital_questions, v13) não existem em backups antigos.
+                    val records = if (table in OPTIONAL_TABLES) tables.optJSONArray(table) ?: JSONArray() else tables.getJSONArray(table)
                     require(records.length() <= 50_000) { "Backup excede limite de registros." }
                     val auditRows = mutableListOf<Pair<Long, JSONObject>>()
                     for (i in 0 until records.length()) {

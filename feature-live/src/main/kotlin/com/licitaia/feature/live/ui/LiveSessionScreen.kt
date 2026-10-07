@@ -231,7 +231,7 @@ private fun SessionContent(session: LiveSession, state: LiveSessionUiState, vm: 
                 LicitaCard(Modifier.fillMaxWidth().animateContentSize()) {
                     Text("Registrar o que aconteceu no portal", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
                     Spacer(Modifier.height(4.dp))
-                    Text("O app não envia lances. Dê o lance no portal e registre aqui; abaixo do piso o registro é recusado.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                    Text("Com o robô de lance armado por você, os lances enviados por ele entram aqui sozinhos. No modo manual, você dá o lance no portal e registra aqui; abaixo do piso o registro é recusado.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
                     Spacer(Modifier.height(12.dp))
                     if (session.status == LiveStatus.AGUARDANDO) {
                         PrimaryButton("Disputa iniciou no portal", { vm.startDispute() }, Modifier.fillMaxWidth(), enabled = canAct, icon = Icons.Outlined.PlayArrow, tone = Tone.SUCCESS)
@@ -547,7 +547,7 @@ private fun HeaderCard(session: LiveSession) {
             Spacer(Modifier.width(8.dp))
             StatusBadge(session.status.label, session.status.tone(), pulsing = session.status == LiveStatus.EM_DISPUTA)
             Spacer(Modifier.weight(1f))
-            StatusBadge("Modo assistido", Tone.INFO)
+            StatusBadge("Acompanhamento", Tone.INFO)
         }
         Spacer(Modifier.height(8.dp))
         Text(session.objectDescription, style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)

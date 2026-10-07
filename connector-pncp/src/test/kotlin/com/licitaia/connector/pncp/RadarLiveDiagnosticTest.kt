@@ -120,6 +120,32 @@ class RadarLiveDiagnosticTest {
         }
     }
 
+    /**
+     * Sequência do aparelho após instalar: banco vazio → Worker (INCREMENTAL_ONLY) → tela em primeiro plano.
+     * A primeira busca em primeiro plano tem de fazer a varredura completa (milhares de linhas, "+" de teto).
+     */
+    @Test
+    fun comprasGov_workerDepoisPrimeiroPlano() = runBlocking {
+        val radar = Radar(
+            companyId = 1, name = "ISP", segment = Segment.TELECOM_ISP, keywords = listOf("internet", "link", "provedor", "fibra"),
+            portals = listOf(Portal.COMPRAS_GOV), allPortals = false, minScore = 70,
+        )
+        val screen = OpportunityScreen { o -> RadarMatcher.matches(radar, o, company.uf) && OpportunityScorer.score(o, company, listOf(radar)) >= 20 }
+        val filter = OpportunityFilter(portals = setOf(Portal.COMPRAS_GOV))
+        val fresh = ComprasGovConnector(client)
+        val t0 = System.currentTimeMillis()
+        val worker = kotlinx.coroutines.withContext(com.licitaia.connector.api.SourceSyncPolicy.INCREMENTAL_ONLY) { fresh.listScreened(filter, screen) }
+        val t1 = System.currentTimeMillis()
+        println("=== Worker → primeiro plano ===")
+        println("Worker (incremental): ${worker.diagnostics.summary} sync=${fresh.lastSync} (${t1 - t0} ms)")
+        val fg = fresh.listScreened(filter, screen)
+        val t2 = System.currentTimeMillis()
+        println("Primeiro plano: ${fg.diagnostics.summary} sync=${fresh.lastSync} (${t2 - t1} ms); PNCP prazo: ${fresh.lastEnrichment}")
+        val t3 = System.currentTimeMillis()
+        val p1 = runCatching { pncp.listOpportunities(filter) }.onFailure { println("PNCP falhou: ${it.message}") }.getOrDefault(emptyList())
+        println("PNCP classificados COMPRAS_GOV (1ª): ${p1.size} (${System.currentTimeMillis() - t3} ms)")
+    }
+
     @Test fun comprasGov_todasAsUfs() = scenario(emptySet())
     @Test fun comprasGov_BA() = scenario(setOf("BA"))
     @Test fun comprasGov_MG() = scenario(setOf("MG"))

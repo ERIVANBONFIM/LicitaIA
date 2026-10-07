@@ -3,9 +3,11 @@ package com.licitaia.connector.comprasgov
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
@@ -152,6 +154,7 @@ internal class ComprasGovApi(
     private fun path(segments: String): HttpUrl.Builder = baseUrl.newBuilder().addEncodedPathSegments(segments)
 
     /** GET com decodificação; devolve null em 204/corpo vazio. */
+    @OptIn(ExperimentalSerializationApi::class)
     private suspend fun <T> get(url: HttpUrl, serializer: KSerializer<T>): T? = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).header("Accept", "application/json").header("User-Agent", USER_AGENT).get().build()
         val response = try {
@@ -173,10 +176,11 @@ internal class ComprasGovApi(
             when {
                 r.code == 204 -> null
                 r.isSuccessful -> {
-                    val body = r.body?.string().orEmpty()
-                    if (body.isBlank()) return@use null
+                    // Decodifica direto do stream (sem montar a String de ~1 MB da página de 500 linhas), fora do Main.
+                    val source = r.body?.source() ?: return@use null
+                    if (source.exhausted()) return@use null
                     try {
-                        json.decodeFromString(serializer, body)
+                        json.decodeFromStream(serializer, source.inputStream())
                     } catch (e: SerializationException) {
                         throw ComprasGovException(INVALID_MESSAGE, ComprasGovException.Kind.INVALID_RESPONSE, r.code, e)
                     } catch (e: IllegalArgumentException) {

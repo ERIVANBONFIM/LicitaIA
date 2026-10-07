@@ -39,7 +39,9 @@ object Routes {
     const val ROBOT = "robot"
     const val ROBOT_CONFIG = "robot/{sessionId}"
     const val STRATEGY = "strategy"
-    const val SIMULATOR = "simulator"
+    /** Simulador removido (app 100% operacional): a rota antiga aponta para Estratégias. */
+    @Deprecated("Simulador removido; use STRATEGY.", ReplaceWith("STRATEGY"))
+    const val SIMULATOR = STRATEGY
     const val WARROOM = "warroom"
 
     const val MESSAGES = "messages"
@@ -57,6 +59,18 @@ object Routes {
     fun radarResults(radarId: Long) = "radar/results/$radarId"
     fun tender(tenderId: Long) = "tender/$tenderId"
     fun tenderAnalysis(tenderId: Long) = "tender/$tenderId/analysis"
+
+    /** Abas da tela de análise do edital (argumento opcional `?tab=`). */
+    const val TAB_ANALYSIS = "analise"
+    const val TAB_QUESTIONS = "perguntas"
+    const val TAB_ITEMS = "itens"
+
+    /** Análise do edital abrindo direto na aba [tab] ([TAB_ANALYSIS], [TAB_QUESTIONS] ou [TAB_ITEMS]). */
+    fun tenderAnalysis(tenderId: Long, tab: String) = "tender/$tenderId/analysis?tab=$tab"
+    /** "Pergunte ao edital". */
+    fun tenderQuestions(tenderId: Long) = tenderAnalysis(tenderId, TAB_QUESTIONS)
+    /** "Ver itens". */
+    fun tenderItems(tenderId: Long) = tenderAnalysis(tenderId, TAB_ITEMS)
     fun tenderWorth(tenderId: Long) = "tender/$tenderId/worth"
     fun tenderProposal(tenderId: Long) = "tender/$tenderId/proposal"
     fun proposalPdf(proposalId: Long) = "proposal/$proposalId/pdf"
@@ -72,7 +86,7 @@ object Routes {
     /** Destinos de topo (abrem pelo menu lateral; mostram o ícone de menu em vez de "voltar"). */
     val topLevel = setOf(
         DASHBOARD, SEARCH, RADAR, INTERESTS, ANALYZE, PARTICIPATIONS, LIVE, WARROOM, STRATEGY,
-        SIMULATOR, MESSAGES, COMPETITION, ROBOT, DOCUMENTS, PORTALS, AUDIT, COMPANIES, SETTINGS, SECURITY,
+        MESSAGES, COMPETITION, ROBOT, DOCUMENTS, PORTALS, AUDIT, COMPANIES, SETTINGS, SECURITY,
     )
 }
 

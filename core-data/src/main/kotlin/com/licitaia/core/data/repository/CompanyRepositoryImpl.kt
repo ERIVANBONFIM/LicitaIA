@@ -101,6 +101,7 @@ class CompanyRepositoryImpl @Inject constructor(
                 db.documentDao().deleteByCompany(id)
                 db.tenderAnalysisDao().deleteByCompany(id)
                 db.proposalDao().deleteByCompany(id)
+                db.editalQuestionDao().deleteByCompany(id)
                 db.tenderDao().getByCompany(id).forEach { db.tenderDao().delete(it.id) }
                 db.portalSessionDao().deleteByCompany(id)
                 db.messageDao().deleteByCompany(id)
@@ -110,6 +111,8 @@ class CompanyRepositoryImpl @Inject constructor(
                 db.notificationDao().deleteByCompany(id)
                 db.aiConfigDao().deleteByCompany(id)
                 db.relevanceScoreDao().deleteByCompany(id)
+                db.portalRobotDao().deleteMyTendersByCompany(id)
+                db.portalRobotDao().deletePlansByCompany(id)
                 userDao.getAll().filter { id in it.companyIds }.forEach {
                     userDao.upsert(it.copy(companyIds = it.companyIds - id))
                 }

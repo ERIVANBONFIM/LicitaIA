@@ -1,0 +1,102 @@
+# FIXTURE REAL: dump do DevTools no aparelho logado (Compras.gov.br, 2026). Dados pessoais do fornecedor substituídos.
+URL: https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra=
+h1 .  @0,50 :: Compras eletrônicas
+button .br-button type=button aria-label=Recarregar página icon.fas fa-sync-alt @196,106 :: 
+p-tab .p-ripple p-tab id=pn_id_2_tab_0 role=tab @12,174 :: Minhas participações
+p-tab .p-ripple p-tab p-tab-active id=pn_id_2_tab_1 role=tab @220,174 :: Todas as compras
+button .p-ripple p-tablist-nav-button p-tablist-next-button type=button aria-label=Próximo icon.p-icon @308,174 :: 
+p-button .ng-star-inserted id=pn_id_62_header type=button aria-label=Parâmetros de pesquisa role=button icon.p-icon ng-star-inserted @273,385 :: 
+button .p-ripple p-button p-button-icon-only p-button-rounded p-button-seconda type=button icon.p-icon ng-star-inserted @273,385 :: 
+label .  @43,483 :: Em andamento
+input .p-radiobutton-input id=emAndamento type=radio @43,484 :: true
+label .  @43,510 :: Finalizadas
+input .p-radiobutton-input id=finalizadas type=radio @43,510 :: false
+input .p-checkbox-input id=abertasParticipacao type=checkbox @43,565 :: on
+label .  @75,565 :: Abertas para participação
+input .p-checkbox-input id=emDisputa type=checkbox @43,592 :: on
+label .  @75,592 :: Em disputa
+input .p-checkbox-input id=emSelecaoDeFornecedores type=checkbox @43,618 :: on
+label .  @75,618 :: Em seleção de fornecedores
+input .p-checkbox-input type=checkbox @43,669 :: on
+label .  @71,669 :: Preferenciais ME/EPP
+label .  @43,716 :: Modalidade
+span .p-placeholder p-select-label ng-star-inserted aria-label=Todas as modalidades role=combobox @44,740 :: Todas as modalidades
+div .p-select-dropdown aria-label=dropdown trigger role=button icon.p-select-dropdown-icon p-icon ng-star-inserted @252,740 :: 
+label .  @43,789 :: Critério de julgamento
+span .p-placeholder p-select-label ng-star-inserted aria-label=Todos os critérios de julgamento role=combobox @44,813 :: Todos os critérios de julgamento
+div .p-select-dropdown aria-label=dropdown trigger role=button icon.p-select-dropdown-icon p-icon ng-star-inserted @276,813 :: 
+label .  @43,862 :: Unidade compradora
+input .d-flex p-component p-inputtext id=unidadeCompradora type=text title=Digite o código da unidade compradora @43,885 :: 
+label .  @43,932 :: Número da compra
+input .d-flex p-component p-inputtext type=text placeholder=Ex: 102021 title=Digite o número e ano da compra. Ex: 102021 @43,956 :: 
+button .br-button is-primary type=button @205,1000 :: Pesquisar
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart fas @15,1088 :: DISPENSA ELETRÔNICA N° 7/2022 ME/EPP 170162 - MINISTERIO DA FAZENDA Etapa: Até: Proposta 1
+button .br-button ml-auto type=button aria-label=Remover dos favoritos icon.fa-heart fas @233,1196 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,1196 :: 
+button .br-button ng-tns-c2676136113-14 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-14 @297,1196 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,1252 :: PREGÃO ELETRÔNICO N° 33/2022 160238 - COMANDO DO EXERCITO Menor Preço / Maior Desconto COM
+a .cursor-pointer  @43,1324 :: COMPRA REVOGADA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,1340 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,1340 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,1340 :: 
+button .br-button ng-tns-c2676136113-15 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-15 @297,1340 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,1396 :: PREGÃO ELETRÔNICO N° 36/2022 926668 - ASSEMBLEIA LEGISLATIVA DE MATO GROSSO Menor Preço / 
+a .cursor-pointer  @43,1487 :: COMPRA SUSPENSA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,1502 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,1502 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,1502 :: 
+button .br-button ng-tns-c2676136113-16 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-16 @297,1502 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,1558 :: DISPENSA ELETRÔNICA N° 43/2022 ME/EPP 984287 - PREFEITURA DE CARMO DO RIO CLARO Etapa: Até
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,1685 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,1685 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,1685 :: 
+button .br-button ng-tns-c2676136113-17 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-17 @297,1685 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,1741 :: PREGÃO ELETRÔNICO N° 1/2023 90137 - ESP-SECRETARIA DA SAUDE Menor Preço / Maior Desconto C
+a .cursor-pointer  @43,1813 :: COMPRA ANULADA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,1829 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,1829 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,1829 :: 
+button .br-button ng-tns-c2676136113-18 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-18 @297,1829 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,1885 :: PREGÃO ELETRÔNICO N° 1/2023 100009 - JUSTICA DO DISTRITO FEDERAL E DOS TERRITORIOS Menor P
+a .cursor-pointer  @43,1976 :: COMPRA REVOGADA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,1991 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,1991 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,1991 :: 
+button .br-button ng-tns-c2676136113-19 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-19 @297,1991 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,2047 :: PREGÃO ELETRÔNICO N° 1/2023 113602 - INSTITUTO DE PESQUISA ECONOMICA APLICADA Menor Preço 
+a .cursor-pointer  @43,2138 :: COMPRA SUSPENSA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,2154 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,2154 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,2154 :: 
+button .br-button ng-tns-c2676136113-20 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-20 @297,2154 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,2210 :: CONCORRÊNCIA ELETRÔNICA N° 1/2023 154054 - FUNDACAO UNIVERSIDADE FEDERAL DE MATO G. SUL Me
+a .cursor-pointer  @43,2301 :: COMPRA REVOGADA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,2316 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,2316 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,2316 :: 
+button .br-button ng-tns-c2676136113-21 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-21 @297,2316 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,2372 :: CONCORRÊNCIA ELETRÔNICA N° 1/2023 155020 - EMPRESA BRASILEIRA DE SERVIÇOS HOSPITALARES Men
+a .cursor-pointer  @43,2463 :: COMPRA REVOGADA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,2479 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,2479 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,2479 :: 
+button .br-button ng-tns-c2676136113-22 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-22 @297,2479 :: 
+div .row cp-itens-card justify-content-between cp-item-expansivel  icon.fa-heart far @15,2535 :: CONCORRÊNCIA ELETRÔNICA N° 1/2023 156678 - UNIVERSIDADE FEDERAL DE JATAI Menor Preço / Mai
+a .cursor-pointer  @43,2626 :: COMPRA SUSPENSA
+button .br-button ml-auto type=button aria-label=Adicionar aos favoritos icon.fa-heart far @201,2641 :: 
+button .br-button ml-auto type=button aria-label=Quadro Informativo icon.fa-clipboard fas @233,2641 :: 
+button .br-button ml-auto type=button aria-label=Acompanhar compra icon.fa fa-tasks @265,2641 :: 
+button .br-button ng-tns-c2676136113-23 ng-trigger ng-trigger-animationRotate1 aria-label=Mostrar detalhes da compra icon.fas fa-chevron-down ng-tns-c2676136113-23 @297,2641 :: 
+button .p-ripple p-disabled p-paginator-first ng-star-inserted type=button aria-label=Primeira Página icon.p-paginator-first-icon p-icon ng-star-inserted @20,2722 :: 
+button .p-ripple p-disabled p-paginator-prev type=button aria-label=Página Anterior icon.p-paginator-prev-icon p-icon ng-star-inserted @56,2722 :: 
+button .p-ripple p-paginator-page p-paginator-page-selected ng-star-inserted type=button aria-label=Página 1 @92,2722 :: 1
+button .p-ripple p-paginator-page ng-star-inserted type=button aria-label=Página 2 @128,2722 :: 2
+button .p-ripple p-paginator-page ng-star-inserted type=button aria-label=Página 3 @164,2722 :: 3
+button .p-ripple p-paginator-page ng-star-inserted type=button aria-label=Página 4 @200,2722 :: 4
+button .p-ripple p-paginator-page ng-star-inserted type=button aria-label=Página 5 @236,2722 :: 5
+button .p-ripple p-paginator-next type=button aria-label=Próxima Página icon.p-paginator-next-icon p-icon ng-star-inserted @272,2722 :: 
+button .p-ripple p-paginator-last ng-star-inserted type=button aria-label=Última Página icon.p-paginator-last-icon p-icon ng-star-inserted @308,2722 :: 
+div .outline-color text-right pr-3 role=tab @63,7 :: FORNECEDOR DE TESTE | 000.000.000-00 EMPRESA DE TESTE LTDA | 00.000.000/0
+button .br-button type=button role=tab icon.fas fa-bell @230,14 :: 
+button .br-sign-in p-1 id=avatar-dropdown-trigger type=button icon.br-tag icon avatarUsuario @290,10 :: 
+TEXTO: Compras eletrônicas Compras eletrônicas Compras eletrônicas Minhas participações Todas as compras Nesta seção você poderá encontrar as compras em qualquer etapa. Caso queira uma consulta mais específica, basta refinar os parametros de pesquisa logo abaixo. Parâmetros de pesquisa Situação Em andamento Finalizadas Etapa Abertas para participação Em disputa Em seleção de fornecedores Preferenciais ME/EPP Modalidade Todas as modalidades Critério de julgamento Todos os critérios de julgamento Unidade compradora Número da compra Pesquisar DISPENSA ELETRÔNICA N° 7/2022 ME/EPP 170162 - MINISTERIO DA FAZENDA Etapa: Até: Proposta 10/05/2030 07:59 PREGÃO ELETRÔNICO N° 33/2022 160238 - COMANDO DO EXERCITO Menor Preço / Maior Desconto COMPRA REVOGADA PREGÃO ELETRÔNICO N° 36/2022 926668 - ASSEMBLEIA LEGISLATIVA DE MATO GROSSO Menor Preço / Maior Desconto COMPRA SUSPENSA DISPENSA ELETRÔNICA N° 43/2022 ME/EPP 984287 - PREFEITURA DE CARMO DO RIO CLARO Etapa: Até: Proposta 23/12/2312 07:59 PREGÃO ELETRÔNICO N° 1/2023 90137 - ESP-SECRETARIA DA SAUDE Menor Preço / Maior Desconto COMPRA ANULADA PREGÃO ELETRÔNICO N° 1/2023 100009 - JUSTICA DO DISTRITO FEDERAL E DOS TERRITORIOS Menor Preço / Maior Desconto COMPRA REVOGADA PREGÃO ELETRÔNICO N° 1/2023 113602 - INSTITUTO DE PESQUISA ECONOMICA APLICADA Menor Preço / Maior Desconto COMPRA SUSPENSA CONCORRÊNCIA ELETRÔNICA N° 1/2023 154054 - FUNDACAO UNIVERSIDADE FEDERAL DE MATO G. SUL Melhor Técnica / Conteúdo Artístico COMPRA REVOGADA CONCORRÊNCIA ELETR

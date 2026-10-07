@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.ZoomIn
@@ -83,6 +84,8 @@ data class ProposalPdfState(
     val tender: Tender? = null,
     val path: String? = null,
     val pages: List<Bitmap> = emptyList(),
+    /** Total de páginas do arquivo (a pré-visualização mostra até [ProposalPdfViewModel] MAX_PAGES). */
+    val totalPages: Int = 0,
 )
 
 @HiltViewModel
@@ -116,7 +119,8 @@ class ProposalPdfViewModel @Inject constructor(
                 val tender = tenders.observeTender(proposal.tenderId).first() ?: throw IllegalStateException("Licitação da proposta não encontrada.")
                 _state.update { it.copy(proposal = proposal, tender = tender) }
 
-                var path = proposal.pdfPath?.takeIf { File(it).exists() }
+                // PDFs do layout antigo ("proposta_…") são refeitos no layout atual.
+                var path = proposal.pdfPath?.takeIf { File(it).let { f -> f.exists() && f.length() > 0 && f.name.startsWith("Proposta_") } }
                 if (path == null || regenerate) {
                     _state.update { it.copy(stage = "Gerando PDF…") }
                     val company = if (session.activeCompany.id == tender.companyId) session.activeCompany
@@ -136,7 +140,8 @@ class ProposalPdfViewModel @Inject constructor(
                 }
                 _state.update { it.copy(stage = "Renderizando páginas…") }
                 val pages = render(path)
-                recycleCurrent()
+                // Bitmaps antigos não são reciclados aqui: a tela ainda pode desenhá-los neste quadro (crash
+                // "recycled bitmap" ao regenerar). O GC os libera; onCleared recicla os atuais.
                 _state.update { it.copy(loading = false, path = path, pages = pages, proposal = proposal.copy(pdfPath = path)) }
             } catch (e: CancellationException) {
                 throw e
@@ -148,8 +153,11 @@ class ProposalPdfViewModel @Inject constructor(
 
     private suspend fun render(path: String): List<Bitmap> = withContext(Dispatchers.IO) {
         val result = mutableListOf<Bitmap>()
-        ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+        val file = File(path)
+        if (!file.exists() || file.length() == 0L) throw IllegalStateException("O arquivo do PDF não foi encontrado. Toque em atualizar para gerar de novo.")
+        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
             PdfRenderer(fd).use { renderer ->
+                _state.update { it.copy(totalPages = renderer.pageCount) }
                 val count = minOf(renderer.pageCount, MAX_PAGES)
                 for (i in 0 until count) {
                     renderer.openPage(i).use { page ->
@@ -175,8 +183,9 @@ class ProposalPdfViewModel @Inject constructor(
     }
 
     private companion object {
-        const val RENDER_WIDTH = 1240
-        const val MAX_PAGES = 12
+        /** ~5 MB por página (ARGB): largura suficiente para leitura com zoom sem estourar a memória. */
+        const val RENDER_WIDTH = 960
+        const val MAX_PAGES = 15
     }
 }
 
@@ -243,11 +252,22 @@ fun ProposalPdfScreen(viewModel: ProposalPdfViewModel = hiltViewModel()) {
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         proposal?.let { StatusBadge(it.status.label, it.status.tone()) }
-                        SimulationBadge()
+                        Unit
                         Spacer(Modifier.weight(1f))
                         Text(
-                            "${state.pages.size} pág. · ${(zoom * 100).toInt()}%" + (proposal?.let { " · ${Formatters.brl(it.totalValue)}" } ?: ""),
+                            "${state.totalPages.coerceAtLeast(state.pages.size)} pág. · ${(zoom * 100).toInt()}%" + (proposal?.let { " · ${Formatters.brl(it.totalValue)}" } ?: ""),
                             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary,
+                        )
+                        IconButton(onClick = {
+                            val path = state.path
+                            if (path == null || !openPdf(context, path)) navigator.showMessage("Nenhum leitor de PDF instalado. Use Compartilhar.")
+                        }) { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = "Abrir em outro app") }
+                    }
+                    if (state.totalPages > state.pages.size) {
+                        Text(
+                            "Pré-visualização das ${state.pages.size} primeiras de ${state.totalPages} páginas. O arquivo completo é o que vai no Compartilhar.",
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow,
+                            modifier = Modifier.padding(horizontal = 16.dp),
                         )
                     }
                     LazyColumn(

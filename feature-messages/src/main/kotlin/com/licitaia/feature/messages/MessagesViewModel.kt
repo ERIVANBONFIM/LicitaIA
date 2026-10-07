@@ -36,12 +36,22 @@ data class MessagesUiState(
     val unreadCount get() = all.count { !it.read }
     val urgentCount get() = all.count { it.isUrgentPending() }
 
-    fun forTab(tab: MessageTab): List<AuctioneerMessage> = when (tab) {
+    /** Licitações com mensagens (filtro), mais recentes primeiro. */
+    val tenders: List<TenderKey> get() = all.sortedByDescending { it.receivedAt }.map { it.tenderKey() }.distinct()
+
+    fun forTab(tab: MessageTab, tender: TenderKey? = null): List<AuctioneerMessage> = when (tab) {
         MessageTab.ALL -> all
         MessageTab.UNREAD -> all.filter { !it.read }
         MessageTab.URGENT -> all.filter { it.isUrgentPending() }
-    }
+    }.filter { tender == null || it.tenderKey() == tender }
 }
+
+/** Licitação de uma mensagem (portal + número) para o filtro. */
+data class TenderKey(val portal: com.licitaia.domain.model.Portal, val number: String) {
+    val label: String get() = "${portal.shortName} ${number}"
+}
+
+internal fun AuctioneerMessage.tenderKey() = TenderKey(portal, tenderNumber.trim())
 
 /** Urgente e ainda sem resposta enviada. */
 internal fun AuctioneerMessage.isUrgentPending(): Boolean = urgent && replyStatus != ReplyStatus.ENVIADA_SIMULADA

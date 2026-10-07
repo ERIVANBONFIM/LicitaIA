@@ -218,14 +218,14 @@ fun AssistedSessionFormScreen(vm: AssistedSessionFormViewModel = hiltViewModel()
     val rule = form.toRule()
     val selectedTender = form.tenderId?.let { id -> state.tenders.firstOrNull { it.id == id } }
 
-    LicitaScaffold(title = "Acompanhar pregão", showBack = true, subtitle = "Modo assistido") { padding ->
+    LicitaScaffold(title = "Acompanhar pregão", showBack = true, subtitle = "Acompanhamento") { padding ->
         Column(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             AlertBanner(
-                "Você opera no portal; o LicitaIA é o copiloto",
-                "Nenhum lance é enviado pelo app. Registre aqui o que fizer no portal: o app calcula margem e distância ao piso, cronometra, sugere o próximo lance e alerta.",
+                "Robô de lance ou modo manual",
+                "Com o robô de lance ARMADO por você (Robô → Configurar robô), ele envia os lances no portal dentro do piso, dos intervalos e do teto que você confirmou — PARAR sempre à mão. No modo manual, quem envia é você no portal; registre aqui o que fizer: o app calcula margem e distância ao piso, cronometra, sugere o próximo lance e alerta.",
                 Tone.INFO,
             )
             if (!state.canOperate) {

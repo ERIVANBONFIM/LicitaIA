@@ -2,8 +2,12 @@ package com.licitaia.core.data.repository
 
 import com.licitaia.ai.api.AiGateway
 import com.licitaia.ai.api.AiProviderException
+import com.licitaia.core.ai.AiCompanyScope
 import com.licitaia.core.ai.AiCredentials
 import com.licitaia.core.ai.AiEndpoint
+import com.licitaia.core.data.db.CompanyDao
+import com.licitaia.core.data.db.toDomain
+import kotlinx.coroutines.currentCoroutineContext
 import com.licitaia.core.ai.AiSecretKeys
 import com.licitaia.core.ai.AiSettingsSource
 import com.licitaia.core.ai.ChatGptAuthorizer
@@ -172,6 +176,14 @@ class AiConfigRepositoryImpl @Inject constructor(
 
     override fun observeActive(): Flow<AiProviderType> = settings.settings.map { it.activeAiProvider }.distinctUntilChanged()
 
+    override fun observeEffective(): Flow<AiProviderType> =
+        combine(aiConfigDao.observeAll(), keyVersion, holder.state, settings.settings) { _, _, session, s ->
+            Triple(session?.activeCompany?.id, session?.activeCompany?.preferredAi, s.activeAiProvider)
+        }
+            .map { runCatching { gateway.activeType() }.getOrDefault(AiProviderType.MOCK) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.IO)
+
     override suspend fun setActive(provider: AiProviderType) {
         requireConfigureIa()
         require(provider != AiProviderType.MOCK) { "IA simulada indisponível nesta entrega." }
@@ -269,19 +281,40 @@ class AiSettingsSourceImpl @Inject constructor(
     private val settings: SettingsRepositoryImpl,
     private val aiConfigDao: AiConfigDao,
     private val holder: SessionHolder,
+    private val companyDao: CompanyDao,
 ) : AiSettingsSource {
     override suspend fun activeProvider(): AiProviderType = settings.current().activeAiProvider
 
-    /** Demonstração: sempre heurística local (MOCK) — nunca gasta nem expõe uma chave real. */
+    private class Scope(val companyId: Long, val demo: Boolean, val preferred: AiProviderType?)
+
+    /**
+     * Empresa que vale para a IA: a de [AiCompanyScope] (trabalho de fundo/licitação de uma empresa) quando informada,
+     * senão a empresa ativa da sessão; sem nenhuma das duas, o padrão do aparelho.
+     */
+    private suspend fun scope(): Scope {
+        val session = holder.current
+        val forced = currentCoroutineContext()[AiCompanyScope]?.companyId
+        if (forced != null && forced != session?.activeCompany?.id) {
+            val company = runCatching { companyDao.getById(forced)?.toDomain() }.getOrNull()
+            return Scope(forced, demo = company?.demo == true || session?.user?.demo == true, preferred = company?.preferredAi)
+        }
+        session ?: return Scope(AiSecretKeys.DEVICE_SCOPE, demo = false, preferred = null)
+        return Scope(session.activeCompany.id, session.user.demo || session.activeCompany.demo, session.activeCompany.preferredAi)
+    }
+
+    /**
+     * Demonstração: sempre heurística local (MOCK) — nunca gasta nem expõe uma chave real. Fora dela, a preferência
+     * da empresa só vale se for um provedor real explícito (MOCK salvo por engano é ignorado: usa o provedor global).
+     */
     override suspend fun companyPreferredProvider(): AiProviderType? {
-        val session = holder.current ?: return null
-        if (session.user.demo || session.activeCompany.demo) return AiProviderType.MOCK
-        return session.activeCompany.preferredAi
+        val scope = scope()
+        if (scope.demo) return AiProviderType.MOCK
+        return scope.preferred?.takeIf { it != AiProviderType.MOCK }
     }
 
     /** Configuração da empresa ativa, com fallback para o padrão do aparelho; o escopo encontrado vai em [AiEndpoint.companyId]. */
     override suspend fun endpoint(type: AiProviderType): AiEndpoint {
-        val companyId = holder.current?.activeCompany?.id ?: AiSecretKeys.DEVICE_SCOPE
+        val companyId = scope().companyId
         val row = aiConfigDao.resolve(type, companyId)
         return AiEndpoint(
             model = row?.model?.takeUnless { it.isBlank() || it in LEGACY_DEFAULT_MODELS } ?: type.defaultModel,

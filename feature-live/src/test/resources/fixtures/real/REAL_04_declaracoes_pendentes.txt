@@ -1,0 +1,36 @@
+# FIXTURE REAL: dump do DevTools no aparelho logado (Compras.gov.br, 2026). Dados pessoais do fornecedor substituídos.
+URL: https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/cadastro-propostas?compra=92731205000032026
+BUTTON id= name= fcn= type=button aria=Tela inicial checked=undefined disabled=false lab= txt= ctx=Cadastrar propostas
+BUTTON id= name= fcn= type=button aria=Recarregar página checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria=Adicionar aos favoritos checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria=Documentos e demais informações da contratação no PNCP checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria=Quadro Informativo checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria=Informações adicionais da compra checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt= ctx=Endereço do fornecedor
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt=Sincronizar endereço ctx=Sincronizar endereço
+P-CHECKBOX id= name= fcn= type= aria= checked=undefined disabled=undefined lab= txt= ctx=
+INPUT id= name= fcn= type=checkbox aria= checked=false disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt=Declaração para fornecedores ME/EPP e equiparados ctx=Declaração para fornecedores ME/EPP e equiparados Sim Não Declaro, sob as penas da Lei, que não ultrapassei o limite de faturamento e cumpro
+P-RADIOBUTTON id= name= fcn= type= aria= checked=undefined disabled=undefined lab= txt= ctx= Sim Não
+INPUT id=labelSimMeepp name= fcn= type=radio aria= checked=false disabled=true lab=Sim txt= ctx= Sim Não
+P-RADIOBUTTON id= name= fcn= type= aria= checked=undefined disabled=undefined lab= txt= ctx= Sim Não
+INPUT id=labelNaoMeepp name= fcn= type=radio aria= checked=false disabled=true lab=Não txt= ctx= Sim Não
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt=Declarações exclusivamente para critérios de desempate previ ctx=Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.133/2021. Sim Não Declaro que desenvolvo ações de e
+P-RADIOBUTTON id= name= fcn= type= aria= checked=undefined disabled=undefined lab= txt= ctx=Sim Não
+INPUT id=declaracaoEquidadeGeneroSim name= fcn= type=radio aria= checked=false disabled=true lab=Sim txt= ctx=Sim Não
+P-RADIOBUTTON id= name= fcn= type= aria= checked=undefined disabled=undefined lab= txt= ctx=Sim Não
+INPUT id=declaracaoEquidadeGeneroNao name= fcn= type=radio aria= checked=false disabled=true lab=Não txt= ctx=Sim Não
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt= ctx=Declaro que desenvolvo ações de equidade entre mulheres e homens no ambiente de trabalho, nos termos previstos no inciso III do art. 60 da L
+P-RADIOBUTTON id= name= fcn= type= aria= checked=undefined disabled=undefined lab= txt= ctx=Sim Não
+INPUT id=declaracaoProgramasIntegridadeSim name= fcn= type=radio aria= checked=false disabled=true lab=Sim txt= ctx=Sim Não
+P-RADIOBUTTON id= name= fcn= type= aria= checked=undefined disabled=undefined lab= txt= ctx=Sim Não
+INPUT id=declaracaoProgramasIntegridadeNao name= fcn= type=radio aria= checked=false disabled=true lab=Não txt= ctx=Sim Não
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt= ctx=Declaro que desenvolvo programa de integridade, nos termos previstos no inciso IV do art. 60 da Lei nº 14.133/2021 e no Decreto nº 12.304/20
+BUTTON id= name= fcn= type=button aria=Adicionar aos favoritos checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=submit aria= checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria=Adicionar aos favoritos checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=submit aria= checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt= ctx=
+BUTTON id= name= fcn= type=button aria= checked=undefined disabled=false lab= txt= ctx=8
+BUTTON id=avatar-dropdown-trigger name= fcn= type=button aria= checked=undefined disabled=false lab= txt= ctx=
+TEXTO: ite de faturamento e cumpro os requisitos estabelecidos no Art. 3º da Lei Complementar nº 123, de 14 de dezembro de 2006, sendo apto a usufruir do tratamento favorecido estabelecido nos artigos 42 ao 49 da referida Lei Complementar, caso ele seja aplicado nessa contratação, observado o Art. 4º da Lei nº 14.133/2021. Declarações exclusivamente para critérios de desempate previstos no art. 60 da Lei nº 14.133/2021. Sim Não Declaro que desenvolvo ações de equidade entre mulheres e homens no ambiente de trabalho, nos termos previstos no inciso III do art. 60 da Lei nº 14.133/2021 e no Decreto nº 11.430/2023. Sim Não Declaro que desenvolvo programa de integridade, nos termos previstos no inciso IV do art. 60 da Lei nº 14.133/2021 e no Decreto nº 12.304/2024. Itens 1 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (unitário) R$ 151.000,0000 Proposta não cadastrada 2 ACESSO A INTERNET VIA CABO Quantidade solicitada Unidade fornecimento 1 Valor estimado (unitário) R$ 151.000,0000 Proposta não cadastrada Descrição detalhada Acesso a internet via cabo. Tipo Dedicado. Velocidade (up) 500Mbps. Velocidade (down) 500Mbps A descrição e especificação do item deverá observar rigorosamente o disposto no Termo de Referência (TR), que integra o presente processo para todos os fins. FORNECEDOR DE TESTE | 000.000.000-00 EMPRESA DE TESTE LTDA | 00.000.000/0-00 8
