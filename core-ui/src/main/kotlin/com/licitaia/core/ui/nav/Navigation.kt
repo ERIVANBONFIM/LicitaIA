@@ -81,6 +81,11 @@ object Routes {
     const val PLATFORM_AUDIT = "platform/auditoria"
     /** Robôs de lance ativos (`GET /robo-lances/ativas`). */
     const val PLATFORM_ROBOT = "platform/robo"
+    /** Pregões ao vivo — lista das disputas ativas (`GET /robo-lances/ativas`). */
+    const val PLATFORM_LIVE = "platform/pregoes"
+    /** Acompanhamento ao vivo de uma licitação (`GET /licitacoes/:id/ao-vivo`, polling). */
+    const val PLATFORM_LIVE_TENDER = "platform/ao-vivo/{platformId}"
+    fun platformLive(id: String) = "platform/ao-vivo/$id"
     /** Estado gracioso para funções ainda sem endpoint de nuvem (em modo plataforma). */
     const val PLATFORM_SOON = "platform/em-breve"
 

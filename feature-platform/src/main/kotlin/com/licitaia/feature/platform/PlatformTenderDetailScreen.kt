@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.QuestionAnswer
 import androidx.compose.material.icons.outlined.RequestQuote
@@ -110,6 +111,7 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     onPararRoboLocal = viewModel::pararRoboLocal,
                     onRegisterResult = viewModel::registrarResultado,
                     onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
+                    onOpenLive = { navigator.navigate(Routes.platformLive(state.tender!!.id)) },
                     onOpenPortal = { url ->
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                             .onFailure { navigator.showMessage("Não foi possível abrir o portal.") }
@@ -451,6 +453,7 @@ private fun TenderDetail(
     onPararRoboLocal: () -> Unit,
     onRegisterResult: (String) -> Unit,
     onOpenQa: () -> Unit,
+    onOpenLive: () -> Unit,
     onOpenPortal: (String) -> Unit,
 ) {
     val t = s.tender ?: return
@@ -670,14 +673,17 @@ private fun TenderDetail(
             }
         }
 
-        // Próximos passos (sem endpoint pronto na VPS ou bloqueado)
-        LicitaCard(Modifier.fillMaxWidth()) {
-            Text("Em breve na nuvem", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Acompanhar o pregão ao vivo (sessão/tempo real) ainda não tem endpoint na plataforma. No modo local já opera.",
-                style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted,
-            )
+        // Acompanhar pregão ao vivo (leitura em tempo real, polling)
+        LicitaCard(Modifier.fillMaxWidth(), onClick = onOpenLive) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Bolt, contentDescription = null, tint = LicitaColors.Red)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Acompanhar pregão ao vivo", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                    Text("Melhor lance, sua posição e eventos em tempo real (leitura)", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                }
+                Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null, tint = LicitaColors.TextMuted)
+            }
         }
     }
 }

@@ -235,6 +235,10 @@ class PlatformApi(
     suspend fun roboAtivas(token: String): List<RoboAtivaDto> =
         get(url("robo-lances/ativas"), ListSerializer(RoboAtivaDto.serializer()), token = token) ?: emptyList()
 
+    /** `GET /licitacoes/:id/ao-vivo` → acompanhamento ao vivo (só leitura). */
+    suspend fun aoVivo(token: String, id: String): AoVivoDto =
+        get(url("licitacoes/$id/ao-vivo"), AoVivoDto.serializer(), token = token) ?: AoVivoDto()
+
     /** `GET /ia/chat-edital/:id/historico` → mensagens do "Pergunte ao edital". */
     suspend fun chatHistorico(token: String, id: String): List<ChatMsg> =
         (get(url("ia/chat-edital/$id/historico"), ChatHistoricoDto.serializer(), token = token)?.mensagens ?: emptyList())

@@ -7,6 +7,7 @@ import com.licitaia.core.platform.net.DocumentoDto
 import com.licitaia.core.platform.net.EmpresaDetailDto
 import com.licitaia.core.platform.net.HealthDto
 import com.licitaia.core.platform.net.AnaliseLocalRequest
+import com.licitaia.core.platform.net.AoVivoDto
 import com.licitaia.core.platform.net.AuditoriaItemDto
 import com.licitaia.core.platform.net.CertidaoDto
 import com.licitaia.core.platform.net.PropostaCreateRequest
@@ -319,6 +320,9 @@ class PlatformRepository @Inject constructor(
 
     /** `GET /robo-lances/ativas`. */
     suspend fun roboAtivas(): Result<List<RoboAtivaDto>> = authedRead { api.roboAtivas(it) }
+
+    /** `GET /licitacoes/:id/ao-vivo` (acompanhamento ao vivo; só leitura). */
+    suspend fun aoVivo(id: String): Result<AoVivoDto> = authedRead { api.aoVivo(it, id) }
 
     /** `GET /ia/chat-edital/:id/historico`. */
     suspend fun chatHistorico(id: String): Result<List<ChatMsg>> = authedRead { api.chatHistorico(it, id) }

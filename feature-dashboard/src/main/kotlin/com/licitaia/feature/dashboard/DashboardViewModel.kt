@@ -135,7 +135,8 @@ class DashboardViewModel @Inject constructor(
         emit(base)
         val interests = platform.countTenders(TenderFilter.INTERESSE).getOrDefault(0)
         val radar = platform.radarFiltros().getOrDefault(emptyList()).size
-        emit(base.copy(loading = false, interests = interests, radarMatches = radar))
+        val ativas = platform.roboAtivas().getOrDefault(emptyList()).size
+        emit(base.copy(loading = false, interests = interests, radarMatches = radar, liveCount = ativas))
     }.catch { emit(DashboardUiState(loading = false, userName = plat.user.nome.ifBlank { plat.user.email }, companyName = plat.companyName)) }
 
     private fun Flow<Int>.safe(default: Int): Flow<Int> = onStart { emit(default) }.catch { emit(default) }

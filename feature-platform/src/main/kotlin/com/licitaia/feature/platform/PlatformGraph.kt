@@ -18,6 +18,11 @@ fun NavGraphBuilder.platformGraph() {
     composable(Routes.PLATFORM_MESSAGES) { PlatformMessagesScreen() }
     composable(Routes.PLATFORM_AUDIT) { PlatformAuditScreen() }
     composable(Routes.PLATFORM_ROBOT) { PlatformRobotScreen() }
+    composable(Routes.PLATFORM_LIVE) { PlatformLiveListScreen() }
+    composable(
+        Routes.PLATFORM_LIVE_TENDER,
+        arguments = listOf(navArgument("platformId") { type = NavType.StringType }),
+    ) { PlatformLiveScreen() }
     composable(Routes.PLATFORM_SOON) { PlatformSoonScreen() }
     composable(
         Routes.PLATFORM_TENDER,

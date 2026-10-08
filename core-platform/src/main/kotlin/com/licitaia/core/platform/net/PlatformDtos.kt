@@ -268,6 +268,36 @@ data class ProntidaoDto(
     val motivos: List<String> = emptyList(),
 )
 
+/** `GET /licitacoes/:id/ao-vivo` → acompanhamento ao vivo (só leitura). Decimais como string. */
+@Serializable
+data class AoVivoDto(
+    val snapshots: List<AoVivoSnapshotDto> = emptyList(),
+    val eventos: List<AoVivoEventoDto> = emptyList(),
+    val ativo: Boolean = false,
+)
+
+@Serializable
+data class AoVivoSnapshotDto(
+    val itemNumero: Int? = null,
+    val bestBid: String? = null,
+    val ownBid: String? = null,
+    val ownPosition: Int? = null,
+    val floor: String? = null,
+    val phase: String? = null,
+    val situacao: String? = null,
+    val portalState: String? = null,
+    val capturedAt: String? = null,
+)
+
+@Serializable
+data class AoVivoEventoDto(
+    val previousState: String? = null,
+    val newState: String? = null,
+    val reason: String? = null,
+    val severity: String? = null,
+    val createdAt: String? = null,
+)
+
 /** `GET /robo-lances/ativas` (valorMinimo/decremento vêm como STRING aqui — tolerante). */
 @Serializable
 data class RoboAtivaDto(
@@ -280,6 +310,8 @@ data class RoboAtivaDto(
     val intervaloSegundos: Int? = null,
     val itemAlvo: String? = null,
     val modoExecucao: String? = null,
+    val status: String? = null,
+    val ultimoLanceValor: String? = null,
 )
 
 /** `GET /ia/chat-edital/:id/historico` → `{ok, mensagens:[...]}` (shape das mensagens tolerante). */
