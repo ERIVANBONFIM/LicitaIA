@@ -307,7 +307,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
                 _events.send("Robô não está pronto: " + pront.motivos.joinToString("; ").ifBlank { pront.estado ?: "bloqueado" })
                 _state.update { it.copy(roboBusy = false) }; return@launch
             }
-            val ny = PortalTenderMatching.parseNumberYear(dto.numero)
+            val ref = resolveCompraRef(dto)
             val now = System.currentTimeMillis()
             val resultado = runCatching {
                 // 1) Importa a "minha licitação" nos repos locais (escopo sintético).
@@ -316,7 +316,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     listOf(
                         PortalMyTender(
                             companyId = company.id, tenderKey = key, portal = Portal.COMPRAS_GOV,
-                            uasg = dto.uasg.orEmpty(), number = ny?.first ?: "", year = ny?.second ?: 0,
+                            uasg = ref.uasg.orEmpty(), number = ref.number ?: "", year = ref.year ?: 0,
                             modality = dto.modalidade ?: "", objectDescription = dto.orgao,
                             openingAt = parseIso(dto.dataAbertura).takeIf { it > 0 },
                             situation = dto.fase ?: "", hasProposal = !dto.urlProposta.isNullOrBlank(),
@@ -370,10 +370,26 @@ class PlatformTenderDetailViewModel @Inject constructor(
         viewModelScope.launch { _events.send("Robô parado.") }
     }
 
-    private fun roboKeyOf(dto: TenderDto): String? {
+    /** UASG/número/ano resolvidos da compra (usados pela chave do robô E pela navegação on-device). */
+    private data class CompraRef(val uasg: String?, val number: String?, val year: Int?)
+
+    /**
+     * Extração ROBUSTA de UASG/número/ano: além dos campos crus dto.uasg/dto.numero, aproveita o órgão
+     * ("UASG 926810"), o objeto e o id (padrões legado/PNCP) via refOf. Evita a trava "UASG/número/ano
+     * reconhecíveis" quando o dado veio no texto e não nos campos; se nada identificar a compra (ex.: PNCP
+     * sem UASG), os componentes ficam nulos → a trava fica (correta).
+     */
+    private fun resolveCompraRef(dto: TenderDto): CompraRef {
+        val ref = PortalTenderMatching.refOf(dto.id, dto.numero, dto.orgao)
         val ny = PortalTenderMatching.parseNumberYear(dto.numero)
-        return PortalTenderMatching.tenderKey(dto.uasg, ny?.first, ny?.second)
+            ?: PortalTenderMatching.parseNumberYear(dto.objeto)
+            ?: (ref.number?.let { n -> ref.year?.let { y -> n to y } })
+        val uasg = dto.uasg?.takeIf { it.any(Char::isDigit) } ?: ref.uasg
+        return CompraRef(uasg, ny?.first ?: ref.number, ny?.second ?: ref.year)
     }
+
+    private fun roboKeyOf(dto: TenderDto): String? =
+        resolveCompraRef(dto).let { PortalTenderMatching.tenderKey(it.uasg, it.number, it.year) }
 
     private fun mapEstrategia(e: String?): BidStrategy = when {
         e == null -> BidStrategy.CONSERVADORA
