@@ -2,6 +2,7 @@ package com.licitaia.feature.platform
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,16 +26,21 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -83,6 +89,44 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                             .onFailure { navigator.showMessage("Não foi possível abrir o portal.") }
                     },
+                )
+            }
+        }
+    }
+}
+
+/** Um item do edital como bloco legível: nº, linha Qtd·Un·Valor destacada e descrição recolhível. */
+@Composable
+private fun ItemRow(index: Int, item: PlatformItem) {
+    var expanded by rememberSaveable(index) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Text("Item ${index + 1}", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+        val meta = listOfNotNull(
+            item.quantidade?.takeIf { it.isNotBlank() }?.let { "Qtd $it" },
+            item.unidade?.takeIf { it.isNotBlank() }?.let { "un: $it" },
+            item.valor?.takeIf { it.isNotBlank() }?.let { PlatformFormat.currency(it) },
+        )
+        if (meta.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(meta.joinToString("  ·  "), style = MaterialTheme.typography.labelLarge, color = LicitaColors.BlueBright, fontWeight = FontWeight.SemiBold)
+        }
+        val desc = item.descricao?.trim()
+        if (!desc.isNullOrBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                desc,
+                style = MaterialTheme.typography.bodySmall,
+                color = LicitaColors.TextSecondary,
+                maxLines = if (expanded) Int.MAX_VALUE else 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+            )
+            if (desc.length > 120) {
+                Text(
+                    if (expanded) "ver menos" else "ver mais",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = LicitaColors.Blue,
+                    modifier = Modifier.padding(top = 2.dp).clickable { expanded = !expanded },
                 )
             }
         }
@@ -244,19 +288,13 @@ private fun TenderDetail(
         // Itens
         LicitaCard(Modifier.fillMaxWidth()) {
             Text("Itens (${itens.size})", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
-            Spacer(Modifier.height(8.dp))
             if (itens.isEmpty()) {
+                Spacer(Modifier.height(8.dp))
                 Text("Sem itens carregados na plataforma. Abra no portal para ver a íntegra.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
             } else {
                 itens.take(50).forEachIndexed { i, it ->
-                    if (i > 0) Spacer(Modifier.height(6.dp))
-                    Text(it.descricao ?: "Item ${i + 1}", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Medium)
-                    val meta = listOfNotNull(
-                        it.quantidade?.let { q -> "Qtd: $q" },
-                        it.unidade?.let { u -> "Un: $u" },
-                        it.valor?.let { v -> "Valor: ${PlatformFormat.currency(v)}" },
-                    )
-                    if (meta.isNotEmpty()) Text(meta.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary)
+                    if (i == 0) Spacer(Modifier.height(10.dp)) else HorizontalDivider(Modifier.padding(vertical = 12.dp), color = LicitaColors.Outline)
+                    ItemRow(i, it)
                 }
             }
         }
