@@ -34,8 +34,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -60,6 +67,7 @@ import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel()) {
     val tenders by viewModel.tenders.collectAsStateWithLifecycle()
@@ -71,7 +79,14 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
     val filtros by viewModel.filtros.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var showFilters by rememberSaveable { mutableStateOf(false) }
+    // Executa a busca e fecha o teclado. Nunca navega/volta.
+    val runSearch = {
+        keyboard?.hide()
+        focus.clearFocus()
+        viewModel.search()
+    }
 
     // Sessão perdida (logout ou 401 na sincronização) → volta ao login da plataforma.
     LaunchedEffect(session) {
@@ -117,8 +132,16 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
                         singleLine = true,
                         leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { focus.clearFocus(); viewModel.search() }),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardActions = KeyboardActions(onSearch = { runSearch() }),
+                        // Consome o ENTER (soft/físico) para que NUNCA propague como "voltar"/pop de navegação.
+                        modifier = Modifier.fillMaxWidth().onPreviewKeyEvent { e ->
+                            if (e.key == Key.Enter || e.key == Key.NumPadEnter) {
+                                if (e.type == KeyEventType.KeyUp) runSearch()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                     )
                 }
                 item {
