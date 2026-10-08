@@ -119,11 +119,17 @@ class ShellViewModel @Inject constructor(
                 _hasPin.value = runCatching { authRepository.hasPin() }.getOrDefault(false)
                 if (s.biometricLock || _hasPin.value) _locked.value = true
             }
-            _startRoute.value = when {
+            val target = when {
                 platformSignedIn -> Routes.PLATFORM_TENDERS
                 restored != null -> Routes.DASHBOARD
                 else -> Routes.PLATFORM_LOGIN
             }
+            // Diagnóstico de abertura (confirmar no aparelho: `adb logcat -s LicitaStart`).
+            android.util.Log.i(
+                "LicitaStart",
+                "startRoute=$target (plataforma=$platformSignedIn, localLembrada=${restored != null})",
+            )
+            _startRoute.value = target
         }
         // Login / troca de empresa → restaura (ou cria) as sessões de pregão da empresa ativa.
         viewModelScope.launch {
