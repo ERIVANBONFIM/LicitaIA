@@ -11,6 +11,25 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class LoginRequest(val email: String, val senha: String)
 
+/** `POST /auth/register` (auto-cadastro por CNPJ) → `{token,user}`. */
+@Serializable
+data class RegisterRequest(
+    val nome: String,
+    val email: String,
+    val senha: String,
+    val cnpj: String,
+    val razaoSocial: String,
+)
+
+/** `POST /auth/register-convite` (cadastro por código de convite) → `{token,user}`. */
+@Serializable
+data class RegisterConviteRequest(
+    val codigo: String,
+    val nome: String,
+    val email: String,
+    val senha: String,
+)
+
 @Serializable
 data class LoginResponse(
     val token: String,

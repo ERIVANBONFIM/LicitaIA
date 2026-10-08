@@ -50,6 +50,28 @@ class PlatformRepository @Inject constructor(
         sessionManager.onSignedIn(resp.user)
     }
 
+    /** `POST /auth/register` (auto-cadastro por CNPJ): guarda token+user e autentica. */
+    suspend fun registerByCnpj(nome: String, email: String, senha: String, cnpj: String, razaoSocial: String): Result<Unit> = runCatching {
+        val resp = api.register(
+            com.licitaia.core.platform.net.RegisterRequest(
+                nome = nome.trim(), email = email.trim(), senha = senha, cnpj = cnpj.trim(), razaoSocial = razaoSocial.trim(),
+            ),
+        )
+        tokenStore.save(resp.token, resp.user)
+        sessionManager.onSignedIn(resp.user)
+    }
+
+    /** `POST /auth/register-convite` (cadastro por código de convite): guarda token+user e autentica. */
+    suspend fun registerByInvite(codigo: String, nome: String, email: String, senha: String): Result<Unit> = runCatching {
+        val resp = api.registerConvite(
+            com.licitaia.core.platform.net.RegisterConviteRequest(
+                codigo = codigo.trim(), nome = nome.trim(), email = email.trim(), senha = senha,
+            ),
+        )
+        tokenStore.save(resp.token, resp.user)
+        sessionManager.onSignedIn(resp.user)
+    }
+
     /** `POST /auth/logout` (best-effort) + limpa o cofre e o espelho local. */
     suspend fun logout() {
         val token = tokenStore.token()

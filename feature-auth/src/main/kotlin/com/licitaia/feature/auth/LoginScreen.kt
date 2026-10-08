@@ -17,13 +17,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Badge
 import androidx.compose.material.icons.outlined.Business
+import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.*
@@ -57,6 +58,7 @@ import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SelectChip
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
+import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
 import com.licitaia.domain.model.Company
 import com.licitaia.domain.util.Formatters
@@ -72,6 +74,10 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
 
     LaunchedEffect(state.loggedIn) {
         if (state.loggedIn) navigator.onLoggedIn()
+    }
+    // Login/cadastro na plataforma → vai para a lista de licitações sincronizadas da VPS.
+    LaunchedEffect(state.platformSignedIn) {
+        if (state.platformSignedIn) navigator.navigate(Routes.PLATFORM_TENDERS)
     }
 
     var entered by remember { mutableStateOf(false) }
@@ -106,9 +112,14 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
 
             AnimatedVisibility(entered, enter = fadeIn() + slideInVertically { it / 5 }) {
                 LicitaCard(Modifier.fillMaxWidth().widthIn(max = 520.dp)) {
+                    // Interruptor de modo no topo do card: PLATAFORMA (padrão) | Local.
+                    ModeToggle(platformMode = state.platformMode, enabled = !state.busy, onSelect = viewModel::setPlatformMode)
+                    Spacer(Modifier.height(14.dp))
+
+                    val createLabel = if (state.platformMode) "Criar conta" else "Criar conta local"
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         SelectChip("Entrar", state.mode == AuthMode.LOGIN, { viewModel.setMode(AuthMode.LOGIN) })
-                        SelectChip("Criar conta local", state.mode == AuthMode.REGISTER, { viewModel.setMode(AuthMode.REGISTER) })
+                        SelectChip(createLabel, state.mode == AuthMode.REGISTER, { viewModel.setMode(AuthMode.REGISTER) })
                     }
                     Spacer(Modifier.height(14.dp))
 
@@ -119,117 +130,10 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
                         }
                     }
 
-                    AnimatedVisibility(state.mode == AuthMode.REGISTER, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-                        AuthField(
-                            value = state.name, onValueChange = viewModel::onName, label = "Nome completo",
-                            icon = Icons.Outlined.Person, error = state.nameError, enabled = !state.busy,
-                        )
-                    }
-
-                    AuthField(
-                        value = state.email, onValueChange = viewModel::onEmail, label = "E-mail",
-                        icon = Icons.Outlined.Email, error = state.emailError, enabled = !state.busy,
-                        keyboardType = KeyboardType.Email,
-                    )
-
-                    var showPassword by rememberSaveable { mutableStateOf(false) }
-                    val isLogin = state.mode == AuthMode.LOGIN
-                    OutlinedTextField(
-                        value = state.password,
-                        onValueChange = viewModel::onPassword,
-                        label = { Text("Senha") },
-                        leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
-                        trailingIcon = {
-                            IconButton(onClick = { showPassword = !showPassword }) {
-                                Icon(
-                                    if (showPassword) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                    contentDescription = if (showPassword) "Ocultar senha" else "Mostrar senha",
-                                )
-                            }
-                        },
-                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                        isError = state.passwordError != null,
-                        supportingText = state.passwordError?.let { { Text(it) } },
-                        singleLine = true,
-                        enabled = !state.busy,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Password,
-                            imeAction = if (isLogin) ImeAction.Done else ImeAction.Next,
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onDone = { focus.clearFocus(); viewModel.submit() },
-                            onNext = { focus.moveFocus(FocusDirection.Down) },
-                        ),
-                        shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                    )
-
-                    AnimatedVisibility(state.mode == AuthMode.REGISTER, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-                        Column {
-                            AuthField(
-                                value = state.companyName, onValueChange = viewModel::onCompanyName, label = "Empresa",
-                                icon = Icons.Outlined.Business, error = state.companyError, enabled = !state.busy,
-                            )
-                            AuthField(
-                                value = state.cnpj, onValueChange = viewModel::onCnpj, label = "CNPJ (somente números)",
-                                icon = Icons.Outlined.Badge, error = state.cnpjError, enabled = !state.busy,
-                                keyboardType = KeyboardType.Number, imeAction = ImeAction.Done,
-                                onDone = { focus.clearFocus(); viewModel.submit() },
-                                helper = if (state.cnpj.length == 14) Formatters.cnpj(state.cnpj) else "${state.cnpj.length}/14 dígitos",
-                            )
-                        }
-                    }
-
-                    AnimatedVisibility(state.mode == AuthMode.LOGIN, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-                        Column {
-                            CompanySelector(companies, state.companyId, viewModel::onCompany, enabled = !state.busy)
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(MaterialTheme.shapes.small)
-                                    .clickable(enabled = !state.busy) { viewModel.onRemember(!state.remember) }
-                                    .padding(vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Checkbox(checked = state.remember, onCheckedChange = viewModel::onRemember, enabled = !state.busy)
-                                Text("Lembrar sessão neste aparelho", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextSecondary)
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    PrimaryButton(
-                        text = if (state.mode == AuthMode.LOGIN) "Entrar" else "Criar conta e entrar",
-                        onClick = { focus.clearFocus(); viewModel.submit() },
-                        modifier = Modifier.fillMaxWidth(),
-                        loading = state.loading,
-                        enabled = !state.demoLoading,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    if (state.mode == AuthMode.LOGIN) {
-                        Spacer(Modifier.height(14.dp))
-                        OrDivider()
-                        Spacer(Modifier.height(14.dp))
-                        GoogleSignInButton(
-                            loading = state.googleLoading,
-                            enabled = !state.busy && state.googleConfigured,
-                            onClick = { focus.clearFocus(); viewModel.signInWithGoogle(context) },
-                            onCancel = viewModel::cancelGoogle,
-                        )
-                        if (!state.googleConfigured) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                "Login Google indisponível neste build: falta o ID do cliente OAuth (ver README).",
-                                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        DemoEntryButton(
-                            loading = state.demoLoading,
-                            enabled = !state.busy,
-                            onClick = { focus.clearFocus(); viewModel.exploreDemo() },
-                        )
+                    if (state.platformMode) {
+                        PlatformForm(state, viewModel, focus)
+                    } else {
+                        LocalForm(state, companies, viewModel, focus, context)
                     }
 
                     AnimatedVisibility(state.info != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
@@ -241,32 +145,35 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
                 }
             }
 
-            state.linkPending?.let { pending ->
-                Spacer(Modifier.height(14.dp))
-                LinkLocalAccountCard(
-                    pending = pending,
-                    password = state.linkPassword,
-                    error = state.linkError,
-                    loading = state.googleLoading,
-                    onPassword = viewModel::onLinkPassword,
-                    onLink = { focus.clearFocus(); viewModel.linkGoogle() },
-                    onCancel = viewModel::cancelLink,
-                )
-            }
+            // Vínculo Google ↔ conta local e cadastro de empresa Google (apenas modo local).
+            if (!state.platformMode) {
+                state.linkPending?.let { pending ->
+                    Spacer(Modifier.height(14.dp))
+                    LinkLocalAccountCard(
+                        pending = pending,
+                        password = state.linkPassword,
+                        error = state.linkError,
+                        loading = state.googleLoading,
+                        onPassword = viewModel::onLinkPassword,
+                        onLink = { focus.clearFocus(); viewModel.linkGoogle() },
+                        onCancel = viewModel::cancelLink,
+                    )
+                }
 
-            state.googlePending?.let { pending ->
-                Spacer(Modifier.height(14.dp))
-                OutlinedTextField(value = state.companyName, onValueChange = viewModel::onCompanyName, label = { Text("Razão social da minha empresa") }, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(value = state.cnpj, onValueChange = viewModel::onCnpj, label = { Text("CNPJ (14 dígitos)") }, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                PrimaryButton("Criar minha empresa e entrar", viewModel::createGoogleCompany, Modifier.fillMaxWidth(), loading = state.googleLoading)
-                GooglePendingCard(
-                    pending = pending,
-                    loading = state.googleLoading,
-                    onRetry = viewModel::retryGoogleAccess,
-                    onSignOut = viewModel::signOutGoogle,
-                )
+                state.googlePending?.let { pending ->
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(value = state.companyName, onValueChange = viewModel::onCompanyName, label = { Text("Razão social da minha empresa") }, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = state.cnpj, onValueChange = viewModel::onCnpj, label = { Text("CNPJ (14 dígitos)") }, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    PrimaryButton("Criar minha empresa e entrar", viewModel::createGoogleCompany, Modifier.fillMaxWidth(), loading = state.googleLoading)
+                    GooglePendingCard(
+                        pending = pending,
+                        loading = state.googleLoading,
+                        onRetry = viewModel::retryGoogleAccess,
+                        onSignOut = viewModel::signOutGoogle,
+                    )
+                }
             }
 
             Spacer(Modifier.height(22.dp))
@@ -274,7 +181,8 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
                 Icon(Icons.Outlined.Shield, contentDescription = null, tint = LicitaColors.TextMuted, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "Autenticação local ou Google · dados guardados neste aparelho",
+                    if (state.platformMode) "Conta na plataforma LicitaPRO · sincroniza com a nuvem da sua empresa"
+                    else "Autenticação local ou Google · dados guardados neste aparelho",
                     style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                 )
             }
@@ -285,6 +193,232 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
             )
         }
     }
+}
+
+/** Interruptor segmentado PLATAFORMA | Local no topo do card. */
+@Composable
+private fun ModeToggle(platformMode: Boolean, enabled: Boolean, onSelect: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(LicitaColors.SurfaceHigh)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        ToggleSegment("Plataforma", Icons.Outlined.CloudQueue, platformMode, enabled, Modifier.weight(1f)) { onSelect(true) }
+        ToggleSegment("Local", Icons.Outlined.Lock, !platformMode, enabled, Modifier.weight(1f)) { onSelect(false) }
+    }
+}
+
+@Composable
+private fun ToggleSegment(label: String, icon: ImageVector, selected: Boolean, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(if (selected) LicitaColors.Blue else Color.Transparent)
+            .clickable(enabled = enabled && !selected, onClick = onClick)
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = if (selected) Color.White else LicitaColors.TextSecondary, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) Color.White else LicitaColors.TextSecondary,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        )
+    }
+}
+
+/** Formulário do modo PLATAFORMA (VPS): Entrar = /auth/login; Criar conta = /auth/register (ou convite). */
+@Composable
+private fun PlatformForm(state: LoginUiState, viewModel: LoginViewModel, focus: androidx.compose.ui.focus.FocusManager) {
+    val isLogin = state.mode == AuthMode.LOGIN
+    AnimatedVisibility(state.mode == AuthMode.REGISTER, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        AuthField(
+            value = state.name, onValueChange = viewModel::onName, label = "Nome completo",
+            icon = Icons.Outlined.Person, error = state.nameError, enabled = !state.busy,
+        )
+    }
+    AuthField(
+        value = state.email, onValueChange = viewModel::onEmail, label = "E-mail",
+        icon = Icons.Outlined.Email, error = state.emailError, enabled = !state.busy, keyboardType = KeyboardType.Email,
+    )
+    PasswordField(
+        value = state.password, onValueChange = viewModel::onPassword, error = state.passwordError, enabled = !state.busy,
+        imeAction = if (isLogin) ImeAction.Done else ImeAction.Next,
+        onDone = { focus.clearFocus(); viewModel.submit() },
+    )
+    AnimatedVisibility(state.mode == AuthMode.REGISTER, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        Column {
+            AuthField(
+                value = state.inviteCode, onValueChange = viewModel::onInviteCode, label = "Código de convite (opcional)",
+                icon = Icons.Outlined.VpnKey, error = null, enabled = !state.busy,
+                helper = "Tem um código? Preencha só isto. Sem código, informe CNPJ e razão social abaixo.",
+            )
+            AuthField(
+                value = state.companyName, onValueChange = viewModel::onCompanyName, label = "Razão social",
+                icon = Icons.Outlined.Business, error = state.companyError, enabled = !state.busy,
+            )
+            AuthField(
+                value = state.cnpj, onValueChange = viewModel::onCnpj, label = "CNPJ (somente números)",
+                icon = Icons.Outlined.Badge, error = state.cnpjError, enabled = !state.busy,
+                keyboardType = KeyboardType.Number, imeAction = ImeAction.Done,
+                onDone = { focus.clearFocus(); viewModel.submit() },
+                helper = if (state.cnpj.length == 14) Formatters.cnpj(state.cnpj) else "${state.cnpj.length}/14 dígitos",
+            )
+        }
+    }
+
+    Spacer(Modifier.height(10.dp))
+    PrimaryButton(
+        text = if (isLogin) "Entrar na plataforma" else "Criar conta e entrar",
+        onClick = { focus.clearFocus(); viewModel.submit() },
+        modifier = Modifier.fillMaxWidth(),
+        loading = state.loading,
+    )
+    Spacer(Modifier.height(4.dp))
+    TextButton(onClick = viewModel::checkConnectivity, enabled = !state.checkingConnectivity, modifier = Modifier.fillMaxWidth()) {
+        Text(
+            if (state.checkingConnectivity) "Testando conexão…" else "Testar conexão com a plataforma",
+            style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary,
+        )
+    }
+    state.connectivity?.let {
+        AlertBanner("Conectividade", it, Tone.INFO)
+    }
+}
+
+/** Formulário do modo LOCAL (neste aparelho): fluxo atual, incluindo Google e "lembrar sessão". */
+@Composable
+private fun LocalForm(
+    state: LoginUiState,
+    companies: List<Company>,
+    viewModel: LoginViewModel,
+    focus: androidx.compose.ui.focus.FocusManager,
+    context: android.content.Context,
+) {
+    val isLogin = state.mode == AuthMode.LOGIN
+    AnimatedVisibility(state.mode == AuthMode.REGISTER, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        AuthField(
+            value = state.name, onValueChange = viewModel::onName, label = "Nome completo",
+            icon = Icons.Outlined.Person, error = state.nameError, enabled = !state.busy,
+        )
+    }
+
+    AuthField(
+        value = state.email, onValueChange = viewModel::onEmail, label = "E-mail",
+        icon = Icons.Outlined.Email, error = state.emailError, enabled = !state.busy, keyboardType = KeyboardType.Email,
+    )
+
+    PasswordField(
+        value = state.password, onValueChange = viewModel::onPassword, error = state.passwordError, enabled = !state.busy,
+        imeAction = if (isLogin) ImeAction.Done else ImeAction.Next,
+        onDone = { focus.clearFocus(); viewModel.submit() },
+    )
+
+    AnimatedVisibility(state.mode == AuthMode.REGISTER, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        Column {
+            AuthField(
+                value = state.companyName, onValueChange = viewModel::onCompanyName, label = "Empresa",
+                icon = Icons.Outlined.Business, error = state.companyError, enabled = !state.busy,
+            )
+            AuthField(
+                value = state.cnpj, onValueChange = viewModel::onCnpj, label = "CNPJ (somente números)",
+                icon = Icons.Outlined.Badge, error = state.cnpjError, enabled = !state.busy,
+                keyboardType = KeyboardType.Number, imeAction = ImeAction.Done,
+                onDone = { focus.clearFocus(); viewModel.submit() },
+                helper = if (state.cnpj.length == 14) Formatters.cnpj(state.cnpj) else "${state.cnpj.length}/14 dígitos",
+            )
+        }
+    }
+
+    AnimatedVisibility(state.mode == AuthMode.LOGIN, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        Column {
+            CompanySelector(companies, state.companyId, viewModel::onCompany, enabled = !state.busy)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(MaterialTheme.shapes.small)
+                    .clickable(enabled = !state.busy) { viewModel.onRemember(!state.remember) }
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(checked = state.remember, onCheckedChange = viewModel::onRemember, enabled = !state.busy)
+                Text("Lembrar sessão neste aparelho", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextSecondary)
+            }
+        }
+    }
+
+    Spacer(Modifier.height(10.dp))
+    PrimaryButton(
+        text = if (isLogin) "Entrar" else "Criar conta e entrar",
+        onClick = { focus.clearFocus(); viewModel.submit() },
+        modifier = Modifier.fillMaxWidth(),
+        loading = state.loading,
+    )
+    if (isLogin) {
+        Spacer(Modifier.height(14.dp))
+        OrDivider()
+        Spacer(Modifier.height(14.dp))
+        GoogleSignInButton(
+            loading = state.googleLoading,
+            enabled = !state.busy && state.googleConfigured,
+            onClick = { focus.clearFocus(); viewModel.signInWithGoogle(context) },
+            onCancel = viewModel::cancelGoogle,
+        )
+        if (!state.googleConfigured) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Login Google indisponível neste build: falta o ID do cliente OAuth (ver README).",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/** Campo de senha com alternância mostrar/ocultar, reutilizado nos dois modos. */
+@Composable
+private fun PasswordField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    error: String?,
+    enabled: Boolean,
+    imeAction: ImeAction,
+    onDone: () -> Unit,
+) {
+    val focus = LocalFocusManager.current
+    var showPassword by rememberSaveable { mutableStateOf(false) }
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text("Senha") },
+        leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+        trailingIcon = {
+            IconButton(onClick = { showPassword = !showPassword }) {
+                Icon(
+                    if (showPassword) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                    contentDescription = if (showPassword) "Ocultar senha" else "Mostrar senha",
+                )
+            }
+        },
+        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+        isError = error != null,
+        supportingText = error?.let { { Text(it) } },
+        singleLine = true,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = imeAction),
+        keyboardActions = KeyboardActions(
+            onDone = { onDone() },
+            onNext = { focus.moveFocus(FocusDirection.Down) },
+        ),
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+    )
 }
 
 @Composable
@@ -324,23 +458,6 @@ private fun GoogleSignInButton(loading: Boolean, enabled: Boolean, onClick: () -
         AnimatedVisibility(loading, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Cancelar", color = LicitaColors.TextSecondary) }
         }
-    }
-}
-
-/** Entrada discreta no espaço de demonstração isolado (dados fictícios; nada toca empresas reais). */
-@Composable
-private fun DemoEntryButton(loading: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    TextButton(onClick = onClick, enabled = enabled && !loading, modifier = Modifier.fillMaxWidth()) {
-        if (loading) {
-            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = LicitaColors.Yellow)
-        } else {
-            Icon(Icons.Outlined.PlayCircle, contentDescription = null, tint = LicitaColors.TextSecondary, modifier = Modifier.size(18.dp))
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            if (loading) "Preparando a demonstração…" else "Explorar demonstração",
-            style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextSecondary,
-        )
     }
 }
 
@@ -549,6 +666,3 @@ private fun CompanySelector(companies: List<Company>, selectedId: Long?, onSelec
         }
     }
 }
-
-
-

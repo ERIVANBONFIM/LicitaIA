@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.licitaia.domain.auth.GoogleIdentity
 import com.licitaia.domain.auth.NoCompanyAccessException
 import com.licitaia.domain.auth.NoLocalLinkException
+import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.domain.model.AuthProvider
 import com.licitaia.domain.network.ConnectivityMonitor
 import com.licitaia.feature.auth.google.GoogleCredentialClient
@@ -29,12 +30,21 @@ import kotlinx.coroutines.launch
 enum class AuthMode { LOGIN, REGISTER }
 
 data class LoginUiState(
+    /** true = modo PLATAFORMA (VPS, padrão da Opção A); false = modo LOCAL (neste aparelho). */
+    val platformMode: Boolean = true,
     val mode: AuthMode = AuthMode.LOGIN,
     val name: String = "",
     val email: String = "",
     val password: String = "",
     val companyName: String = "",
     val cnpj: String = "",
+    /** Código de convite (opcional) no cadastro da plataforma. */
+    val inviteCode: String = "",
+    /** Resultado do teste de conexão com a VPS (link discreto no modo plataforma). */
+    val connectivity: String? = null,
+    val checkingConnectivity: Boolean = false,
+    /** true quando o login/cadastro na plataforma teve sucesso → navegar para a lista da plataforma. */
+    val platformSignedIn: Boolean = false,
     /** null = empresa padrão do usuário. */
     val companyId: Long? = null,
     val remember: Boolean = true,
@@ -72,6 +82,7 @@ class LoginViewModel @Inject constructor(
     companyRepository: CompanyRepository,
     private val google: GoogleCredentialClient,
     private val connectivity: ConnectivityMonitor,
+    private val platform: PlatformRepository,
 ) : ViewModel() {
 
     val companies: StateFlow<List<Company>> = companyRepository.observeCompanies()
@@ -219,6 +230,100 @@ class LoginViewModel @Inject constructor(
         )
     }
 
+    /** Alterna entre o modo PLATAFORMA (VPS) e o modo LOCAL (neste aparelho). */
+    fun setPlatformMode(platform: Boolean) = _state.update {
+        it.copy(
+            platformMode = platform, mode = AuthMode.LOGIN, generalError = null, info = null, connectivity = null,
+            nameError = null, emailError = null, passwordError = null, companyError = null, cnpjError = null,
+        )
+    }
+
+    fun onInviteCode(v: String) = _state.update { it.copy(inviteCode = v.trim(), generalError = null) }
+
+    /** Teste de conexão com a VPS (sem credenciais), exposto como link discreto no modo plataforma. */
+    fun checkConnectivity() {
+        if (_state.value.checkingConnectivity) return
+        _state.update { it.copy(checkingConnectivity = true, connectivity = null) }
+        viewModelScope.launch {
+            val result = platform.checkConnectivity()
+            _state.update {
+                it.copy(
+                    checkingConnectivity = false,
+                    connectivity = result.fold(
+                        onSuccess = { h -> "Plataforma online (${h.status}${h.version?.let { v -> " · v$v" } ?: ""})." },
+                        onFailure = { e -> e.message ?: "Sem conexão com a plataforma." },
+                    ),
+                )
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ plataforma (VPS)
+
+    private fun platformLogin(s: LoginUiState) {
+        val emailError = validateEmail(s.email)
+        val passwordError = if (s.password.isBlank()) "Informe sua senha" else null
+        if (emailError != null || passwordError != null) {
+            _state.update { it.copy(emailError = emailError, passwordError = passwordError) }
+            return
+        }
+        _state.update { it.copy(loading = true, generalError = null) }
+        viewModelScope.launch {
+            val result = runSafely { platform.login(s.email, s.password) }
+            _state.update {
+                if (result.isSuccess) it.copy(loading = false, platformSignedIn = true)
+                else it.copy(
+                    loading = false,
+                    generalError = result.exceptionOrNull()?.message?.takeIf(String::isNotBlank)
+                        ?: "E-mail ou senha inválidos.",
+                )
+            }
+        }
+    }
+
+    private fun platformRegister(s: LoginUiState) {
+        val byInvite = s.inviteCode.isNotBlank()
+        val nameError = if (s.name.trim().length < 3) "Informe seu nome completo" else null
+        val emailError = validateEmail(s.email)
+        val passwordError = when {
+            s.password.length < 8 -> "A senha deve ter ao menos 8 caracteres"
+            s.password.none(Char::isDigit) || s.password.none(Char::isLetter) -> "Use letras e números na senha"
+            else -> null
+        }
+        // Sem convite: exige CNPJ + razão social (auto-cadastro). Com convite: a empresa vem do convite.
+        val companyError = if (!byInvite && s.companyName.trim().length < 2) "Informe a razão social" else null
+        val cnpjError = when {
+            byInvite -> null
+            s.cnpj.length != 14 -> "O CNPJ deve ter 14 dígitos"
+            s.cnpj.toSet().size == 1 -> "CNPJ inválido"
+            else -> null
+        }
+        if (listOfNotNull(nameError, emailError, passwordError, companyError, cnpjError).isNotEmpty()) {
+            _state.update {
+                it.copy(
+                    nameError = nameError, emailError = emailError, passwordError = passwordError,
+                    companyError = companyError, cnpjError = cnpjError,
+                )
+            }
+            return
+        }
+        _state.update { it.copy(loading = true, generalError = null) }
+        viewModelScope.launch {
+            val result = runSafely {
+                if (byInvite) platform.registerByInvite(s.inviteCode, s.name, s.email, s.password)
+                else platform.registerByCnpj(s.name, s.email, s.password, s.cnpj, s.companyName)
+            }
+            _state.update {
+                if (result.isSuccess) it.copy(loading = false, platformSignedIn = true)
+                else it.copy(
+                    loading = false,
+                    generalError = result.exceptionOrNull()?.message?.takeIf(String::isNotBlank)
+                        ?: "Não foi possível criar a conta na plataforma. Verifique os dados.",
+                )
+            }
+        }
+    }
+
     fun onName(v: String) = _state.update { it.copy(name = v, nameError = null, generalError = null) }
     fun onEmail(v: String) = _state.update { it.copy(email = v.trim(), emailError = null, generalError = null) }
     fun onPassword(v: String) = _state.update { it.copy(password = v, passwordError = null, generalError = null) }
@@ -232,7 +337,11 @@ class LoginViewModel @Inject constructor(
     fun submit() {
         val s = _state.value
         if (s.busy) return
-        if (s.mode == AuthMode.LOGIN) login(s) else register(s)
+        if (s.platformMode) {
+            if (s.mode == AuthMode.LOGIN) platformLogin(s) else platformRegister(s)
+        } else {
+            if (s.mode == AuthMode.LOGIN) login(s) else register(s)
+        }
     }
 
     private fun login(s: LoginUiState) {

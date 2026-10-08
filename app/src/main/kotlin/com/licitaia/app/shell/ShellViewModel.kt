@@ -122,7 +122,8 @@ class ShellViewModel @Inject constructor(
             val target = when {
                 platformSignedIn -> Routes.PLATFORM_TENDERS
                 restored != null -> Routes.DASHBOARD
-                else -> Routes.PLATFORM_LOGIN
+                // Sem sessão: tela de login unificada (abre com o modo PLATAFORMA já selecionado).
+                else -> Routes.LOGIN
             }
             // Diagnóstico de abertura (confirmar no aparelho: `adb logcat -s LicitaStart`).
             android.util.Log.i(

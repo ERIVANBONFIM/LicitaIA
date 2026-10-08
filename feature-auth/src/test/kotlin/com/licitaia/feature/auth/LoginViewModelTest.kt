@@ -13,6 +13,7 @@ import com.licitaia.domain.model.Company
 import com.licitaia.domain.model.Segment
 import com.licitaia.domain.model.UserProfile
 import com.licitaia.domain.model.UserRole
+import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompanyRepository
 import io.mockk.coEvery
@@ -46,6 +47,7 @@ class LoginViewModelTest {
     private val auth: AuthRepository = mockk(relaxed = true)
     private val companies: CompanyRepository = mockk()
     private val google: GoogleCredentialClient = mockk(relaxed = true)
+    private val platform: PlatformRepository = mockk(relaxed = true)
     private val activity: Context = mockk(relaxed = true)
     private val identity = GoogleIdentity(subject = "sub-1", email = "ana@example.com", emailVerified = true, name = "Ana")
 
@@ -64,7 +66,7 @@ class LoginViewModelTest {
         override val online = MutableStateFlow(true)
     }
 
-    private fun vm() = LoginViewModel(auth, companies, google, connectivity)
+    private fun vm() = LoginViewModel(auth, companies, google, connectivity, platform)
 
     @Test
     fun `google sem internet falha na hora sem abrir o seletor`() = runTest {
@@ -235,6 +237,7 @@ class LoginViewModelTest {
     fun `login com sucesso marca loggedIn`() = runTest {
         coEvery { auth.login(DemoAccount.EMAIL, "demo1234", null, true) } returns Result.success(session)
         val vm = vm()
+        vm.setPlatformMode(false)
         vm.onEmail(DemoAccount.EMAIL)
         vm.onPassword("demo1234")
         vm.submit()
@@ -248,6 +251,7 @@ class LoginViewModelTest {
     fun `login com falha mostra a mensagem do repositorio e nao vaza excecao`() = runTest {
         coEvery { auth.login(any(), any(), any(), any()) } returns Result.failure(IllegalArgumentException("E-mail ou senha inválidos."))
         val vm = vm()
+        vm.setPlatformMode(false)
         vm.onEmail("x@y.com")
         vm.onPassword("errada")
         vm.submit()
@@ -287,6 +291,7 @@ class LoginViewModelTest {
     fun `cadastro valido chama o repositorio com CNPJ so com digitos`() = runTest {
         coEvery { auth.register("João Silva", "joao@empresa.com.br", "senha123", "Empresa X", "12345678000190") } returns Result.success(session)
         val vm = vm()
+        vm.setPlatformMode(false)
         vm.setMode(AuthMode.REGISTER)
         vm.onName("João Silva")
         vm.onEmail("joao@empresa.com.br")

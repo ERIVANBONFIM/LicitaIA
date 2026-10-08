@@ -51,6 +51,22 @@ class PlatformApi(
             ?: throw PlatformException("Resposta de login vazia.", PlatformException.Kind.INVALID_RESPONSE)
     }
 
+    /** `POST /auth/register` (auto-cadastro por CNPJ) → `{token,user}`. */
+    suspend fun register(req: RegisterRequest): LoginResponse {
+        val payload = json.encodeToString(RegisterRequest.serializer(), req).toRequestBody(JSON_MEDIA)
+        val request = baseRequest(url("auth/register"), token = null).post(payload).build()
+        return execute(request, LoginResponse.serializer())
+            ?: throw PlatformException("Resposta de cadastro vazia.", PlatformException.Kind.INVALID_RESPONSE)
+    }
+
+    /** `POST /auth/register-convite` (cadastro por código de convite) → `{token,user}`. */
+    suspend fun registerConvite(req: RegisterConviteRequest): LoginResponse {
+        val payload = json.encodeToString(RegisterConviteRequest.serializer(), req).toRequestBody(JSON_MEDIA)
+        val request = baseRequest(url("auth/register-convite"), token = null).post(payload).build()
+        return execute(request, LoginResponse.serializer())
+            ?: throw PlatformException("Resposta de cadastro vazia.", PlatformException.Kind.INVALID_RESPONSE)
+    }
+
     /**
      * `GET /auth/me` → usuário/empresa atuais. Ainda é lacuna no backend (CONTRATO L7); se a rota não existir
      * (404), devolve null em vez de falhar — o cliente mantém o `user` obtido no login.

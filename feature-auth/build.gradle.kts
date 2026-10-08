@@ -32,6 +32,7 @@ android {
 
 dependencies {
     implementation(project(":core-ui"))
+    implementation(project(":core-platform"))
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.fragment.ktx)
     implementation(libs.kotlinx.serialization.json)
