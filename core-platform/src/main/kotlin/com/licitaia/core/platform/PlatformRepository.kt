@@ -288,8 +288,16 @@ class PlatformRepository @Inject constructor(
         val a = api.tenderAnalysis(it, id); a.job?.status to a.hasAnalysis
     }
 
-    /** `GET /robo-lances/config/:id` (leitura). */
-    suspend fun roboConfig(id: String): Result<RoboConfigDto?> = authedRead { api.roboConfig(it, id) }
+    /** Cache em memória da config do robô por licitação (para o robô decidir mesmo se a VPS cair na disputa). */
+    private val roboConfigCache = java.util.concurrent.ConcurrentHashMap<String, RoboConfigDto>()
+
+    /** `GET /robo-lances/config/:id` (leitura). Guarda em cache e, se a VPS falhar, devolve o cache. */
+    suspend fun roboConfig(id: String): Result<RoboConfigDto?> =
+        authedRead { api.roboConfig(it, id)?.also { c -> roboConfigCache[id] = c } }
+            .recoverCatching { e -> roboConfigCache[id] ?: throw e }
+
+    /** Última config conhecida (cache local), sem rede. */
+    fun roboConfigCacheada(id: String): RoboConfigDto? = roboConfigCache[id]
 
     /** `GET /robo-lances/historico/:id` → nº de lances. */
     suspend fun roboHistoricoCount(id: String): Result<Int> = authedRead { api.roboHistoricoCount(it, id) }

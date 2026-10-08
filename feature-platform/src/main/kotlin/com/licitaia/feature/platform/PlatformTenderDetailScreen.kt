@@ -163,10 +163,34 @@ private fun RoboCard(
         SecondaryButton(
             "Armar robô (teste / dry_run)", { showConfig = true }, Modifier.fillMaxWidth(), enabled = !s.roboBusy, tone = Tone.SUCCESS,
         )
-        Spacer(Modifier.height(6.dp))
+
+        // Prévia do lance (dry_run): cálculo LOCAL a partir da config; NADA é enviado ao portal.
+        val pisoAtual = robo?.valorMinimo?.takeIf { it > 0 }
+        if (pisoAtual != null) {
+            HorizontalDivider(Modifier.padding(vertical = 12.dp), color = LicitaColors.Outline)
+            Text("Prévia do lance (dry_run)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            var bestInput by rememberSaveable { mutableStateOf("") }
+            var preview by rememberSaveable { mutableStateOf<String?>(null) }
+            androidx.compose.material3.OutlinedTextField(
+                value = bestInput,
+                onValueChange = { bestInput = it.filter { c -> c.isDigit() || c == '.' } },
+                label = { Text("Melhor lance atual (R$)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(6.dp))
+            SecondaryButton("Simular lance", { preview = simularLance(pisoAtual, robo?.decremento, bestInput) }, Modifier.fillMaxWidth(), tone = Tone.INFO)
+            preview?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
         Text(
-            "Em dry_run o robô DECIDE e registra, sem enviar lances. A disputa roda no aparelho com o certificado local — " +
-                "a execução on-device chega na próxima etapa (o arme/config já é gravado na plataforma).",
+            "Em dry_run o robô DECIDE e registra, sem enviar lances. A disputa real roda no aparelho com o certificado " +
+                "local — a execução on-device (loop no portal) chega na próxima etapa; o arme/config já é gravado na plataforma.",
             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
         )
     }
@@ -225,6 +249,23 @@ private fun RoboCard(
 }
 
 private fun fmtNum(v: Double): String = if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
+
+/**
+ * Prévia (dry_run) do próximo lance, cálculo LOCAL e transparente: cobre o melhor lance pelo decremento,
+ * NUNCA abaixo do piso. Não é o motor completo de estratégia e NADA é enviado ao portal — é só a decisão base.
+ */
+private fun simularLance(piso: Double, decremento: Double?, bestInput: String): String {
+    val best = bestInput.trim().toDoubleOrNull()
+    if (best == null || best <= 0.0) return "Informe o melhor lance atual para simular."
+    val dec = decremento?.takeIf { it > 0 } ?: 0.01
+    val proximo = best - dec
+    val pisoFmt = PlatformFormat.currency(piso.toString())
+    return if (proximo < piso) {
+        "No piso: cobrir ${PlatformFormat.currency(best.toString())} exigiria ${PlatformFormat.currency(proximo.toString())}, abaixo do piso $pisoFmt. O robô PARARIA (não daria lance)."
+    } else {
+        "O robô daria ${PlatformFormat.currency(proximo.toString())} (cobre ${PlatformFormat.currency(best.toString())}; decremento ${PlatformFormat.currency(dec.toString())}; piso $pisoFmt respeitado). dry_run: nada enviado ao portal."
+    }
+}
 
 @Composable
 private fun PropostaRow(
