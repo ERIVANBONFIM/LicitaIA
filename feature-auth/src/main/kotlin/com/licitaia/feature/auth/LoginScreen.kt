@@ -466,7 +466,7 @@ private fun BrandHeader() {
         Text(
             buildAnnotatedString {
                 append("Licita")
-                withStyle(SpanStyle(color = LicitaColors.GreenBright)) { append("IA") }
+                withStyle(SpanStyle(color = LicitaColors.GreenBright)) { append("PRO") }
             },
             style = MaterialTheme.typography.displaySmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.Bold,
         )
