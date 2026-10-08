@@ -248,7 +248,17 @@ data class RoboConfigDto(
     val itemAlvo: String? = null,
 )
 
-/** `PUT /robo-lances/config/:id`. modoExecucao="auto" exige confirmarAuto=true (trava do backend). */
+/** Piso (lance mínimo) de UM item, para `pisosItens` do PUT da config do robô. */
+@Serializable
+data class PisoItemRequest(
+    val numero: Int,
+    val valorLanceMinimo: Double,
+)
+
+/**
+ * `PUT /robo-lances/config/:id`. modoExecucao="auto" exige confirmarAuto=true (trava do backend) E piso em
+ * TODOS os itens (senão 400 "Defina o lance mínimo de todos os itens"). [pisosItens] grava o piso POR ITEM.
+ */
 @Serializable
 data class RoboConfigUpdateRequest(
     val estrategia: String? = null,
@@ -258,6 +268,7 @@ data class RoboConfigUpdateRequest(
     val itemAlvo: String? = null,
     val modoExecucao: String = "dry_run",
     val confirmarAuto: Boolean? = null,
+    val pisosItens: List<PisoItemRequest>? = null,
 )
 
 /** `GET /robo-lances/prontidao/:id`. */
@@ -431,10 +442,13 @@ data class RadarUpsertRequest(
 
 /** Item da licitação (shape variável no backend; extraído de forma tolerante). */
 data class PlatformItem(
+    val numero: Int? = null,
     val descricao: String? = null,
     val quantidade: String? = null,
     val unidade: String? = null,
     val valor: String? = null,
+    /** Piso (lance mínimo) já salvo para este item, quando houver (string decimal). */
+    val valorLanceMinimo: String? = null,
 )
 
 /** Arquivo/anexo da licitação (shape variável no backend; extraído de forma tolerante). */

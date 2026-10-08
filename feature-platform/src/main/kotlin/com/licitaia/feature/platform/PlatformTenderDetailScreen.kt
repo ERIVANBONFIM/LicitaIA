@@ -39,7 +39,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.licitaia.core.platform.net.PisoItemRequest
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
 import com.licitaia.core.platform.net.TenderDto
@@ -125,7 +128,7 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
 @Composable
 private fun RoboCard(
     s: PlatformDetailUi,
-    onArmarRobo: (Double, Double, String?, Int?, String?, Boolean) -> Unit,
+    onArmarRobo: (Double, Double, String?, Int?, List<PisoItemRequest>, Boolean) -> Unit,
     onParticiparRobo: () -> Unit,
     onPrepararRobo: () -> Unit,
     roboRun: com.licitaia.feature.live.automation.RobotRun?,
@@ -140,6 +143,22 @@ private fun RoboCard(
     var decremento by rememberSaveable(robo?.decremento) { mutableStateOf(robo?.decremento?.takeIf { it > 0 }?.let { fmtNum(it) } ?: "") }
     var intervalo by rememberSaveable(robo?.intervaloSegundos) { mutableStateOf(robo?.intervaloSegundos?.toString() ?: "30") }
     var estrategia by rememberSaveable(robo?.estrategia) { mutableStateOf(robo?.estrategia ?: "moderada") }
+    // Piso POR ITEM (numero → texto), pré-preenchido com o valor já salvo em cada item.
+    val itemFloors = remember(s.itens) {
+        mutableStateMapOf<Int, String>().apply {
+            s.itens.forEach { pi -> pi.numero?.let { n -> put(n, pi.valorLanceMinimo?.toDoubleOrNull()?.takeIf { it > 0 }?.let { fmtNum(it) } ?: "") } }
+        }
+    }
+    // Itens com nº (os únicos que entram em pisosItens). Monta a lista a partir do que o usuário digitou.
+    val itensComNumero = s.itens.filter { it.numero != null }
+    fun pisosItens(): List<PisoItemRequest> = itensComNumero.mapNotNull { pi ->
+        val num = pi.numero ?: return@mapNotNull null
+        val v = itemFloors[num]?.trim()?.toDoubleOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
+        PisoItemRequest(num, v)
+    }
+    // valorMinimo (obrigatório): MENOR piso informado; se nenhum item tiver piso, usa o "piso geral".
+    fun valorMinimo(): Double? = pisosItens().minOfOrNull { it.valorLanceMinimo } ?: piso.trim().toDoubleOrNull()?.takeIf { it > 0 }
+    fun decrementoVal(): Double = decremento.trim().toDoubleOrNull()?.takeIf { it > 0 } ?: 0.01
 
     LicitaCard(Modifier.fillMaxWidth()) {
         Text("Robô de lance", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
@@ -228,46 +247,84 @@ private fun RoboCard(
             onDismissRequest = { showConfig = false },
             title = { Text("Armar robô") },
             text = {
-                Column {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     androidx.compose.material3.OutlinedTextField(estrategia, { estrategia = it }, label = { Text("Estratégia (ex.: moderada)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(8.dp))
-                    androidx.compose.material3.OutlinedTextField(piso, { piso = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Piso / valor mínimo (obrigatório)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         androidx.compose.material3.OutlinedTextField(decremento, { decremento = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Decremento") }, singleLine = true, modifier = Modifier.weight(1f))
                         androidx.compose.material3.OutlinedTextField(intervalo, { intervalo = it.filter { c -> c.isDigit() } }, label = { Text("Intervalo (s)") }, singleLine = true, modifier = Modifier.weight(1f))
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(12.dp))
+                    if (itensComNumero.isEmpty()) {
+                        // Sem itens com nº: cai para um piso geral único (obrigatório).
+                        androidx.compose.material3.OutlinedTextField(piso, { piso = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Piso / valor mínimo (obrigatório)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        Text("Piso por item (lance mínimo)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "O robô nunca dá lance abaixo do piso de cada item. Para LANCE REAL (auto), o backend exige o piso de TODOS os itens.",
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                        )
+                        itensComNumero.forEach { pi ->
+                            val num = pi.numero!!
+                            Spacer(Modifier.height(10.dp))
+                            Text("Item $num" + (pi.descricao?.trim()?.takeIf { it.isNotBlank() }?.let { " · " + it.take(60) } ?: ""), style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            val meta = listOfNotNull(
+                                pi.quantidade?.takeIf { it.isNotBlank() }?.let { "Qtd $it" },
+                                pi.unidade?.takeIf { it.isNotBlank() }?.let { "un: $it" },
+                                pi.valor?.takeIf { it.isNotBlank() }?.let { "ref " + PlatformFormat.currency(it) },
+                            )
+                            if (meta.isNotEmpty()) Text(meta.joinToString("  ·  "), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                            androidx.compose.material3.OutlinedTextField(
+                                value = itemFloors[num].orEmpty(),
+                                onValueChange = { itemFloors[num] = it.filter { c -> c.isDigit() || c == '.' } },
+                                label = { Text("Piso do item $num (R$)") },
+                                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
                     Text("Será armado em modo de TESTE (dry_run): decide e registra, sem enviar lances reais.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                 }
             },
             confirmButton = {
                 PrimaryButton("Armar (dry_run)", {
-                    val p = piso.trim().toDoubleOrNull()
-                    if (p != null && p > 0) {
-                        onArmarRobo(p, decremento.trim().toDoubleOrNull() ?: 0.0, estrategia.trim().ifBlank { null }, intervalo.trim().toIntOrNull(), null, false)
+                    val vm = valorMinimo()
+                    if (vm != null && vm > 0) {
+                        onArmarRobo(vm, decrementoVal(), estrategia.trim().ifBlank { null }, intervalo.trim().toIntOrNull(), pisosItens(), false)
                         showConfig = false
                     }
-                }, enabled = piso.trim().toDoubleOrNull()?.let { it > 0 } == true)
+                }, enabled = valorMinimo()?.let { it > 0 } == true)
             },
             dismissButton = {
                 // "Ativar lance real" exige confirmação extra (trava).
                 SecondaryButton("Lance REAL…", {
-                    if (piso.trim().toDoubleOrNull()?.let { it > 0 } == true) { showConfig = false; confirmAuto = true }
+                    if (valorMinimo()?.let { it > 0 } == true) { showConfig = false; confirmAuto = true }
                 }, tone = Tone.DANGER)
             },
         )
     }
 
     if (confirmAuto) {
+        val faltamPisos = itensComNumero.isNotEmpty() && pisosItens().size < itensComNumero.size
         AlertDialog(
             onDismissRequest = { confirmAuto = false },
             title = { Text("Ativar lance REAL?") },
-            text = { Text("Isto vai DAR LANCES REAIS no portal, respeitando o piso de ${PlatformFormat.currency(piso)}. A disputa roda no aparelho com o seu certificado local. Confirma?") },
+            text = {
+                Column {
+                    Text("Isto vai DAR LANCES REAIS no portal, respeitando o piso de cada item. A disputa roda no aparelho com o seu certificado local. Confirma?")
+                    if (faltamPisos) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Atenção: para LANCE REAL o backend exige o piso de TODOS os itens. Faltam ${itensComNumero.size - pisosItens().size} item(ns) — preencha-os ou o servidor vai recusar.",
+                            style = MaterialTheme.typography.labelSmall, color = LicitaColors.Red,
+                        )
+                    }
+                }
+            },
             confirmButton = {
                 PrimaryButton("Sim, lance real", {
-                    val p = piso.trim().toDoubleOrNull()
-                    if (p != null && p > 0) onArmarRobo(p, decremento.trim().toDoubleOrNull() ?: 0.0, estrategia.trim().ifBlank { null }, intervalo.trim().toIntOrNull(), null, true)
+                    val vm = valorMinimo()
+                    if (vm != null && vm > 0) onArmarRobo(vm, decrementoVal(), estrategia.trim().ifBlank { null }, intervalo.trim().toIntOrNull(), pisosItens(), true)
                     confirmAuto = false
                 }, tone = Tone.DANGER)
             },
@@ -445,7 +502,7 @@ private fun TenderDetail(
     onEditarProposta: (String, Double?, String?) -> Unit,
     onMsgInput: (String) -> Unit,
     onSendMsg: () -> Unit,
-    onArmarRobo: (Double, Double, String?, Int?, String?, Boolean) -> Unit,
+    onArmarRobo: (Double, Double, String?, Int?, List<PisoItemRequest>, Boolean) -> Unit,
     onParticiparRobo: () -> Unit,
     onPrepararRobo: () -> Unit,
     roboRun: com.licitaia.feature.live.automation.RobotRun?,

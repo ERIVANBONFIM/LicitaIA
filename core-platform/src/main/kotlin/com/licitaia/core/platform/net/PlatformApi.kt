@@ -165,10 +165,12 @@ class PlatformApi(
         (get(url("licitacoes/$id/itens"), ListSerializer(JsonObject.serializer()), token = token) ?: emptyList())
             .map {
                 PlatformItem(
+                    numero = it.str("numero", "item", "numeroItem")?.toDoubleOrNull()?.toInt(),
                     descricao = it.str("descricao", "objeto", "nome", "especificacao"),
                     quantidade = it.str("quantidade", "qtd", "quantidadeTotal"),
                     unidade = it.str("unidade", "unidadeMedida", "unidadeFornecimento"),
                     valor = it.str("valorReferencia", "valorUnitario", "valorEstimado", "valorTotal"),
+                    valorLanceMinimo = it.str("valorLanceMinimo", "lanceMinimo", "pisoItem"),
                 )
             }
 

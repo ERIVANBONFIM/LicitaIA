@@ -8,6 +8,7 @@ import com.licitaia.ai.api.TenderAnalysisRequest
 import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.core.platform.net.AnaliseLocalRequest
 import com.licitaia.core.platform.net.MensagemDto
+import com.licitaia.core.platform.net.PisoItemRequest
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
 import com.licitaia.core.platform.net.ProntidaoDto
@@ -243,14 +244,15 @@ class PlatformTenderDetailViewModel @Inject constructor(
      * confirmarAuto=true (trava do backend). Sem [auto], arma em dry_run (decide e loga, NÃO envia).
      * O PISO (valorMinimo) é sempre enviado. A disputa on-device (motor local) é a próxima etapa.
      */
-    fun armarRobo(piso: Double, decremento: Double, estrategia: String?, intervalo: Int?, itemAlvo: String?, auto: Boolean) = roboOp(
+    fun armarRobo(piso: Double, decremento: Double, estrategia: String?, intervalo: Int?, pisosItens: List<PisoItemRequest>, auto: Boolean) = roboOp(
         if (auto) "Robô armado em modo AUTO (lance real)." else "Robô armado em modo de teste (dry_run).",
     ) {
         repository.armarRobo(
             id,
             RoboConfigUpdateRequest(
                 estrategia = estrategia, valorMinimo = piso, decremento = decremento, intervaloSegundos = intervalo,
-                itemAlvo = itemAlvo, modoExecucao = if (auto) "auto" else "dry_run", confirmarAuto = if (auto) true else null,
+                itemAlvo = null, modoExecucao = if (auto) "auto" else "dry_run", confirmarAuto = if (auto) true else null,
+                pisosItens = pisosItens.ifEmpty { null },
             ),
         )
     }
@@ -308,14 +310,26 @@ class PlatformTenderDetailViewModel @Inject constructor(
                         ),
                     ),
                 )
-                // 2) Plano ARMADO em dry_run (MANUAL): piso = valorMinimo da VPS; 1 item-alvo. Motor só SUGERE.
+                // 2) Plano ARMADO em dry_run (MANUAL): piso POR ITEM (valorLanceMinimo de cada item da licitação).
+                //    Cada item do plano leva o seu próprio floor; o motor só SUGERE (nunca envia). Fallback:
+                //    se nenhum item tem piso salvo, usa 1 item-alvo com o valorMinimo geral (compatível com o anterior).
                 val dec = (cfg.decremento ?: 0.01).coerceAtLeast(0.01)
-                val item = ProposalItemPlan(
-                    itemNumber = cfg.itemAlvo?.toIntOrNull() ?: 1, quantity = 1.0, unitPrice = piso, floorUnitPrice = piso, selected = true,
-                )
+                val itensComPiso = _state.value.itens.mapNotNull { pi ->
+                    val floor = pi.valorLanceMinimo?.toDoubleOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
+                    val num = pi.numero ?: return@mapNotNull null
+                    val ref = pi.valor?.toDoubleOrNull()?.takeIf { it >= floor } ?: floor
+                    val qtd = pi.quantidade?.toDoubleOrNull()?.takeIf { it > 0 } ?: 1.0
+                    ProposalItemPlan(
+                        itemNumber = num, description = pi.descricao.orEmpty(), quantity = qtd,
+                        unitPrice = ref, floorUnitPrice = floor, selected = true,
+                    )
+                }
+                val planItems = itensComPiso.ifEmpty {
+                    listOf(ProposalItemPlan(itemNumber = cfg.itemAlvo?.toIntOrNull() ?: 1, quantity = 1.0, unitPrice = piso, floorUnitPrice = piso, selected = true))
+                }
                 roboRepo.savePlan(
                     PortalRobotPlan(
-                        companyId = company.id, tenderKey = key, items = listOf(item),
+                        companyId = company.id, tenderKey = key, items = planItems,
                         bid = BidRobotConfig(
                             mode = BidRobotMode.MANUAL, // dry_run SEMPRE nesta ponte
                             strategy = mapEstrategia(cfg.estrategia), minDecrement = dec, reductionValue = dec,
@@ -364,7 +378,9 @@ class PlatformTenderDetailViewModel @Inject constructor(
             val robo = repository.roboConfig(id).getOrNull()
             val prontidao = repository.roboProntidao(id).getOrNull()
             val lances = repository.roboHistoricoCount(id).getOrDefault(_state.value.roboLances)
-            _state.update { it.copy(roboBusy = false, roboConfig = robo ?: it.roboConfig, prontidao = prontidao ?: it.prontidao, roboLances = lances) }
+            // Recarrega itens para refletir os pisos por item recém-salvos (usados pela ponte on-device).
+            val itens = repository.tenderItens(id).getOrDefault(_state.value.itens)
+            _state.update { it.copy(roboBusy = false, roboConfig = robo ?: it.roboConfig, prontidao = prontidao ?: it.prontidao, roboLances = lances, itens = itens) }
         }
     }
 
