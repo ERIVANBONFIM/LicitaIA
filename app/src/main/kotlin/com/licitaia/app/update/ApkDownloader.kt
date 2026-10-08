@@ -49,7 +49,7 @@ class ApkDownloader @Inject constructor(
         val request = Request.Builder()
             .url(update.apkUrl)
             .header("Accept", "application/octet-stream")
-            .header("User-Agent", "LicitaIA (Android)")
+            .header("User-Agent", "LicitaPRO (Android)")
             .get()
             .build()
         var completed = false

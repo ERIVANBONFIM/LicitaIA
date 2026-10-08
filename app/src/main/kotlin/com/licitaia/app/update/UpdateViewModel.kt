@@ -101,7 +101,7 @@ class UpdateViewModel @Inject constructor(
     /** Abre as configurações do sistema para autorizar a instalação. */
     fun openInstallPermission(context: Context) {
         if (!installer.openUnknownSourcesSettings(context)) {
-            _state.update { it.copy(phase = UpdatePhase.ERROR, error = "Não foi possível abrir as configurações. Autorize manualmente em Configurações → Apps → Acesso especial → Instalar apps desconhecidos → LicitaIA.") }
+            _state.update { it.copy(phase = UpdatePhase.ERROR, error = "Não foi possível abrir as configurações. Autorize manualmente em Configurações → Apps → Acesso especial → Instalar apps desconhecidos → LicitaPRO.") }
         }
     }
 

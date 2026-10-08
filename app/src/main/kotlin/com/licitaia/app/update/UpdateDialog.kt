@@ -129,7 +129,7 @@ fun UpdateDialog(state: UpdateUiState, viewModel: UpdateViewModel) {
                 UpdatePhase.PERMISSION -> {
                     AlertBanner(
                         "Autorize a instalação",
-                        "Como o LicitaIA não vem da loja, o Android exige permitir \"instalar apps desconhecidos\" para este app. Toque em Autorizar, ative a opção e volte para continuar.",
+                        "Como o LicitaPRO não vem da loja, o Android exige permitir \"instalar apps desconhecidos\" para este app. Toque em Autorizar, ative a opção e volte para continuar.",
                         Tone.WARNING,
                     )
                     Spacer(Modifier.height(14.dp))

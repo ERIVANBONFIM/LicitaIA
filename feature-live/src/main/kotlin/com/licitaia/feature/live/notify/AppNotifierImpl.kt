@@ -94,7 +94,7 @@ class AppNotifierImpl @Inject constructor(
         if (!canPost()) return
         ensureChannels()
         val builder = NotificationCompat.Builder(context, channelId(n.category))
-            .setSmallIcon(R.drawable.ic_stat_licitaia)
+            .setSmallIcon(R.drawable.ic_stat_licitapro)
             .setContentTitle(n.title)
             .setContentText(n.body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
@@ -188,7 +188,7 @@ class AppNotifierImpl @Inject constructor(
         NotificationCategory.DOCUMENTOS -> "Documentos vencendo ou vencidos"
         NotificationCategory.SESSOES -> "Abertura e encerramento de sessões de pregão"
         NotificationCategory.RADAR -> "Novas oportunidades encontradas pelos radares"
-        NotificationCategory.GERAL -> "Avisos gerais do LicitaIA"
+        NotificationCategory.GERAL -> "Avisos gerais do LicitaPRO"
     }
 
     companion object {

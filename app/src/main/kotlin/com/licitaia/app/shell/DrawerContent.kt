@@ -206,7 +206,7 @@ private fun DrawerHeader(session: AuthSession?, companies: List<Company>, onSwit
             }
             Spacer(Modifier.width(12.dp))
             Column {
-                Text("LicitaIA", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("LicitaPRO", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text("Licitações com inteligência", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary)
             }
         }

@@ -124,7 +124,7 @@ class UpdateChecker @Inject constructor(
             .url("https://api.github.com/repos/$repo/releases/latest")
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
-            .header("User-Agent", "LicitaIA/${installedVersionName} (Android)")
+            .header("User-Agent", "LicitaPRO/${installedVersionName} (Android)")
             .get()
             .build()
         try {

@@ -109,7 +109,7 @@ fun LockScreen(
             )
             prompt.authenticate(
                 BiometricPrompt.PromptInfo.Builder()
-                    .setTitle("Desbloquear LicitaIA")
+                    .setTitle("Desbloquear LicitaPRO")
                     .setSubtitle("Confirme sua identidade para continuar")
                     .setAllowedAuthenticators(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)
                     .build(),
@@ -136,7 +136,7 @@ fun LockScreen(
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Outlined.Lock, contentDescription = null, tint = Color.White, modifier = Modifier.size(40.dp)) }
             Spacer(Modifier.height(20.dp))
-            Text("LicitaIA bloqueado", style = MaterialTheme.typography.headlineSmall)
+            Text("LicitaPRO bloqueado", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(6.dp))
             Text(
                 if (userName.isBlank()) "Confirme sua identidade para continuar." else "Olá, $userName. Confirme sua identidade para continuar.",

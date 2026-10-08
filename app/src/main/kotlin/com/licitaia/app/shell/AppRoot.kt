@@ -142,7 +142,7 @@ private fun SplashScreen() {
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Outlined.Radar, contentDescription = null, tint = Color.White, modifier = Modifier.size(48.dp)) }
             Spacer(Modifier.height(20.dp))
-            Text("LicitaIA", style = MaterialTheme.typography.headlineLarge, color = LicitaColors.TextPrimary)
+            Text("LicitaPRO", style = MaterialTheme.typography.headlineLarge, color = LicitaColors.TextPrimary)
             Spacer(Modifier.height(24.dp))
             CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.5.dp, color = LicitaColors.Blue)
         }
@@ -428,7 +428,7 @@ private fun MainShell(
 
     if (confirmLogout) {
         ConfirmDialog(
-            title = "Sair do LicitaIA?",
+            title = "Sair do LicitaPRO?",
             message = "As sessões de pregão continuam registradas e serão restauradas no próximo login.",
             confirmLabel = "Sair",
             tone = Tone.DANGER,
