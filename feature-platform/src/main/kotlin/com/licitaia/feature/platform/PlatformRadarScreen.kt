@@ -52,6 +52,7 @@ import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
+import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.channels.Channel
@@ -165,7 +166,11 @@ fun PlatformRadarScreen(viewModel: PlatformRadarViewModel = hiltViewModel()) {
                 ) {
                     item { Spacer(Modifier.height(4.dp)) }
                     items(state.filtros, key = { it.id }) { f ->
-                        RadarCard(f, enabled = !state.busy, onEdit = { editing = f }, onDelete = { viewModel.delete(f.id) }, onToggle = { viewModel.toggleAtivo(f) })
+                        RadarCard(
+                            f, enabled = !state.busy, onEdit = { editing = f }, onDelete = { viewModel.delete(f.id) },
+                            onToggle = { viewModel.toggleAtivo(f) },
+                            onOpenResults = { navigator.navigate(Routes.platformRadarResults(f.id)) },
+                        )
                     }
                     item { Spacer(Modifier.height(80.dp)) }
                 }
@@ -183,7 +188,8 @@ fun PlatformRadarScreen(viewModel: PlatformRadarViewModel = hiltViewModel()) {
 }
 
 @Composable
-private fun RadarCard(f: RadarFiltroDto, enabled: Boolean, onEdit: () -> Unit, onDelete: () -> Unit, onToggle: () -> Unit) {
+private fun RadarCard(f: RadarFiltroDto, enabled: Boolean, onEdit: () -> Unit, onDelete: () -> Unit, onToggle: () -> Unit, onOpenResults: () -> Unit) {
+    val resultados = f.countMatch ?: 0
     LicitaCard(Modifier.fillMaxWidth(), accent = if (f.ativo) LicitaColors.Blue else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(f.nome.ifBlank { "Radar" }, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -194,6 +200,11 @@ private fun RadarCard(f: RadarFiltroDto, enabled: Boolean, onEdit: () -> Unit, o
         if (f.portais.isNotEmpty()) InfoRow("Portais", f.portais.joinToString(", "))
         if (f.estados.isNotEmpty()) InfoRow("Estados", f.estados.joinToString(", "))
         f.countMatch?.let { InfoRow("Resultados", it.toString()) }
+        Spacer(Modifier.height(8.dp))
+        PrimaryButton(
+            if (resultados > 0) "Ver resultados ($resultados)" else "Ver resultados",
+            onOpenResults, Modifier.fillMaxWidth(),
+        )
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SecondaryButton("Editar", onEdit, Modifier.weight(1f), enabled = enabled, tone = Tone.NEUTRAL, icon = Icons.Outlined.Edit)

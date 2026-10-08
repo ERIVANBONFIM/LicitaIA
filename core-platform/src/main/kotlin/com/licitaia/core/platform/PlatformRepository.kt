@@ -208,6 +208,9 @@ class PlatformRepository @Inject constructor(
     /** `GET /radar/filtros`. */
     suspend fun radarFiltros(): Result<List<RadarFiltroDto>> = authedRead { api.radarFiltros(it) }
 
+    /** `GET /radar/filtros/:id/licitacoes` → licitações encontradas pelo radar. */
+    suspend fun radarLicitacoes(id: String): Result<List<TenderDto>> = authedRead { api.radarLicitacoes(it, id).data }
+
     /** `GET /concorrente`. */
     suspend fun concorrentes(): Result<List<ConcorrenteDto>> = authedRead { api.concorrentes(it).data }
 
@@ -253,6 +256,14 @@ class PlatformRepository @Inject constructor(
 
     /** `POST /propostas` → grava metadados da proposta gerada no aparelho. */
     suspend fun criarProposta(req: PropostaCreateRequest): Result<Unit> = authedRead { api.criarProposta(it, req) }
+
+    /**
+     * Cache em memória do CONTEÚDO (texto/planilha) da proposta gerada no aparelho, por licitação. A VPS só guarda
+     * metadados (valor/status), então o texto gerado fica aqui para a tela "Ver proposta" exibir dentro da sessão.
+     */
+    private val propostaConteudoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    fun cacheProposta(licitacaoId: String, conteudo: String) { if (conteudo.isNotBlank()) propostaConteudoCache[licitacaoId] = conteudo }
+    fun propostaConteudo(licitacaoId: String): String? = propostaConteudoCache[licitacaoId]
 
     /** `POST /documentos` (multipart). */
     suspend fun uploadDocumento(bytes: ByteArray, fileName: String, nome: String, categoria: String, validade: String?): Result<Unit> =

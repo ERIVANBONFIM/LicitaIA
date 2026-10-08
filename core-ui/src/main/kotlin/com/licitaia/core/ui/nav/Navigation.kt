@@ -73,6 +73,9 @@ object Routes {
     const val PLATFORM_DOCS = "platform/documentos"
     /** Radares salvos (`GET /radar/filtros`). */
     const val PLATFORM_RADAR = "platform/radar"
+    /** Licitações encontradas por um radar (`GET /radar/filtros/:id/licitacoes`). */
+    const val PLATFORM_RADAR_RESULTS = "platform/radar/{radarId}/licitacoes"
+    fun platformRadarResults(id: String) = "platform/radar/$id/licitacoes"
     /** Concorrentes mapeados (`GET /concorrente`). */
     const val PLATFORM_COMPETITORS = "platform/concorrencia"
     /** Mensagens do pregoeiro (`GET /mensagens`). */

@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.QuestionAnswer
 import androidx.compose.material.icons.outlined.RequestQuote
@@ -221,6 +222,13 @@ private fun RoboCard(
         Spacer(Modifier.height(4.dp))
         if (roboRun != null) {
             StatusBadge(roboRun.status.name.lowercase().replace('_', ' '), Tone.INFO)
+            // Enquanto não há passo/sugestão, deixa claro que está aguardando a disputa/sessão.
+            if (roboRun.step.isNullOrBlank() && roboRun.message.isNullOrBlank()) {
+                Text(
+                    "Aguardando a disputa abrir. Se o portal pedir login, entre no Comprasnet em Portais — o robô retoma sozinho.",
+                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                )
+            }
             roboRun.step?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary) }
             roboRun.message?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
             roboRun.log.takeLast(4).forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
@@ -363,7 +371,7 @@ private fun PropostaRow(
     var editing by rememberSaveable(p.id) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(PlatformFormat.currency(p.valorTotal), style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(PlatformFormat.currencyOrDash(p.valorTotal), style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             p.status?.let { StatusBadge(it.replace('_', ' '), if (it == "aceita") Tone.SUCCESS else Tone.INFO) }
         }
         p.createdAt?.let { Text(PlatformFormat.dateTime(it), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
@@ -517,6 +525,7 @@ private fun TenderDetail(
     val itens = s.itens
     val arquivos = s.arquivos
     val acting = s.acting
+    var showProposta by rememberSaveable { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -588,8 +597,9 @@ private fun TenderDetail(
             t.veredito?.takeIf { it.isNotBlank() }?.let { InfoRow("Veredito", it) }
             t.scoreRelevancia?.let { InfoRow("Relevância", "$it") }
             t.scoreRisco?.let { InfoRow("Risco", "$it") }
-            t.precoSugeridoIA?.takeIf { it.isNotBlank() }?.let { InfoRow("Preço sugerido (IA)", PlatformFormat.currency(it)) }
-            t.margemEstimadaIA?.takeIf { it.isNotBlank() }?.let { InfoRow("Margem estimada (IA)", it) }
+            // Preço/margem: edital sigiloso vem 0/nulo → mostramos "—" (não "R$ 0,00").
+            t.precoSugeridoIA?.takeIf { it.isNotBlank() }?.let { InfoRow("Preço sugerido (IA)", PlatformFormat.currencyOrDash(it)) }
+            t.margemEstimadaIA?.takeIf { it.isNotBlank() }?.let { InfoRow("Margem estimada (IA)", PlatformFormat.numberOrDash(it, "%")) }
             val resumo = t.editalResumoIA?.takeIf { it.isNotBlank() }
             Spacer(Modifier.height(6.dp))
             Text(
@@ -602,7 +612,9 @@ private fun TenderDetail(
             }
             if (s.analyzing) {
                 Spacer(Modifier.height(10.dp))
-                AlertBanner("Analisando no aparelho…", "${s.analysisStatus ?: "Rodando a IA local"} (usa a sua chave de IA; nenhuma chave sobe para a nuvem).", Tone.INFO, pulsing = true)
+                AlertBanner("Analisando no aparelho…", "${s.analysisStatus ?: "Rodando a IA local"} — pode levar até ~1-2 min. Usa a sua chave de IA; nenhuma chave sobe para a nuvem.", Tone.INFO, pulsing = true)
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth(), color = LicitaColors.Blue, trackColor = LicitaColors.Outline)
             }
             Spacer(Modifier.height(10.dp))
             SecondaryButton(
@@ -628,7 +640,11 @@ private fun TenderDetail(
             }
             if (s.generatingProposal) {
                 Spacer(Modifier.height(10.dp))
-                AlertBanner("Gerando proposta no aparelho…", "Rodando a IA local.", Tone.INFO, pulsing = true)
+                AlertBanner("Gerando proposta no aparelho…", "Rodando a IA local. Pode levar até ~1-2 min.", Tone.INFO, pulsing = true)
+            }
+            if (s.proposalContent != null) {
+                Spacer(Modifier.height(10.dp))
+                SecondaryButton("Ver proposta", { showProposta = true }, Modifier.fillMaxWidth(), tone = Tone.INFO, icon = Icons.Outlined.Description)
             }
             Spacer(Modifier.height(10.dp))
             SecondaryButton(
@@ -742,5 +758,18 @@ private fun TenderDetail(
                 Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null, tint = LicitaColors.TextMuted)
             }
         }
+    }
+
+    if (showProposta && s.proposalContent != null) {
+        AlertDialog(
+            onDismissRequest = { showProposta = false },
+            title = { Text("Proposta gerada") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(s.proposalContent!!, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                }
+            },
+            confirmButton = { PrimaryButton("Fechar", { showProposta = false }) },
+        )
     }
 }

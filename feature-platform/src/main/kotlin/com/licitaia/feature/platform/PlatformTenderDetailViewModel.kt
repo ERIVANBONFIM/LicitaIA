@@ -70,6 +70,8 @@ data class PlatformDetailUi(
     /** Geração de proposta ON-DEVICE em andamento + resumo da última gerada (conteúdo fica no aparelho). */
     val generatingProposal: Boolean = false,
     val proposalSummary: String? = null,
+    /** Conteúdo (texto/planilha) da última proposta gerada no aparelho, para a tela "Ver proposta". */
+    val proposalContent: String? = null,
     /** Robô de lance (leitura + arme via VPS; execução on-device é próxima etapa). */
     val roboConfig: RoboConfigDto? = null,
     val roboLances: Int = 0,
@@ -128,10 +130,11 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     val resultado = repository.resultado(id).getOrNull()
                     val propostas = repository.propostas(id).getOrDefault(emptyList())
                     val mensagens = repository.mensagens(id).getOrDefault(emptyList())
+                    val conteudo = repository.propostaConteudo(id)
                     _state.update {
                         it.copy(
                             itens = itens, arquivos = arquivos, roboConfig = robo, roboLances = lances, prontidao = prontidao,
-                            resultado = resultado, propostas = propostas, mensagens = mensagens,
+                            resultado = resultado, propostas = propostas, mensagens = mensagens, proposalContent = conteudo,
                         )
                     }
                 },
@@ -207,10 +210,21 @@ class PlatformTenderDetailViewModel @Inject constructor(
                 _events.send(e.message ?: "Não foi possível gerar a proposta no aparelho.")
                 return@launch
             }
-            val total = draft.items.sumOf { it.total }
-            val resumo = "Proposta gerada no aparelho: ${draft.items.size} item(ns) · total ${PlatformFmt.money(total)} · " +
+            // Total robusto: soma os itens; se a IA não precificou (edital sigiloso), tenta o valor de referência
+            // do órgão (estimatedUnitPrice) e, por fim, o valor estimado da licitação. Nunca fica 0 se há valores.
+            val totalItens = draft.items.sumOf { it.total }
+            val totalRef = draft.items.sumOf { (it.estimatedUnitPrice ?: 0.0) * it.quantity }
+            val total = when {
+                totalItens > 0.0 -> totalItens
+                totalRef > 0.0 -> totalRef
+                else -> dto.valorEstimado?.toDoubleOrNull() ?: 0.0
+            }
+            val conteudo = buildProposalContent(draft, total)
+            repository.cacheProposta(id, conteudo)
+            val valorTxt = if (total > 0) PlatformFmt.money(total) else "a definir (edital sem valor)"
+            val resumo = "Proposta gerada no aparelho: ${draft.items.size} item(ns) · total $valorTxt · " +
                 "entrega ${draft.deliveryDays}d · validade ${draft.validityDays}d."
-            _state.update { it.copy(generatingProposal = false, proposalSummary = resumo) }
+            _state.update { it.copy(generatingProposal = false, proposalSummary = resumo, proposalContent = conteudo) }
             _events.send("Proposta gerada no aparelho.")
             // Grava metadados na VPS (conteúdo completo fica no aparelho por ora) e recarrega a lista.
             repository.criarProposta(PropostaCreateRequest(licitacaoId = id, valorTotal = total))
@@ -538,4 +552,28 @@ private fun com.licitaia.core.platform.db.PlatformTenderEntity.toDto(): TenderDt
 /** Formatação monetária compacta para mensagens (a UI usa PlatformFormat). */
 private object PlatformFmt {
     fun money(v: Double): String = "R$ " + String.format(java.util.Locale("pt", "BR"), "%,.2f", v)
+}
+
+/** Monta o texto/planilha legível da proposta gerada no aparelho (exibido em "Ver proposta"). */
+private fun buildProposalContent(draft: com.licitaia.ai.api.ProposalDraft, total: Double): String = buildString {
+    appendLine("PROPOSTA COMERCIAL (gerada no aparelho)")
+    appendLine()
+    draft.items.forEachIndexed { i, item ->
+        val num = item.itemNumber ?: (i + 1)
+        val unit = if (item.unitPrice > 0) PlatformFmt.money(item.unitPrice)
+            else item.estimatedUnitPrice?.takeIf { it > 0 }?.let { PlatformFmt.money(it) + " (ref.)" } ?: "a definir"
+        val sub = if (item.unitPrice > 0) PlatformFmt.money(item.total) else "—"
+        appendLine("Item $num — ${item.description.ifBlank { "(sem descrição)" }}")
+        val qtd = if (item.quantity == item.quantity.toLong().toDouble()) item.quantity.toLong().toString() else item.quantity.toString()
+        appendLine("  Qtd $qtd ${item.unit.ifBlank { "un" }} × $unit = $sub")
+        if (item.confidentialBudget) appendLine("  (orçamento sigiloso — defina o preço)")
+    }
+    appendLine()
+    appendLine("TOTAL: " + if (total > 0) PlatformFmt.money(total) else "a definir (edital sem valor)")
+    appendLine("Entrega: ${draft.deliveryDays} dia(s) · Validade: ${draft.validityDays} dia(s)")
+    if (draft.notes.isNotBlank()) {
+        appendLine()
+        appendLine("Observações:")
+        appendLine(draft.notes)
+    }
 }

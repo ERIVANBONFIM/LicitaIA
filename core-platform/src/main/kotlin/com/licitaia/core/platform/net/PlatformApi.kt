@@ -152,6 +152,10 @@ class PlatformApi(
     suspend fun radarFiltros(token: String): List<RadarFiltroDto> =
         get(url("radar/filtros"), ListSerializer(RadarFiltroDto.serializer()), token = token) ?: emptyList()
 
+    /** `GET /radar/filtros/:id/licitacoes` → licitações que o radar encontrou (mesmo shape da lista). */
+    suspend fun radarLicitacoes(token: String, id: String): TenderPageDto =
+        get(url("radar/filtros/$id/licitacoes"), TenderPageDto.serializer(), token = token) ?: TenderPageDto()
+
     /** `GET /concorrente` → concorrentes mapeados (paginado `{data,total}`). */
     suspend fun concorrentes(token: String): ConcorrentePageDto =
         get(url("concorrente"), ConcorrentePageDto.serializer(), token = token) ?: ConcorrentePageDto()

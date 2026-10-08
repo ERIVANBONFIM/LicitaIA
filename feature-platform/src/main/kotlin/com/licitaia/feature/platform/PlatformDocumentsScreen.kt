@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -44,7 +45,6 @@ import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.core.platform.net.DocumentoDto
 import com.licitaia.core.ui.components.EmptyState
 import com.licitaia.core.ui.components.ErrorState
-import com.licitaia.core.ui.components.InfoRow
 import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
 import com.licitaia.core.ui.components.PrimaryButton
@@ -243,17 +243,34 @@ private fun queryDisplayName(context: android.content.Context, uri: Uri): String
 @Composable
 private fun DocCard(d: DocumentoDto, enabled: Boolean, onDownload: () -> Unit, onDelete: () -> Unit) {
     LicitaCard(Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(d.nome.ifBlank { "Documento" }, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            IconButton(onClick = onDownload, enabled = enabled) { Icon(Icons.Outlined.Download, contentDescription = "Baixar", tint = LicitaColors.Blue) }
-            IconButton(onClick = onDelete, enabled = enabled) { Icon(Icons.Outlined.Delete, contentDescription = "Excluir", tint = LicitaColors.RedBright) }
+        // Nome em 1-2 linhas com ellipsis (não estoura o cartão com nomes longos de arquivo).
+        Text(
+            d.nome.ifBlank { "Documento" },
+            style = MaterialTheme.typography.titleSmall,
+            color = LicitaColors.TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(6.dp))
+        // Linha de metadados organizada: categoria · validade · tamanho.
+        val meta = listOfNotNull(
+            d.categoria?.takeIf { it.isNotBlank() }?.let { it.replace('_', ' ').replaceFirstChar { c -> c.uppercase() } },
+            d.validade?.takeIf { it.isNotBlank() }?.let { "Val.: " + PlatformFormat.dateShort(it) },
+            PlatformFormat.fileSize(d.tamanho),
+        )
+        if (meta.isNotEmpty()) {
+            Text(meta.joinToString("  ·  "), style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
         }
-        Spacer(Modifier.height(4.dp))
-        d.categoria?.let { InfoRow("Categoria", it.replace('_', ' ')) }
-        InfoRow("Validade", PlatformFormat.dateTime(d.validade))
         d.status?.let {
             Spacer(Modifier.height(8.dp))
-            StatusBadge(it, if (it.equals("regular", true)) Tone.SUCCESS else Tone.WARNING)
+            StatusBadge(it.replaceFirstChar { c -> c.uppercase() }, if (it.equals("regular", true)) Tone.SUCCESS else Tone.WARNING)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SecondaryButton("Baixar", onDownload, Modifier.weight(1f), enabled = enabled, tone = Tone.INFO, icon = Icons.Outlined.Download)
+            IconButton(onClick = onDelete, enabled = enabled) { Icon(Icons.Outlined.Delete, contentDescription = "Excluir", tint = LicitaColors.RedBright) }
         }
     }
 }

@@ -14,6 +14,10 @@ fun NavGraphBuilder.platformGraph() {
     composable(Routes.PLATFORM_DIRECTORY) { PlatformDirectoryScreen() }
     composable(Routes.PLATFORM_DOCS) { PlatformDocumentsScreen() }
     composable(Routes.PLATFORM_RADAR) { PlatformRadarScreen() }
+    composable(
+        Routes.PLATFORM_RADAR_RESULTS,
+        arguments = listOf(navArgument("radarId") { type = NavType.StringType }),
+    ) { PlatformRadarResultsScreen() }
     composable(Routes.PLATFORM_COMPETITORS) { PlatformCompetitorsScreen() }
     composable(Routes.PLATFORM_MESSAGES) { PlatformMessagesScreen() }
     composable(Routes.PLATFORM_AUDIT) { PlatformAuditScreen() }
