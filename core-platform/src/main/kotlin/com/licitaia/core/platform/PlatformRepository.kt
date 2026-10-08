@@ -18,10 +18,13 @@ import com.licitaia.core.platform.net.PlatformApi
 import com.licitaia.core.platform.net.PlatformException
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
+import com.licitaia.core.platform.net.ProntidaoDto
 import com.licitaia.core.platform.net.PropostaDto
 import com.licitaia.core.platform.net.PropostaUpdateRequest
 import com.licitaia.core.platform.net.RadarFiltroDto
 import com.licitaia.core.platform.net.RadarUpsertRequest
+import com.licitaia.core.platform.net.RoboAtivaDto
+import com.licitaia.core.platform.net.RoboConfigUpdateRequest
 import com.licitaia.core.platform.net.RoboConfigDto
 import com.licitaia.core.platform.net.TenderDto
 import com.licitaia.core.platform.net.TenderPageDto
@@ -290,6 +293,21 @@ class PlatformRepository @Inject constructor(
 
     /** `GET /robo-lances/historico/:id` → nº de lances. */
     suspend fun roboHistoricoCount(id: String): Result<Int> = authedRead { api.roboHistoricoCount(it, id) }
+
+    /** `PUT /robo-lances/config/:id` → arma/edita (dry_run por padrão; auto exige confirmarAuto). */
+    suspend fun armarRobo(id: String, req: RoboConfigUpdateRequest): Result<Unit> = authedRead { api.updateRoboConfig(it, id, req) }
+
+    /** `GET /robo-lances/prontidao/:id`. */
+    suspend fun roboProntidao(id: String): Result<ProntidaoDto> = authedRead { api.roboProntidao(it, id) }
+
+    /** `POST /robo-lances/preparar/:id`. */
+    suspend fun roboPreparar(id: String): Result<Unit> = authedRead { api.roboPreparar(it, id) }
+
+    /** `POST /robo-lances/participar/:id` → marca favorita + fase + arma em dry_run. */
+    suspend fun roboParticipar(id: String): Result<Unit> = authedRead { api.roboParticipar(it, id) }
+
+    /** `GET /robo-lances/ativas`. */
+    suspend fun roboAtivas(): Result<List<RoboAtivaDto>> = authedRead { api.roboAtivas(it) }
 
     /** `GET /ia/chat-edital/:id/historico`. */
     suspend fun chatHistorico(id: String): Result<List<ChatMsg>> = authedRead { api.chatHistorico(it, id) }

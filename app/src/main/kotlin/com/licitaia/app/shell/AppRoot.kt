@@ -173,8 +173,9 @@ private fun resolvePlatformRoute(route: String, platformMode: Boolean): String {
         Routes.MESSAGES -> Routes.PLATFORM_MESSAGES
         Routes.COMPANIES -> Routes.PLATFORM_DIRECTORY
         Routes.AUDIT -> Routes.PLATFORM_AUDIT
+        Routes.ROBOT -> Routes.PLATFORM_ROBOT
         // Sem endpoint de nuvem ainda: estado gracioso (o modo local segue oferecendo).
-        Routes.ANALYZE, Routes.LIVE, Routes.WARROOM, Routes.STRATEGY, Routes.ROBOT -> Routes.PLATFORM_SOON
+        Routes.ANALYZE, Routes.LIVE, Routes.WARROOM, Routes.STRATEGY -> Routes.PLATFORM_SOON
         // Locais por natureza (device) e o próprio dashboard/notifs: telas locais, sem redirecionar.
         else -> route
     }

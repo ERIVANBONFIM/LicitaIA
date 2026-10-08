@@ -10,11 +10,13 @@ import com.licitaia.core.platform.net.AnaliseLocalRequest
 import com.licitaia.core.platform.net.MensagemDto
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
+import com.licitaia.core.platform.net.ProntidaoDto
 import com.licitaia.core.platform.net.PropostaCreateRequest
 import com.licitaia.core.platform.net.PropostaDto
 import com.licitaia.core.platform.net.ResultadoDto
 import com.licitaia.core.platform.net.ResultadoRequest
 import com.licitaia.core.platform.net.RoboConfigDto
+import com.licitaia.core.platform.net.RoboConfigUpdateRequest
 import com.licitaia.core.platform.net.TenderDto
 import com.licitaia.core.platform.session.PlatformIdentity
 import com.licitaia.core.platform.session.PlatformSession
@@ -53,9 +55,11 @@ data class PlatformDetailUi(
     /** Geração de proposta ON-DEVICE em andamento + resumo da última gerada (conteúdo fica no aparelho). */
     val generatingProposal: Boolean = false,
     val proposalSummary: String? = null,
-    /** Robô de lance (leitura). */
+    /** Robô de lance (leitura + arme via VPS; execução on-device é próxima etapa). */
     val roboConfig: RoboConfigDto? = null,
     val roboLances: Int = 0,
+    val prontidao: ProntidaoDto? = null,
+    val roboBusy: Boolean = false,
     /** Resultado registrado (null = ainda não registrado). */
     val resultado: ResultadoDto? = null,
     /** Propostas da licitação (metadados na VPS). */
@@ -94,13 +98,14 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     val arquivos = repository.tenderArquivos(id).getOrDefault(emptyList())
                     val robo = repository.roboConfig(id).getOrNull()
                     val lances = repository.roboHistoricoCount(id).getOrDefault(0)
+                    val prontidao = repository.roboProntidao(id).getOrNull()
                     val resultado = repository.resultado(id).getOrNull()
                     val propostas = repository.propostas(id).getOrDefault(emptyList())
                     val mensagens = repository.mensagens(id).getOrDefault(emptyList())
                     _state.update {
                         it.copy(
-                            itens = itens, arquivos = arquivos, roboConfig = robo, roboLances = lances, resultado = resultado,
-                            propostas = propostas, mensagens = mensagens,
+                            itens = itens, arquivos = arquivos, roboConfig = robo, roboLances = lances, prontidao = prontidao,
+                            resultado = resultado, propostas = propostas, mensagens = mensagens,
                         )
                     }
                 },
@@ -205,6 +210,39 @@ class PlatformTenderDetailViewModel @Inject constructor(
                 _events.send(r.exceptionOrNull()?.message ?: "Não foi possível concluir.")
                 _state.update { it.copy(acting = false) }
             }
+        }
+    }
+
+    /**
+     * Arma/edita o robô na VPS. [auto]=true (lance REAL) exige confirmação explícita na UI e envia
+     * confirmarAuto=true (trava do backend). Sem [auto], arma em dry_run (decide e loga, NÃO envia).
+     * O PISO (valorMinimo) é sempre enviado. A disputa on-device (motor local) é a próxima etapa.
+     */
+    fun armarRobo(piso: Double, decremento: Double, estrategia: String?, intervalo: Int?, itemAlvo: String?, auto: Boolean) = roboOp(
+        if (auto) "Robô armado em modo AUTO (lance real)." else "Robô armado em modo de teste (dry_run).",
+    ) {
+        repository.armarRobo(
+            id,
+            RoboConfigUpdateRequest(
+                estrategia = estrategia, valorMinimo = piso, decremento = decremento, intervaloSegundos = intervalo,
+                itemAlvo = itemAlvo, modoExecucao = if (auto) "auto" else "dry_run", confirmarAuto = if (auto) true else null,
+            ),
+        )
+    }
+
+    fun participarRobo() = roboOp("Participação registrada (robô em dry_run).") { repository.roboParticipar(id) }
+    fun prepararRobo() = roboOp("Preparação disparada.") { repository.roboPreparar(id) }
+
+    private fun roboOp(okMsg: String, block: suspend () -> Result<Unit>) {
+        if (_state.value.roboBusy) return
+        _state.update { it.copy(roboBusy = true) }
+        viewModelScope.launch {
+            val r = block()
+            if (r.isSuccess) _events.send(okMsg) else _events.send(r.exceptionOrNull()?.message ?: "Não foi possível concluir.")
+            val robo = repository.roboConfig(id).getOrNull()
+            val prontidao = repository.roboProntidao(id).getOrNull()
+            val lances = repository.roboHistoricoCount(id).getOrDefault(_state.value.roboLances)
+            _state.update { it.copy(roboBusy = false, roboConfig = robo ?: it.roboConfig, prontidao = prontidao ?: it.prontidao, roboLances = lances) }
         }
     }
 

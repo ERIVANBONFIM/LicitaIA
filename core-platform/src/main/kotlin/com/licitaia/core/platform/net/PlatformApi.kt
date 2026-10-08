@@ -211,6 +211,30 @@ class PlatformApi(
     suspend fun roboHistoricoCount(token: String, id: String): Int =
         (get(url("robo-lances/historico/$id"), ListSerializer(JsonObject.serializer()), token = token) ?: emptyList()).size
 
+    /** `PUT /robo-lances/config/:id` → arma/edita a config do robô. */
+    suspend fun updateRoboConfig(token: String, id: String, req: RoboConfigUpdateRequest) {
+        val payload = json.encodeToString(RoboConfigUpdateRequest.serializer(), req)
+        putJson(url("robo-lances/config/$id"), payload, OkDto.serializer(), token)
+    }
+
+    /** `GET /robo-lances/prontidao/:id`. */
+    suspend fun roboProntidao(token: String, id: String): ProntidaoDto =
+        get(url("robo-lances/prontidao/$id"), ProntidaoDto.serializer(), token = token) ?: ProntidaoDto()
+
+    /** `POST /robo-lances/preparar/:id`. */
+    suspend fun roboPreparar(token: String, id: String) {
+        postJson(url("robo-lances/preparar/$id"), "{}", OkDto.serializer(), token)
+    }
+
+    /** `POST /robo-lances/participar/:id` → marca favorita + fase + arma em dry_run. */
+    suspend fun roboParticipar(token: String, id: String) {
+        postJson(url("robo-lances/participar/$id"), "{}", OkDto.serializer(), token)
+    }
+
+    /** `GET /robo-lances/ativas` → robôs ativos da empresa. */
+    suspend fun roboAtivas(token: String): List<RoboAtivaDto> =
+        get(url("robo-lances/ativas"), ListSerializer(RoboAtivaDto.serializer()), token = token) ?: emptyList()
+
     /** `GET /ia/chat-edital/:id/historico` → mensagens do "Pergunte ao edital". */
     suspend fun chatHistorico(token: String, id: String): List<ChatMsg> =
         (get(url("ia/chat-edital/$id/historico"), ChatHistoricoDto.serializer(), token = token)?.mensagens ?: emptyList())

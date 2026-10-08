@@ -236,7 +236,7 @@ data class AnalysisStatusDto(
 @Serializable
 data class AnalysisJobDto(val id: String? = null, val status: String? = null)
 
-/** `GET /robo-lances/config/:id`. */
+/** `GET /robo-lances/config/:id` (valorMinimo/decremento vêm como número aqui). */
 @Serializable
 data class RoboConfigDto(
     val ativo: Boolean = false,
@@ -245,6 +245,41 @@ data class RoboConfigDto(
     val valorMinimo: Double? = null,
     val decremento: Double? = null,
     val intervaloSegundos: Int? = null,
+    val itemAlvo: String? = null,
+)
+
+/** `PUT /robo-lances/config/:id`. modoExecucao="auto" exige confirmarAuto=true (trava do backend). */
+@Serializable
+data class RoboConfigUpdateRequest(
+    val estrategia: String? = null,
+    val valorMinimo: Double,
+    val decremento: Double,
+    val intervaloSegundos: Int? = null,
+    val itemAlvo: String? = null,
+    val modoExecucao: String = "dry_run",
+    val confirmarAuto: Boolean? = null,
+)
+
+/** `GET /robo-lances/prontidao/:id`. */
+@Serializable
+data class ProntidaoDto(
+    val ok: Boolean = false,
+    val estado: String? = null,
+    val motivos: List<String> = emptyList(),
+)
+
+/** `GET /robo-lances/ativas` (valorMinimo/decremento vêm como STRING aqui — tolerante). */
+@Serializable
+data class RoboAtivaDto(
+    val id: String = "",
+    val licitacaoId: String = "",
+    val ativo: Boolean = false,
+    val estrategia: String? = null,
+    val valorMinimo: String? = null,
+    val decremento: String? = null,
+    val intervaloSegundos: Int? = null,
+    val itemAlvo: String? = null,
+    val modoExecucao: String? = null,
 )
 
 /** `GET /ia/chat-edital/:id/historico` → `{ok, mensagens:[...]}` (shape das mensagens tolerante). */
