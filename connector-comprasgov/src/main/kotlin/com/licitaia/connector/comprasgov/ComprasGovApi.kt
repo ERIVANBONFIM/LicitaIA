@@ -234,7 +234,7 @@ internal class ComprasGovApi(
         /** Limites confirmados pela API (HTTP 400 "deve ser no mínimo 10" / "no máximo 500"). */
         const val MIN_PAGE_SIZE = 10
         const val MAX_PAGE_SIZE = 500
-        private const val USER_AGENT = "LicitaIA-Android (consulta publica Compras.gov.br dados abertos)"
+        private const val USER_AGENT = "LicitaPRO-Android (consulta publica Compras.gov.br dados abertos)"
         private const val TIMEOUT_MESSAGE = "O Compras.gov.br demorou demais para responder. Tente novamente em instantes."
         private const val INVALID_MESSAGE = "O Compras.gov.br devolveu uma resposta em formato inesperado."
     }

@@ -129,7 +129,7 @@ class PortalAutomationStorage @Inject constructor(@ApplicationContext private va
         Intent(Intent.ACTION_SEND).apply {
             type = "application/json"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "LicitaIA — mapa das telas do Comprasnet")
+            putExtra(Intent.EXTRA_SUBJECT, "LicitaPRO — mapa das telas do Comprasnet")
             putExtra(Intent.EXTRA_TEXT, "Snapshots estruturais (sem valores digitados, sem tokens e com CPF/CNPJ/e-mails mascarados).")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }

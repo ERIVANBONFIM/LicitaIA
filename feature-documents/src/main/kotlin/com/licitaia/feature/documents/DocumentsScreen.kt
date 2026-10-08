@@ -173,7 +173,7 @@ fun DocumentsScreen(viewModel: DocumentsViewModel = hiltViewModel()) {
                                     Column(Modifier.weight(1f)) {
                                         Text("Leitura automática", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
                                         Text(
-                                            "Anexe o PDF, uma foto ou imagens da galeria: o LicitaIA identifica o tipo e lê emissor, número, CNPJ e validade. Você confere antes de salvar.",
+                                            "Anexe o PDF, uma foto ou imagens da galeria: o LicitaPRO identifica o tipo e lê emissor, número, CNPJ e validade. Você confere antes de salvar.",
                                             style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                                         )
                                     }

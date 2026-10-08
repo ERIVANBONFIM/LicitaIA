@@ -46,7 +46,7 @@ fun BackupCard(viewModel: BackupViewModel = hiltViewModel()) {
         Text("Inclui licitações, editais, documentos e anexos, propostas, radares, histórico e auditoria. Senhas, contas e chaves de IA não são exportadas. Guarde a senha: ela é necessária em outro aparelho.", style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Senha do backup (mínimo 12 caracteres)") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.busy)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { save.launch("LicitaIA-backup.licitaia") }, enabled = password.length >= 12 && !viewModel.busy) { Text("Exportar") }
+            Button(onClick = { save.launch("LicitaPRO-backup.licitaia") }, enabled = password.length >= 12 && !viewModel.busy) { Text("Exportar") }
             OutlinedButton(onClick = { open.launch(arrayOf("*/*")) }, enabled = password.isNotEmpty() && !viewModel.busy) { Text("Restaurar") }
         }
         if (viewModel.busy) LinearProgressIndicator(Modifier.fillMaxWidth())

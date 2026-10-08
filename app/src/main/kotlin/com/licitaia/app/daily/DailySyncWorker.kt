@@ -131,7 +131,7 @@ class DailySyncWorker @AssistedInject constructor(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager?.getNotificationChannel(CHANNEL_ID) == null) {
             manager?.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "Atualização diária de licitações", NotificationManager.IMPORTANCE_MIN).apply {
-                    description = "Aviso enquanto o LicitaIA baixa as licitações do dia"
+                    description = "Aviso enquanto o LicitaPRO baixa as licitações do dia"
                     enableVibration(false)
                     setSound(null, null)
                 },

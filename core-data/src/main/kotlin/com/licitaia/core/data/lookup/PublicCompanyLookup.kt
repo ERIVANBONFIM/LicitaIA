@@ -172,7 +172,7 @@ class PublicCompanyLookup internal constructor(
     }
 
     internal companion object {
-        private const val USER_AGENT = "LicitaIA-Android (consulta publica de CNPJ/CEP)"
+        private const val USER_AGENT = "LicitaPRO-Android (consulta publica de CNPJ/CEP)"
 
         /** ViaCEP responde 200 com `{"erro": true}` (ou `"true"`) para CEP inexistente. */
         fun isNotFoundBody(body: JsonObject): Boolean {

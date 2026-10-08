@@ -338,7 +338,7 @@ fun DocumentEditScreen(viewModel: DocumentEditViewModel = hiltViewModel()) {
     if (confirmDelete) {
         ConfirmDialog(
             title = "Excluir documento?",
-            message = "\"${state.form.title}\" será removido do cofre desta empresa, junto com a cópia do anexo guardada no LicitaIA. " +
+            message = "\"${state.form.title}\" será removido do cofre desta empresa, junto com a cópia do anexo guardada no LicitaPRO. " +
                 "Arquivos originais em outros apps não são apagados.",
             confirmLabel = "Excluir", tone = Tone.DANGER, icon = Icons.Outlined.DeleteOutline,
             onConfirm = { confirmDelete = false; viewModel.delete() },
@@ -402,7 +402,7 @@ private fun ReadStatusCard(
                     Icon(Icons.Outlined.DocumentScanner, contentDescription = null, tint = LicitaColors.Purple, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "Ao anexar, o LicitaIA lê o documento (texto do PDF ou OCR) e sugere tipo, emissor, número, CNPJ e validade.",
+                        "Ao anexar, o LicitaPRO lê o documento (texto do PDF ou OCR) e sugere tipo, emissor, número, CNPJ e validade.",
                         style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                     )
                 }

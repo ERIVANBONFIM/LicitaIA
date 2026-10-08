@@ -187,7 +187,7 @@ fun AuditScreen(viewModel: AuditViewModel = hiltViewModel()) {
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = LicitaColors.SurfaceElevated,
         ) {
-            EventDetail(event) { shareText(context, "LicitaIA — Evento de auditoria\n" + event.toExportLine()) { navigator.showMessage(it) } }
+            EventDetail(event) { shareText(context, "LicitaPRO — Evento de auditoria\n" + event.toExportLine()) { navigator.showMessage(it) } }
         }
     }
 }
@@ -384,7 +384,7 @@ private fun shareText(context: Context, text: String, onError: (String) -> Unit)
     try {
         val send = Intent(Intent.ACTION_SEND)
             .setType("text/plain")
-            .putExtra(Intent.EXTRA_SUBJECT, "LicitaIA — Auditoria")
+            .putExtra(Intent.EXTRA_SUBJECT, "LicitaPRO — Auditoria")
             // Limite conservador para não estourar o tamanho da transação Binder.
             .putExtra(Intent.EXTRA_TEXT, text.take(120_000))
         context.startActivity(Intent.createChooser(send, "Exportar auditoria").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

@@ -35,7 +35,7 @@ class UpdateInstaller @Inject constructor(
     /** Android 8+: o usuário precisa autorizar esta origem em Configurações. */
     fun canInstall(): Boolean = appContext.packageManager.canRequestPackageInstalls()
 
-    /** Abre a tela do sistema para autorizar o LicitaIA a instalar apps. */
+    /** Abre a tela do sistema para autorizar o LicitaPRO a instalar apps. */
     fun openUnknownSourcesSettings(context: Context): Boolean = runCatching {
         val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${appContext.packageName}"))
         if (context === appContext) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

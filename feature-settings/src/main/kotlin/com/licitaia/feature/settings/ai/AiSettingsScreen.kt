@@ -681,8 +681,8 @@ private fun ChatGptAccountSection(
                     Text(account?.email ?: config.oauthAccount ?: "conta ChatGPT", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextPrimary)
                     val plan = account?.planType?.takeIf { it.isNotBlank() }?.let { " (plano $it)" }.orEmpty()
                     Text(
-                        if (account == null || account.planShared) "Usando o plano do ChatGPT$plan — uso liberado para o LicitaIA. O acesso é renovado automaticamente."
-                        else "O uso do plano não está liberado para o LicitaIA.",
+                        if (account == null || account.planShared) "Usando o plano do ChatGPT$plan — uso liberado para o LicitaPRO. O acesso é renovado automaticamente."
+                        else "O uso do plano não está liberado para o LicitaPRO.",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (account == null || account.planShared) LicitaColors.TextMuted else LicitaColors.Yellow,
                     )
@@ -708,7 +708,7 @@ private fun ChatGptAccountSection(
                 enabled = canConfigure, icon = Icons.Outlined.Login,
             )
             Text(
-                "Abre a página oficial da OpenAI no navegador. O LicitaIA nunca vê sua senha; os tokens ficam cifrados no Keystore deste aparelho.",
+                "Abre a página oficial da OpenAI no navegador. O LicitaPRO nunca vê sua senha; os tokens ficam cifrados no Keystore deste aparelho.",
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
             )
         }

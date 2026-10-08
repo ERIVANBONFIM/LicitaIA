@@ -41,7 +41,7 @@ object OfficialLinksUi {
             .setTitle(file.fileName)
             .setDescription(file.typeName ?: "Arquivo oficial da licitação")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "LicitaIA/${file.fileName}")
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "LicitaPRO/${file.fileName}")
             .setAllowedOverMetered(true)
         (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
         "Baixando \"${file.fileName}\" em Downloads/LicitaIA — avisamos ao concluir."

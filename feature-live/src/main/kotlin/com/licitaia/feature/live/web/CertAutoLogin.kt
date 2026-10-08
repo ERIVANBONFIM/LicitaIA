@@ -136,7 +136,7 @@ object CertAutoLogin {
         PORTAL_UNSTABLE(PortalInstability.USER_TEXT, "parou: Compras.gov.br instável (erro 503 do portal após o retorno do gov.br)"),
         LOAD_FAILED("A página não carregou.", "falhou: página não carregou"),
         LOOP("A mesma etapa se repetiu.", "falhou: etapa repetida (evitando laço)"),
-        NO_COMPANY_MATCH("Nenhuma empresa da lista tem o CNPJ da empresa ativa no LicitaIA.", "parou: CNPJ da empresa ativa não está na lista do portal"),
+        NO_COMPANY_MATCH("Nenhuma empresa da lista tem o CNPJ da empresa ativa no LicitaPRO.", "parou: CNPJ da empresa ativa não está na lista do portal"),
         NOT_FOUND("Não encontrei o botão esperado nesta página.", "falhou: botão esperado não encontrado"),
         TIMEOUT("O login demorou demais.", "falhou: tempo esgotado"),
         SESSION_REJECTED("O portal não aceitou a sessão.", "falhou: área logada recusou a sessão"),

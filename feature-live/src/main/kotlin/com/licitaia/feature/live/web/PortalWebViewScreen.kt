@@ -787,7 +787,7 @@ private fun startDownload(
         val request = DownloadManager.Request(Uri.parse(url)).apply {
             setMimeType(mimeType)
             setTitle(fileName)
-            setDescription("LicitaIA · download do portal")
+            setDescription("LicitaPRO · download do portal")
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
             userAgent?.let { addRequestHeader("User-Agent", it) }

@@ -13,7 +13,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LicitaIA"
+rootProject.name = "LicitaPRO"
 
 include(":app")
 include(":core-domain", ":core-ui", ":core-data", ":core-network", ":core-security", ":core-ai", ":core-platform")

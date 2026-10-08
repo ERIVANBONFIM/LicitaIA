@@ -123,7 +123,7 @@ class AuditViewModel @Inject constructor(
 
 /** Texto plano para exportação/compartilhamento da trilha. */
 internal fun buildExportText(events: List<AuditEvent>, scope: String, limit: Int = 500): String = buildString {
-    appendLine("LicitaIA — Trilha de auditoria")
+    appendLine("LicitaPRO — Trilha de auditoria")
     appendLine("Escopo: $scope")
     appendLine("Gerado em: ${Formatters.dateTime(System.currentTimeMillis())}")
     appendLine("Eventos: ${events.size}" + if (events.size > limit) " (exibindo os $limit mais recentes)" else "")

@@ -198,7 +198,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                                 IconBubble(Icons.Outlined.Shield, LicitaColors.Blue)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("LicitaIA", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
+                                    Text("LicitaPRO", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
                                     Text("Versão $version", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
                                 }
                                 StatusBadge("Uso pessoal", Tone.INFO)

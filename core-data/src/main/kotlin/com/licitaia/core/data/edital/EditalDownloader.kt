@@ -226,7 +226,7 @@ class EditalDownloader internal constructor(
 
     companion object {
         const val MAX_REDIRECTS = 5
-        private const val USER_AGENT = "LicitaIA-Android (download de edital publico)"
+        private const val USER_AGENT = "LicitaPRO-Android (download de edital publico)"
 
         internal fun readHead(file: File): ByteArray = file.inputStream().use { input ->
             val buffer = ByteArray(1024)

@@ -63,7 +63,7 @@ internal class LoopbackCallbackServer(private val returnLink: String? = null) : 
         val requestLine = readRequestHead(connection.getInputStream())
         val parts = requestLine?.split(' ')
         if (parts == null || parts.size < 2 || parts[0] != "GET") {
-            respond(connection, 400, "Bad Request", page("Pedido inválido", "Volte ao LicitaIA e tente de novo."))
+            respond(connection, 400, "Bad Request", page("Pedido inválido", "Volte ao LicitaPRO e tente de novo."))
             return null
         }
         val target = parts[1]
@@ -75,16 +75,16 @@ internal class LoopbackCallbackServer(private val returnLink: String? = null) : 
         val query = parseQuery(target.substringAfter('?', ""))
         val state = query["state"]
         if (state == null || !ChatGptOAuthClient.constantTimeEquals(state, expectedState)) {
-            respond(connection, 400, "Bad Request", page("Pedido de entrada não confere", "Volte ao LicitaIA e tente entrar de novo."))
+            respond(connection, 400, "Bad Request", page("Pedido de entrada não confere", "Volte ao LicitaPRO e tente entrar de novo."))
             return null
         }
         val error = query["error"]
         if (error != null) {
-            respond(connection, 200, "OK", page("Entrada não concluída", "Pode voltar ao LicitaIA para ver o motivo. Esta aba pode ser fechada."))
+            respond(connection, 200, "OK", page("Entrada não concluída", "Pode voltar ao LicitaPRO para ver o motivo. Esta aba pode ser fechada."))
         } else {
             respond(
                 connection, 200, "OK",
-                page("Pronto, pode voltar ao LicitaIA", "O LicitaIA está terminando de conectar sua conta do ChatGPT. Esta aba pode ser fechada."),
+                page("Pronto, pode voltar ao LicitaPRO", "O LicitaPRO está terminando de conectar sua conta do ChatGPT. Esta aba pode ser fechada."),
             )
         }
         return ChatGptCallback(
@@ -136,7 +136,7 @@ internal class LoopbackCallbackServer(private val returnLink: String? = null) : 
     }
 
     private fun page(title: String, text: String): String {
-        val link = returnLink?.let { "<p><a class=\"b\" href=\"${escape(it)}\">Voltar ao LicitaIA</a></p>" }.orEmpty()
+        val link = returnLink?.let { "<p><a class=\"b\" href=\"${escape(it)}\">Voltar ao LicitaPRO</a></p>" }.orEmpty()
         return "<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">" +
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${escape(title)}</title>" +
             "<style>body{font:17px system-ui,sans-serif;max-width:32rem;margin:12vh auto;padding:24px;color:#1b2333}" +

@@ -144,7 +144,7 @@ fun RadarListScreen(viewModel: RadarListViewModel = hiltViewModel()) {
             state.radars.isEmpty() -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 EmptyState(
                     title = "Nenhum radar criado",
-                    message = "Crie radares por segmento, palavras-chave, UF e faixa de valor. O LicitaIA monitora os portais e avisa quando surgir uma oportunidade aderente.",
+                    message = "Crie radares por segmento, palavras-chave, UF e faixa de valor. O LicitaPRO monitora os portais e avisa quando surgir uma oportunidade aderente.",
                     icon = Icons.Outlined.Radar,
                     actionLabel = "Criar primeiro radar",
                     onAction = { navigator.navigate(Routes.radarEdit()) },

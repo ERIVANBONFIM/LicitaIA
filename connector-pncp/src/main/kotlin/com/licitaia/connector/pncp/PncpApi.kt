@@ -201,6 +201,6 @@ internal class PncpApi(
         const val MAX_PAGE_SIZE = 50
         /** Itens da contratação: a API de integração aceita páginas grandes (500 cobre quase todos os editais). */
         const val MAX_ITEMS_PAGE_SIZE = 500
-        private const val USER_AGENT = "LicitaIA-Android (consulta publica PNCP)"
+        private const val USER_AGENT = "LicitaPRO-Android (consulta publica PNCP)"
     }
 }

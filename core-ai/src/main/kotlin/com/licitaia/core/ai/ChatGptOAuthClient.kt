@@ -416,7 +416,7 @@ class ChatGptOAuthClient(
         const val DEFAULT_ISSUER = "https://auth.openai.com"
         const val DEFAULT_API_BASE = "https://api.openai.com"
         const val DYNAMIC_CLIENT_ID = "dynamic_agent_client"
-        const val APP_NAME = "LicitaIA"
+        const val APP_NAME = "LicitaPRO"
         const val SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
         const val DIRECT_SCOPE = "chatgpt.tokens.use.direct"
         const val RESOURCE = "https://api.openai.com/v1"

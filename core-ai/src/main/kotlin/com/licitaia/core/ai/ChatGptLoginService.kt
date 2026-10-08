@@ -98,7 +98,7 @@ class ChatGptLoginService : Service() {
             if (manager.getNotificationChannel(CHANNEL_ID) != null) return
             manager.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "Entrar com ChatGPT", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Aviso enquanto o LicitaIA espera a autorização do ChatGPT no navegador"
+                    description = "Aviso enquanto o LicitaPRO espera a autorização do ChatGPT no navegador"
                     enableVibration(false)
                     setSound(null, null)
                 },
@@ -110,7 +110,7 @@ class ChatGptLoginService : Service() {
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentTitle("Aguardando autorização do ChatGPT…")
-                .setContentText("Conclua a entrada no navegador e volte ao LicitaIA.")
+                .setContentText("Conclua a entrada no navegador e volte ao LicitaPRO.")
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setSilent(true)

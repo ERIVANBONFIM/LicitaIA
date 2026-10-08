@@ -437,7 +437,7 @@ private fun GooglePendingCard(pending: GooglePending, loading: Boolean, onRetry:
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            "Olá, ${pending.name}. Sua conta Google foi reconhecida, mas ainda não está vinculada a nenhuma empresa do LicitaIA. " +
+            "Olá, ${pending.name}. Sua conta Google foi reconhecida, mas ainda não está vinculada a nenhuma empresa do LicitaPRO. " +
                 "Para uso pessoal, cadastre sua empresa para começar. " +
                 "Você também pode criar sua própria empresa acima e administrá-la neste aparelho.",
             style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,

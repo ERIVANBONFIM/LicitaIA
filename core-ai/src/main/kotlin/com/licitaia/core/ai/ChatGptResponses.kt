@@ -151,7 +151,7 @@ internal object ChatGptResponses {
         val useKey = " Se preferir, use uma chave de API em Configurações > IA."
         val message = when (code) {
             "subscription_sharing_user_not_eligible" ->
-                "O plano do ChatGPT desta conta (ou do workspace) não pode ser usado pelo LicitaIA.$useKey"
+                "O plano do ChatGPT desta conta (ou do workspace) não pode ser usado pelo LicitaPRO.$useKey"
             "subscription_sharing_usage_limit_exceeded" ->
                 "O limite de uso do seu plano do ChatGPT foi atingido por enquanto. Veja em chatgpt.com/settings/usage e tente mais tarde.$useKey"
             "subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable" ->
@@ -164,7 +164,7 @@ internal object ChatGptResponses {
             "subscription_sharing_invalid_user" ->
                 "O ChatGPT não aceitou sua sessão. Toque em \"Entrar com ChatGPT\" de novo em Configurações > IA."
             "chatpass_v2_scope_not_authorized" ->
-                "O ChatGPT não liberou o uso do plano para o LicitaIA. Ative o compartilhamento de uso nas configurações do ChatGPT e entre de novo.$useKey"
+                "O ChatGPT não liberou o uso do plano para o LicitaPRO. Ative o compartilhamento de uso nas configurações do ChatGPT e entre de novo.$useKey"
             "model_not_found" -> "O modelo escolhido não está disponível na sua conta do ChatGPT. Troque o modelo em Configurações > IA."
             else -> when (status) {
                 401 -> "O ChatGPT não aceitou a sessão ou a permissão de uso do plano. Entre de novo com o ChatGPT.$useKey"
