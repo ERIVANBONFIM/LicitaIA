@@ -20,19 +20,33 @@ import com.licitaia.core.platform.net.RoboConfigUpdateRequest
 import com.licitaia.core.platform.net.TenderDto
 import com.licitaia.core.platform.session.PlatformIdentity
 import com.licitaia.core.platform.session.PlatformSession
+import com.licitaia.domain.model.BidStrategy
 import com.licitaia.domain.model.Company
 import com.licitaia.domain.model.Modality
 import com.licitaia.domain.model.Portal
 import com.licitaia.domain.model.Tender
 import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
+import com.licitaia.domain.portal.BidRobotConfig
+import com.licitaia.domain.portal.BidRobotMode
+import com.licitaia.domain.portal.PortalMyTender
+import com.licitaia.domain.portal.PortalRobotPlan
+import com.licitaia.domain.portal.PortalRobotRepository
+import com.licitaia.domain.portal.PortalTenderMatching
+import com.licitaia.domain.portal.ProposalItemPlan
+import com.licitaia.feature.live.automation.PortalRobotEngine
+import com.licitaia.feature.live.automation.RobotKind
+import com.licitaia.feature.live.automation.RobotRun
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,6 +88,8 @@ data class PlatformDetailUi(
 class PlatformTenderDetailViewModel @Inject constructor(
     private val repository: PlatformRepository,
     private val gateway: AiGateway,
+    private val roboEngine: PortalRobotEngine,
+    private val roboRepo: PortalRobotRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -85,6 +101,14 @@ class PlatformTenderDetailViewModel @Inject constructor(
     private val _events = Channel<String>(Channel.BUFFERED)
     val events = _events.receiveAsFlow()
 
+    /** Chave do robô (uasg-num-ano) desta licitação, quando reconhecível; usada para observar a execução on-device. */
+    private val _roboKey = MutableStateFlow<String?>(null)
+
+    /** Execução on-device do robô de lance para esta licitação (observada do motor local — SEM alterá-lo). */
+    val roboRun: StateFlow<RobotRun?> = combine(roboEngine.runs, _roboKey) { runs, key ->
+        if (key == null) null else runs.values.firstOrNull { it.tenderKey == key && it.kind == RobotKind.LANCE && it.active }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     init { load() }
 
     fun load() {
@@ -94,6 +118,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
             result.fold(
                 onSuccess = { dto ->
                     _state.update { PlatformDetailUi(loading = false, tender = dto) }
+                    _roboKey.value = roboKeyOf(dto)
                     val itens = repository.tenderItens(id).getOrDefault(emptyList())
                     val arquivos = repository.tenderArquivos(id).getOrDefault(emptyList())
                     val robo = repository.roboConfig(id).getOrNull()
@@ -232,6 +257,103 @@ class PlatformTenderDetailViewModel @Inject constructor(
 
     fun participarRobo() = roboOp("Participação registrada (robô em dry_run).") { repository.roboParticipar(id) }
     fun prepararRobo() = roboOp("Preparação disparada.") { repository.roboPreparar(id) }
+
+    /**
+     * BRIDGE F4-B: roda o robô de lance NO APARELHO reusando o PortalRobotEngine (SEM alterá-lo).
+     * - Importa a licitação para os repos LOCAIS sob a IDENTIDADE SINTÉTICA da plataforma (isolada do modo local).
+     * - Arma SEMPRE em dry_run (BidRobotMode.MANUAL): o motor lê a sala e SUGERE, nunca envia sozinho.
+     * - Respeita a trava "um robô por licitação" (VPS /ativas + runs do motor) e a prontidão.
+     * - Execução AUTO (lance real) NÃO é liberada por esta ponte nesta etapa (sempre dry_run).
+     */
+    fun iniciarRoboLocal() {
+        if (_state.value.roboBusy) return
+        val dto = _state.value.tender ?: return
+        val company = currentCompany()
+        if (company == null) { viewModelScope.launch { _events.send("Entre na plataforma.") }; return }
+        val key = roboKeyOf(dto)
+        if (key == null) { viewModelScope.launch { _events.send("Robô on-device só para Comprasnet com UASG/número/ano reconhecíveis nesta licitação.") }; return }
+        val cfg = _state.value.roboConfig ?: repository.roboConfigCacheada(id)
+        val piso = cfg?.valorMinimo?.takeIf { it > 0 }
+        if (piso == null) { viewModelScope.launch { _events.send("Defina o piso (valor mínimo) armando o robô antes de iniciar no aparelho.") }; return }
+        _state.update { it.copy(roboBusy = true) }
+        viewModelScope.launch {
+            // Trava "um robô por licitação": motor local + ativas na VPS.
+            if (roboEngine.runsFor(company.id, key).any { it.active }) {
+                _events.send("O robô já está rodando no aparelho para esta licitação."); _state.update { it.copy(roboBusy = false) }; return@launch
+            }
+            val ativas = repository.roboAtivas().getOrDefault(emptyList())
+            if (ativas.any { it.licitacaoId == id && it.ativo }) {
+                _events.send("Já há um robô ativo para esta licitação (um robô por licitação)."); _state.update { it.copy(roboBusy = false) }; return@launch
+            }
+            // Prontidão (VPS): não inicia se o portal/compra não está pronto.
+            val pront = repository.roboProntidao(id).getOrNull()
+            if (pront != null && !pront.ok) {
+                _events.send("Robô não está pronto: " + pront.motivos.joinToString("; ").ifBlank { pront.estado ?: "bloqueado" })
+                _state.update { it.copy(roboBusy = false) }; return@launch
+            }
+            val ny = PortalTenderMatching.parseNumberYear(dto.numero)
+            val now = System.currentTimeMillis()
+            val resultado = runCatching {
+                // 1) Importa a "minha licitação" nos repos locais (escopo sintético).
+                roboRepo.upsertMyTenders(
+                    company.id,
+                    listOf(
+                        PortalMyTender(
+                            companyId = company.id, tenderKey = key, portal = Portal.COMPRAS_GOV,
+                            uasg = dto.uasg.orEmpty(), number = ny?.first ?: "", year = ny?.second ?: 0,
+                            modality = dto.modalidade ?: "", objectDescription = dto.orgao,
+                            openingAt = parseIso(dto.dataAbertura).takeIf { it > 0 },
+                            situation = dto.fase ?: "", hasProposal = !dto.urlProposta.isNullOrBlank(),
+                            sources = setOf(PortalMyTender.SOURCE_PARTICIPACOES), firstSeenAt = now, updatedAt = now,
+                        ),
+                    ),
+                )
+                // 2) Plano ARMADO em dry_run (MANUAL): piso = valorMinimo da VPS; 1 item-alvo. Motor só SUGERE.
+                val dec = (cfg.decremento ?: 0.01).coerceAtLeast(0.01)
+                val item = ProposalItemPlan(
+                    itemNumber = cfg.itemAlvo?.toIntOrNull() ?: 1, quantity = 1.0, unitPrice = piso, floorUnitPrice = piso, selected = true,
+                )
+                roboRepo.savePlan(
+                    PortalRobotPlan(
+                        companyId = company.id, tenderKey = key, items = listOf(item),
+                        bid = BidRobotConfig(
+                            mode = BidRobotMode.MANUAL, // dry_run SEMPRE nesta ponte
+                            strategy = mapEstrategia(cfg.estrategia), minDecrement = dec, reductionValue = dec,
+                            ownIntervalSeconds = (cfg.intervaloSegundos ?: BidRobotConfig.MIN_OWN_INTERVAL_SECONDS).coerceAtLeast(BidRobotConfig.MIN_OWN_INTERVAL_SECONDS),
+                            maxBids = 30,
+                        ),
+                        bidArmedAt = now, sessionAt = parseIso(dto.dataAbertura).takeIf { it > 0 }, updatedAt = now,
+                    ),
+                )
+                // 3) Inicia o motor EXISTENTE (sem alterá-lo). Em MANUAL ele lê a sala e sugere; nunca envia sozinho.
+                roboEngine.startBid(company.id, key).getOrThrow()
+            }
+            resultado.fold(
+                onSuccess = { _events.send("Robô iniciado no aparelho em dry_run (sugere e registra; NÃO envia lance).") },
+                onFailure = { _events.send(it.message ?: "Não foi possível iniciar o robô no aparelho.") },
+            )
+            _state.update { it.copy(roboBusy = false) }
+        }
+    }
+
+    fun pararRoboLocal() {
+        val run = roboRun.value ?: return
+        roboEngine.stop(run.id, "Parado pelo usuário (modo plataforma).")
+        viewModelScope.launch { _events.send("Robô parado.") }
+    }
+
+    private fun roboKeyOf(dto: TenderDto): String? {
+        val ny = PortalTenderMatching.parseNumberYear(dto.numero)
+        return PortalTenderMatching.tenderKey(dto.uasg, ny?.first, ny?.second)
+    }
+
+    private fun mapEstrategia(e: String?): BidStrategy = when {
+        e == null -> BidStrategy.CONSERVADORA
+        e.contains("agress", true) -> BidStrategy.AGRESSIVA
+        e.contains("acompan", true) -> BidStrategy.ACOMPANHAR_CONCORRENTE
+        e.contains("personaliz", true) -> BidStrategy.PERSONALIZADA
+        else -> BidStrategy.CONSERVADORA
+    }
 
     private fun roboOp(okMsg: String, block: suspend () -> Result<Unit>) {
         if (_state.value.roboBusy) return

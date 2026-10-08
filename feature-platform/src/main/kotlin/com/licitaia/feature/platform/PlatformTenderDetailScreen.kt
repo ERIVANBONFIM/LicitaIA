@@ -75,6 +75,7 @@ import com.licitaia.core.ui.theme.LicitaColors
 @Composable
 fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val roboRun by viewModel.roboRun.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val context = LocalContext.current
 
@@ -104,6 +105,9 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     onArmarRobo = viewModel::armarRobo,
                     onParticiparRobo = viewModel::participarRobo,
                     onPrepararRobo = viewModel::prepararRobo,
+                    roboRun = roboRun,
+                    onIniciarRoboLocal = viewModel::iniciarRoboLocal,
+                    onPararRoboLocal = viewModel::pararRoboLocal,
                     onRegisterResult = viewModel::registrarResultado,
                     onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
                     onOpenPortal = { url ->
@@ -122,6 +126,9 @@ private fun RoboCard(
     onArmarRobo: (Double, Double, String?, Int?, String?, Boolean) -> Unit,
     onParticiparRobo: () -> Unit,
     onPrepararRobo: () -> Unit,
+    roboRun: com.licitaia.feature.live.automation.RobotRun?,
+    onIniciarRoboLocal: () -> Unit,
+    onPararRoboLocal: () -> Unit,
 ) {
     val robo = s.roboConfig
     var showConfig by rememberSaveable { mutableStateOf(false) }
@@ -187,10 +194,29 @@ private fun RoboCard(
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        // Execução ON-DEVICE (dry_run): roda o motor local reusado; lê a sala e SUGERE, nunca envia sozinho.
+        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = LicitaColors.Outline)
+        Text("Rodar no aparelho (dry_run)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        if (roboRun != null) {
+            StatusBadge(roboRun.status.name.lowercase().replace('_', ' '), Tone.INFO)
+            roboRun.step?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary) }
+            roboRun.message?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+            roboRun.log.takeLast(4).forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton("Parar robô", onPararRoboLocal, Modifier.fillMaxWidth(), tone = Tone.DANGER)
+        } else {
+            Text(
+                "Inicia a disputa NO APARELHO com o seu certificado local, em dry_run: o robô lê a sala e registra o lance " +
+                    "que daria, SEM enviar. (Precisa da sessão do Comprasnet logada em Portais; se faltar, o robô pede.)",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+            )
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton("Iniciar robô no aparelho (dry_run)", onIniciarRoboLocal, Modifier.fillMaxWidth(), enabled = !s.roboBusy, tone = Tone.SUCCESS)
+        }
+        Spacer(Modifier.height(6.dp))
         Text(
-            "Em dry_run o robô DECIDE e registra, sem enviar lances. A disputa real roda no aparelho com o certificado " +
-                "local — a execução on-device (loop no portal) chega na próxima etapa; o arme/config já é gravado na plataforma.",
+            "O envio de lance REAL (auto) não é liberado por aqui nesta etapa — só dry_run. O certificado nunca sai do aparelho.",
             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
         )
     }
@@ -420,6 +446,9 @@ private fun TenderDetail(
     onArmarRobo: (Double, Double, String?, Int?, String?, Boolean) -> Unit,
     onParticiparRobo: () -> Unit,
     onPrepararRobo: () -> Unit,
+    roboRun: com.licitaia.feature.live.automation.RobotRun?,
+    onIniciarRoboLocal: () -> Unit,
+    onPararRoboLocal: () -> Unit,
     onRegisterResult: (String) -> Unit,
     onOpenQa: () -> Unit,
     onOpenPortal: (String) -> Unit,
@@ -609,8 +638,11 @@ private fun TenderDetail(
             }
         }
 
-        // Robô de lance (config/arme via VPS; execução on-device = próxima etapa)
-        RoboCard(s, onArmarRobo = onArmarRobo, onParticiparRobo = onParticiparRobo, onPrepararRobo = onPrepararRobo)
+        // Robô de lance (config/arme via VPS + execução on-device em dry_run reusando o motor local)
+        RoboCard(
+            s, onArmarRobo = onArmarRobo, onParticiparRobo = onParticiparRobo, onPrepararRobo = onPrepararRobo,
+            roboRun = roboRun, onIniciarRoboLocal = onIniciarRoboLocal, onPararRoboLocal = onPararRoboLocal,
+        )
 
         // Resultado do pregão
         LicitaCard(Modifier.fillMaxWidth()) {

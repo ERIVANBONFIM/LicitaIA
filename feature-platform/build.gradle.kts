@@ -15,6 +15,8 @@ dependencies {
     implementation(project(":core-platform"))
     // Motor de IA on-device (análise/proposta com a chave local do aparelho).
     implementation(project(":ai-provider-api"))
+    // Motor do robô on-device (PortalRobotEngine) — REUSO sem alterar; ponte importa p/ os repos locais.
+    implementation(project(":feature-live"))
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)
