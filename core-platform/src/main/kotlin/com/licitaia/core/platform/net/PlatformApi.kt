@@ -9,6 +9,9 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromStream
 import okhttp3.Call
 import okhttp3.Callback
@@ -148,6 +151,45 @@ class PlatformApi(
     suspend fun licitacaoDetalhe(token: String, id: String): TenderDto? =
         get(url("licitacoes/$id"), TenderDto.serializer(), token = token)
 
+    /** `GET /licitacoes/:id/itens` → itens (shape variável; extração tolerante a tipos/chaves). */
+    suspend fun licitacaoItens(token: String, id: String): List<PlatformItem> =
+        (get(url("licitacoes/$id/itens"), ListSerializer(JsonObject.serializer()), token = token) ?: emptyList())
+            .map {
+                PlatformItem(
+                    descricao = it.str("descricao", "objeto", "nome", "especificacao"),
+                    quantidade = it.str("quantidade", "qtd", "quantidadeTotal"),
+                    unidade = it.str("unidade", "unidadeMedida", "unidadeFornecimento"),
+                    valor = it.str("valorReferencia", "valorUnitario", "valorEstimado", "valorTotal"),
+                )
+            }
+
+    /** `GET /licitacoes/:id/arquivos` → anexos (shape variável; extração tolerante). */
+    suspend fun licitacaoArquivos(token: String, id: String): List<PlatformFile> =
+        (get(url("licitacoes/$id/arquivos"), ListSerializer(JsonObject.serializer()), token = token) ?: emptyList())
+            .map {
+                PlatformFile(
+                    nome = it.str("nome", "titulo", "descricao", "fileName"),
+                    tipo = it.str("tipo", "categoria", "mimeType", "extensao"),
+                    url = it.str("url", "link", "downloadUrl"),
+                )
+            }
+
+    /** `PUT /licitacoes/:id/favoritar` (alterna). */
+    suspend fun favoritar(token: String, id: String): FavoritaResult =
+        put(url("licitacoes/$id/favoritar"), FavoritaResult.serializer(), token) ?: FavoritaResult()
+
+    /** `PUT /licitacoes/:id/arquivar` (alterna ativa↔arquivada). */
+    suspend fun arquivar(token: String, id: String): StatusResult =
+        put(url("licitacoes/$id/arquivar"), StatusResult.serializer(), token) ?: StatusResult()
+
+    /** `PUT /licitacoes/:id/ocultar` (alterna ativa↔oculta). */
+    suspend fun ocultar(token: String, id: String): StatusResult =
+        put(url("licitacoes/$id/ocultar"), StatusResult.serializer(), token) ?: StatusResult()
+
+    /** Lê a primeira chave string/number não-vazia dentre [keys] (tolerante a objetos/null aninhados). */
+    private fun JsonObject.str(vararg keys: String): String? =
+        keys.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.contentOrNull?.takeIf { s -> s.isNotBlank() && s != "null" } }
+
     /** `GET /usuarios` → perfis/acessos da empresa (array). */
     suspend fun usuarios(token: String): List<UsuarioDto> =
         get(url("usuarios"), ListSerializer(UsuarioDto.serializer()), token = token) ?: emptyList()
@@ -162,6 +204,11 @@ class PlatformApi(
 
     private suspend fun <T> get(url: HttpUrl, serializer: KSerializer<T>, token: String?): T? {
         val request = baseRequest(url, token).get().build()
+        return execute(request, serializer)
+    }
+
+    private suspend fun <T> put(url: HttpUrl, serializer: KSerializer<T>, token: String?): T? {
+        val request = baseRequest(url, token).put(ByteArray(0).toRequestBody(JSON_MEDIA)).build()
         return execute(request, serializer)
     }
 

@@ -122,9 +122,11 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
                 sync.message?.let { msg ->
                     item {
                         AlertBanner(
-                            if (sync.isError) "Sincronização" else "Atualizado",
+                            when { sync.offline -> "Sem conexão"; sync.isError -> "Sincronização"; else -> "Atualizado" },
                             msg,
-                            if (sync.isError) Tone.WARNING else Tone.SUCCESS,
+                            when { sync.offline -> Tone.WARNING; sync.isError -> Tone.WARNING; else -> Tone.SUCCESS },
+                            actionLabel = if (sync.offline) "Tentar novamente" else null,
+                            onAction = if (sync.offline) viewModel::refresh else null,
                         )
                     }
                 }

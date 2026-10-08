@@ -200,6 +200,34 @@ data class TenderDto(
     val status: String? = null,
     val favorita: Boolean = false,
     @SerialName("scoreRelevancia") val scoreRelevancia: Int? = null,
+    val scoreRisco: Int? = null,
+    /** Resumo do edital pela IA (quando já gerado na plataforma). */
+    val editalResumoIA: String? = null,
+    /** Veredito da IA (recomendação). */
+    val veredito: String? = null,
     val updatedAt: String? = null,
     val empresaId: String? = null,
+)
+
+/** `PUT /licitacoes/:id/favoritar` → `{ok, favorita}` (alterna). */
+@Serializable
+data class FavoritaResult(val ok: Boolean = false, val favorita: Boolean = false)
+
+/** `PUT /licitacoes/:id/arquivar|ocultar` → `{ok, status}` (alterna ativa↔arquivada/oculta). */
+@Serializable
+data class StatusResult(val ok: Boolean = false, val status: String = "")
+
+/** Item da licitação (shape variável no backend; extraído de forma tolerante). */
+data class PlatformItem(
+    val descricao: String? = null,
+    val quantidade: String? = null,
+    val unidade: String? = null,
+    val valor: String? = null,
+)
+
+/** Arquivo/anexo da licitação (shape variável no backend; extraído de forma tolerante). */
+data class PlatformFile(
+    val nome: String? = null,
+    val tipo: String? = null,
+    val url: String? = null,
 )

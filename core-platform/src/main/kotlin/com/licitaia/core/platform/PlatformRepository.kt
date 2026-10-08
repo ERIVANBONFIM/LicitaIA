@@ -9,6 +9,8 @@ import com.licitaia.core.platform.net.HealthDto
 import com.licitaia.core.platform.net.MensagemDto
 import com.licitaia.core.platform.net.PlatformApi
 import com.licitaia.core.platform.net.PlatformException
+import com.licitaia.core.platform.net.PlatformFile
+import com.licitaia.core.platform.net.PlatformItem
 import com.licitaia.core.platform.net.RadarFiltroDto
 import com.licitaia.core.platform.net.TenderDto
 import com.licitaia.core.platform.net.TenderPageDto
@@ -194,6 +196,33 @@ class PlatformRepository @Inject constructor(
 
     /** Cópia local da licitação (para abrir o detalhe offline enquanto a rede não responde). */
     suspend fun tenderFromMirror(id: String): PlatformTenderEntity? = tenderDao.byId(id)
+
+    /** Itens da licitação (`GET /licitacoes/:id/itens`). */
+    suspend fun tenderItens(id: String): Result<List<PlatformItem>> = authedRead { api.licitacaoItens(it, id) }
+
+    /** Anexos/arquivos da licitação (`GET /licitacoes/:id/arquivos`). */
+    suspend fun tenderArquivos(id: String): Result<List<PlatformFile>> = authedRead { api.licitacaoArquivos(it, id) }
+
+    /** `PUT /licitacoes/:id/favoritar` (alterna). Reflete no espelho local. Retorna o novo estado. */
+    suspend fun toggleFavorita(id: String): Result<Boolean> = authedRead { token ->
+        val fav = api.favoritar(token, id).favorita
+        tenderDao.byId(id)?.let { tenderDao.upsert(listOf(it.copy(favorita = fav))) }
+        fav
+    }
+
+    /** `PUT /licitacoes/:id/arquivar` (alterna). Reflete no espelho local. Retorna o novo status. */
+    suspend fun toggleArquivar(id: String): Result<String> = authedRead { token ->
+        val status = api.arquivar(token, id).status
+        tenderDao.byId(id)?.let { tenderDao.upsert(listOf(it.copy(status = status))) }
+        status
+    }
+
+    /** `PUT /licitacoes/:id/ocultar` (alterna). Reflete no espelho local. Retorna o novo status. */
+    suspend fun toggleOcultar(id: String): Result<String> = authedRead { token ->
+        val status = api.ocultar(token, id).status
+        tenderDao.byId(id)?.let { tenderDao.upsert(listOf(it.copy(status = status))) }
+        status
+    }
 
     /** `GET /usuarios` (perfis/acessos da empresa). */
     suspend fun usuarios(): Result<List<UsuarioDto>> = runCatching {
