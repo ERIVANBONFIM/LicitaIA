@@ -1,0 +1,225 @@
+<title>Plataforma LicitaIA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: documento de projeto — "o que você pediu" (checklist fiel) → desenho geral → peças (VPS, app, PC) → sincronização → acessos → robô → ideias extras → custos → fases → decisões. Visual escuro do app. */
+:root{
+  --ground:#060a14; --panel:#0d1424; --card:#121b2f; --line:#22304d;
+  --ink:#e8eefc; --ink2:#a9b6d3; --mute:#6f7fa3;
+  --blue:#3b82f6; --blue2:#7fb0ff; --green:#22c38e; --amber:#f2a524; --red:#f0566b; --violet:#a78bfa;
+  --display:"Sora","Segoe UI",system-ui,sans-serif;
+  --body:"Inter Tight","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55}
+.wrap{max-width:1120px;margin:0 auto;padding-inline:20px;padding-block:28px 64px}
+h1{font-family:var(--display);font-size:clamp(26px,4vw,42px);line-height:1.08;margin:0 0 8px;letter-spacing:-.01em;text-wrap:balance}
+h2{font-family:var(--display);font-size:22px;margin:0 0 10px;text-wrap:balance}
+h3{font-family:var(--display);font-size:16px;margin:0 0 6px}
+p{color:var(--ink2);margin:6px 0;max-width:74ch}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--mute);text-transform:uppercase}
+section{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;margin-top:18px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;min-width:0}
+ul{margin:6px 0 0;padding-left:18px;color:var(--ink2)} li{margin:4px 0}
+.pill{display:inline-block;font-size:11px;border-radius:999px;padding:2px 9px;border:1px solid;margin-bottom:6px}
+.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 50%,transparent)}
+.warn{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 50%,transparent)}
+.info{color:var(--blue2);border-color:color-mix(in srgb,var(--blue) 50%,transparent)}
+.vio{color:var(--violet);border-color:color-mix(in srgb,var(--violet) 50%,transparent)}
+/* checklist do pedido */
+.ask{display:grid;gap:8px}
+.ask div{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.ask i{width:20px;height:20px;border-radius:6px;border:1px solid var(--green);color:var(--green);display:grid;place-items:center;font-style:normal;font-size:12px;margin-top:1px}
+.ask b{color:var(--ink)} .ask span{color:var(--ink2)}
+/* diagrama */
+.diagram{display:grid;grid-template-columns:1fr 1.25fr 1fr;gap:14px;align-items:stretch}
+@media (max-width:820px){.diagram{grid-template-columns:1fr}}
+.col{display:grid;gap:10px;align-content:start}
+.node{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;min-width:0}
+.node small{display:block;color:var(--mute);font-size:12px;margin-top:2px}
+.vps{background:color-mix(in srgb,var(--blue) 9%,var(--card));border:1px solid color-mix(in srgb,var(--blue) 55%,transparent);border-radius:16px;padding:14px;display:grid;gap:8px}
+.vps .node{background:var(--panel)}
+.tenant{display:flex;flex-wrap:wrap;gap:6px}
+.tenant span{font-family:var(--mono);font-size:11px;border:1px dashed var(--line);border-radius:8px;padding:3px 7px;color:var(--ink2)}
+.ext{border-color:color-mix(in srgb,var(--amber) 55%,transparent)}
+.lnk{font-family:var(--mono);font-size:11px;color:var(--blue2)}
+/* sync timeline */
+.tl{display:grid;gap:8px}
+.tl div{display:grid;grid-template-columns:84px minmax(0,1fr);gap:12px;align-items:baseline}
+.tl time{font-family:var(--mono);font-size:12.5px;color:var(--blue2);font-variant-numeric:tabular-nums}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:13.5px}
+th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-family:var(--display);font-weight:600;font-size:12.5px;color:var(--ink2);background:var(--card)}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.need li{color:var(--ink)} .need li span{color:var(--ink2)}
+.callout{border-left:3px solid var(--amber);background:var(--card);border-radius:0 12px 12px 0;padding:10px 14px;margin-top:12px}
+.callout p{margin:0}
+footer{margin-top:30px;color:var(--mute);font-size:13px}
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">Projeto futuro · nada aplicado</div>
+  <h1>Plataforma LicitaIA: um servidor, milhares de empresas</h1>
+  <p>Seu desenho: o dono da empresa instala o app no Android ou o programa no PC, tudo conversa com um servidor na nuvem, cada empresa só enxerga a si mesma, e um robô no servidor busca as licitações do dia para todos. Abaixo, o que você pediu, como montar e ideias para completar.</p>
+
+  <section>
+    <h2>O que você pediu</h2>
+    <div class="ask">
+      <div><i>✓</i><p><b>Instalação por link ou e-mail.</b> <span>APK no Android e programa no PC, sem depender da loja.</span></p></div>
+      <div><i>✓</i><p><b>Tudo ligado a um servidor na nuvem (VPS) por API.</b> <span>Assim que instala e entra, conecta.</span></p></div>
+      <div><i>✓</i><p><b>Escala para 10 mil aparelhos e muitas empresas.</b> <span>Nenhuma empresa enxerga a outra.</span></p></div>
+      <div><i>✓</i><p><b>O administrador da empresa cria usuário e senha</b> <span>para cada colaborador entrar no app ou no programa.</span></p></div>
+      <div><i>✓</i><p><b>Cada colaborador termina a própria configuração:</b> <span>radar, login no provedor de IA (cada um o seu), certificado instalado no aparelho e login nos portais.</span></p></div>
+      <div><i>✓</i><p><b>Tudo que um faz, todos da empresa veem</b> <span>e conseguem conversar sobre a licitação.</span></p></div>
+      <div><i>✓</i><p><b>Qualquer um pode participar:</b> <span>soltar o robô de proposta ou o de lances.</span></p></div>
+      <div><i>✓</i><p><b>Robô na VPS busca licitações e dispensas novas todo dia</b> <span>e os aparelhos só baixam o resultado, para não pesar.</span></p></div>
+      <div><i>✓</i><p><b>Sem internet, continua funcionando</b> <span>e sincroniza sozinho quando a conexão volta.</span></p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Desenho geral</h2>
+    <div class="diagram">
+      <div class="col">
+        <div class="node"><h3>Celulares Android</h3><small>APK do LicitaIA · certificado A1 instalado no aparelho de quem solta o robô · login de IA de cada pessoa</small></div>
+        <div class="node"><h3>Programa no PC (Windows)</h3><small>Mesmas telas · navegador do portal embutido para o robô · certificado no Windows</small></div>
+        <div class="node"><h3>Página de download</h3><small>Link enviado por e-mail com o APK e o instalador do PC · atualização automática pelo próprio servidor</small></div>
+      </div>
+      <div class="vps">
+        <h3>VPS · servidor LicitaIA</h3>
+        <div class="node"><b>API</b><small>Login com usuário e senha, sincronização, permissões, avisos em tempo real</small></div>
+        <div class="node"><b>Banco de dados</b><small>Toda linha marcada com o CNPJ da empresa; o servidor filtra antes de responder</small>
+          <div class="tenant" style="margin-top:6px"><span>ME Telecom</span><span>Empresa B</span><span>Empresa C</span><span>… 10 mil</span></div></div>
+        <div class="node"><b>Robô coletor (madrugada)</b><small>Busca uma vez no PNCP e no Compras.gov.br para todos e aplica o radar de cada empresa</small></div>
+        <div class="node"><b>Arquivos</b><small>Editais, PDFs de proposta e documentos, separados por empresa</small></div>
+        <div class="node"><b>Painel do dono da plataforma</b><small>Você: cria e bloqueia empresas, vê uso, planos e suporte</small></div>
+      </div>
+      <div class="col">
+        <div class="node ext"><h3>PNCP e Compras.gov.br (dados públicos)</h3><small>Lidos pelo robô da VPS, não pelos aparelhos</small></div>
+        <div class="node ext"><h3>Comprasnet logado</h3><small>Acessado só pelo aparelho que roda o robô, com o certificado dele</small></div>
+        <div class="node ext"><h3>IA (ChatGPT, Gemini…)</h3><small>Cada pessoa conecta a própria conta no próprio aparelho; o servidor não guarda essa senha</small></div>
+        <div class="node"><h3>Avisos no celular</h3><small>Notificação push: nova licitação, proposta para aprovar, robô terminou, mensagem da equipe</small></div>
+      </div>
+    </div>
+    <div class="callout"><p><b>Vantagem técnica:</b> o app já é em Kotlin. O servidor e o programa de PC podem usar a mesma linguagem e reaproveitar as regras que já existem (busca no PNCP, score, prazos, montagem da proposta). É menos código novo e o mesmo comportamento em todo lugar.</p></div>
+  </section>
+
+  <section>
+    <h2>As peças, uma por uma</h2>
+    <div class="grid3">
+      <div class="box"><span class="pill info">VPS</span><h3>Servidor</h3><ul><li>Linux com Docker: API, banco PostgreSQL, arquivos e o robô coletor.</li><li>HTTPS com domínio próprio (ex.: api.licitaia.com.br).</li><li>Backup automático do banco todo dia.</li></ul></div>
+      <div class="box"><span class="pill info">APK</span><h3>App Android</h3><ul><li>Continua como hoje, com o banco no celular servindo de cópia local.</li><li>Ganha a tela de login da plataforma e a sincronização.</li><li>Atualização pelo seu servidor (o GitHub deixa de ser necessário).</li></ul></div>
+      <div class="box"><span class="pill info">PC</span><h3>Programa Windows</h3><ul><li>Mesmas telas do app, feitas com a mesma tecnologia (Compose Desktop).</li><li>Navegador do portal embutido para o robô, usando o certificado instalado no Windows.</li><li>Instalador com atualização automática.</li></ul></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Um dia na plataforma</h2>
+    <div class="tl">
+      <div><time>05:00</time><p><b>Robô da VPS</b> busca as licitações e dispensas novas no PNCP e no Compras.gov.br uma vez só, para todas as empresas.</p></div>
+      <div><time>05:20</time><p>O servidor aplica o radar de cada empresa, calcula a nota e prepara o pacote do dia de cada uma.</p></div>
+      <div><time>05:30</time><p>Celulares e PCs ligados baixam só o pacote da própria empresa, alguns KB em vez de milhares de registros.</p></div>
+      <div><time>08:00</time><p>Maria abre o app: já está tudo lá. Marca interesse no 48/2026; Pedro vê no PC na mesma hora e comenta "atestado ok".</p></div>
+      <div><time>10:00</time><p>Pedro, no PC com o certificado, solta o robô de proposta. A licitação fica travada: "robô rodando no PC do Pedro".</p></div>
+      <div><time>14:30</time><p>Erivan está sem sinal na estrada e aprova uma proposta. A aprovação fica guardada no celular e sobe sozinha quando a internet volta.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sincronização e modo sem internet</h2>
+    <div class="grid2">
+      <div class="box"><h3>Primeiro o aparelho, depois a nuvem</h3><p>Toda ação é salva no aparelho na hora e entra numa fila de envio. Com internet, a fila sobe para a VPS; sem internet, espera e tenta de novo sozinha.</p></div>
+      <div class="box"><h3>Só o que mudou</h3><p>Cada aparelho guarda até onde já sincronizou e pede ao servidor apenas as mudanças desde então. Isso mantém o app leve mesmo com milhares de licitações.</p></div>
+      <div class="box"><h3>Tempo real com internet</h3><p>Com conexão aberta, as mudanças da equipe aparecem em segundos, como num chat.</p></div>
+      <div class="box"><h3>Conflitos</h3><p>Se duas pessoas editarem a mesma proposta, vale a mais recente e a outra fica salva como versão. Robô e aprovação usam trava, então não há disputa.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Acessos e isolamento</h2>
+    <div class="tw"><table>
+      <thead><tr><th>Quem</th><th>O que faz</th><th>Como entra</th></tr></thead>
+      <tbody>
+        <tr><td><b>Você (dono da plataforma)</b></td><td>Cria e ativa empresas, bloqueia por falta de pagamento, vê uso e dá suporte. Não vê o conteúdo das licitações sem autorização da empresa.</td><td>Painel web próprio, com verificação em duas etapas</td></tr>
+        <tr><td><b>Administrador da empresa</b></td><td>Cria usuário e senha dos colaboradores, define o perfil, remove acessos, vê a auditoria da empresa.</td><td>Convite enviado por você, com senha criada no primeiro acesso</td></tr>
+        <tr><td><b>Colaborador</b></td><td>Configura o próprio radar, conecta a própria IA, instala o certificado no aparelho, loga nos portais e trabalha conforme o perfil.</td><td>Usuário e senha criados pelo administrador</td></tr>
+      </tbody></table></div>
+    <ul style="margin-top:12px">
+      <li>Cada empresa tem uma chave interna; o servidor só devolve dados com a chave de quem pediu. Uma empresa não consegue ver outra nem tentando.</li>
+      <li>Cada aparelho fica registrado. Remover um colaborador ou um aparelho perdido corta o acesso na hora.</li>
+      <li>Senhas guardadas com criptografia de mão única; "esqueci a senha" por e-mail.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Robô, certificado e IA</h2>
+    <div class="grid2">
+      <div class="box"><span class="pill warn">Certificado</span><h3>Fica no aparelho, nunca no servidor</h3><p>Como você definiu, cada aparelho que for soltar robô instala o A1 da empresa. Recomendo instalar só em quem realmente opera o robô: cada cópia do certificado é uma chave da empresa a mais circulando.</p></div>
+      <div class="box"><span class="pill vio">IA</span><h3>Cada um conecta a sua</h3><p>Continua como hoje: cada pessoa faz o login do ChatGPT ou Gemini no próprio aparelho. Opcionalmente, a empresa pode cadastrar uma chave única para todos.</p></div>
+      <div class="box"><span class="pill info">Trava</span><h3>Um robô por licitação</h3><p>Quem solta o robô reserva a licitação no servidor. Os outros veem quem está rodando, em qual aparelho, e o progresso.</p></div>
+      <div class="box"><span class="pill ok">Disputa ao vivo</span><h3>Todos acompanham</h3><p>Os lances lidos pelo robô sobem para o servidor e aparecem na Sala de Guerra de toda a equipe.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Ideias para completar</h2>
+    <div class="grid3">
+      <div class="box"><h3>Conversa por licitação</h3><p>Comentários com @menção, anexos e histórico ("Maria aprovou", "Pedro soltou o robô").</p></div>
+      <div class="box"><h3>Monitor de fase no servidor</h3><p>A VPS confere todo dia suspensões, adiamentos e resultados das licitações acompanhadas e avisa a equipe, mesmo com os celulares desligados.</p></div>
+      <div class="box"><h3>Documentos que vencem</h3><p>O servidor lembra 15 e 3 dias antes de vencer, para toda a equipe.</p></div>
+      <div class="box"><h3>Inteligência de preços compartilhada</h3><p>A VPS guarda os resultados homologados do PNCP de todo o mercado; as empresas consultam o "preço que ganha" sem cada uma baixar tudo de novo.</p></div>
+      <div class="box"><h3>Plantão de disputa</h3><p>Escala de quem cuida de cada sessão, com aviso para o plantonista 30 min antes.</p></div>
+      <div class="box"><h3>Resumo por e-mail</h3><p>Às 8h, um e-mail com as novas do dia e os prazos da semana para quem preferir.</p></div>
+      <div class="box"><h3>Planos e licenças</h3><p>Número de usuários e aparelhos por empresa, com bloqueio automático se o pagamento atrasar.</p></div>
+      <div class="box"><h3>Página de status</h3><p>Mostra se o servidor, o PNCP e o Comprasnet estão no ar, para o cliente não achar que o problema é o app.</p></div>
+      <div class="box"><h3>Exportar tudo</h3><p>A empresa pode baixar todos os dados dela a qualquer momento (exigência da LGPD e segurança para o cliente).</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Custos aproximados por mês</h2>
+    <div class="tw"><table>
+      <thead><tr><th>Item</th><th>Início (até ~100 empresas)</th><th>Crescendo (milhares de aparelhos)</th></tr></thead>
+      <tbody>
+        <tr><td>VPS (4 vCPU, 8 GB de RAM)</td><td class="num">R$ 60 a 150</td><td class="num">R$ 300 a 1.000 (2 ou 3 servidores)</td></tr>
+        <tr><td>Armazenamento de arquivos e backup</td><td class="num">R$ 10 a 40</td><td class="num">R$ 100 a 400</td></tr>
+        <tr><td>Domínio e certificado HTTPS</td><td class="num">~R$ 5 (domínio anual diluído)</td><td class="num">~R$ 5</td></tr>
+        <tr><td>Envio de e-mails</td><td class="num">Grátis até alguns milhares/mês</td><td class="num">R$ 50 a 200</td></tr>
+        <tr><td>Avisos push no celular (Firebase)</td><td class="num">Grátis</td><td class="num">Grátis</td></tr>
+        <tr><td>IA</td><td class="num">R$ 0 (cada um usa a sua)</td><td class="num">R$ 0, ou o custo se você oferecer IA própria</td></tr>
+      </tbody></table></div>
+    <p style="font-size:13px">Valores de referência para planejamento; confirmar com o fornecedor escolhido.</p>
+  </section>
+
+  <section>
+    <h2>Fases</h2>
+    <div class="grid2">
+      <div class="box"><span class="pill info">Fase 1</span><h3>Servidor e login</h3><p>VPS, banco multiempresa, usuários e senhas, painel do administrador da empresa. O app passa a entrar pela plataforma. Primeira empresa: a ME Telecom.</p></div>
+      <div class="box"><span class="pill info">Fase 2</span><h3>Sincronização</h3><p>Licitações, análises, perguntas, propostas, documentos e planos do robô sincronizados, com fila sem internet e tempo real.</p></div>
+      <div class="box"><span class="pill info">Fase 3</span><h3>Robô coletor na VPS</h3><p>Busca diária central no PNCP e no Compras.gov.br, radar de cada empresa no servidor, pacote do dia e monitor de fase.</p></div>
+      <div class="box"><span class="pill info">Fase 4</span><h3>Programa no PC</h3><p>Versão Windows com as mesmas telas e o robô com o navegador do portal embutido.</p></div>
+      <div class="box"><span class="pill info">Fase 5</span><h3>Equipe e comunicação</h3><p>Conversa por licitação, menções, trava de robô entre aparelhos, Sala de Guerra compartilhada, avisos push.</p></div>
+      <div class="box"><span class="pill info">Fase 6</span><h3>Abrir para outras empresas</h3><p>Seu painel de dono da plataforma, planos, página de download, termos de uso e LGPD.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>O que você vai precisar decidir</h2>
+    <ul class="need">
+      <li>Fornecedor da VPS <span>(Hostinger, Contabo, DigitalOcean, AWS… eu comparo quando for a hora)</span>.</li>
+      <li>Um domínio <span>(ex.: licitaia.com.br)</span>.</li>
+      <li>Se o PC será só Windows <span>(recomendado para começar)</span>.</li>
+      <li>Se vai cobrar das outras empresas e como <span>(Pix, boleto, cartão)</span>.</li>
+      <li>Se a empresa pode ter uma chave de IA única, além do login de cada um.</li>
+      <li>Termos de uso e LGPD revisados por advogado antes de abrir para outras empresas.</li>
+    </ul>
+  </section>
+
+  <footer>Projeto futuro registrado. Nada foi alterado no app nem no servidor. As 12 ideias aprovadas antes continuam anotadas e se encaixam nas fases acima.</footer>
+</div>

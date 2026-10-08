@@ -1,0 +1,228 @@
+<title>LicitaIA na Play Store</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: plano de produto — jornada do cliente com telas de exemplo, depois regras de empresa/usuários, arquitetura, planos, exigências da loja e fases. Visual escuro do app. */
+:root{
+  --ground:#060a14; --panel:#0d1424; --card:#121b2f; --line:#22304d;
+  --ink:#e8eefc; --ink2:#a9b6d3; --mute:#6f7fa3;
+  --blue:#3b82f6; --blue2:#7fb0ff; --green:#22c38e; --amber:#f2a524; --red:#f0566b;
+  --display:"Sora","Segoe UI",system-ui,sans-serif;
+  --body:"Inter Tight","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55}
+.wrap{max-width:1120px;margin:0 auto;padding-inline:20px;padding-block:28px 64px}
+h1{font-family:var(--display);font-size:clamp(26px,4vw,40px);line-height:1.1;margin:0 0 8px;letter-spacing:-.01em;text-wrap:balance}
+h2{font-family:var(--display);font-size:22px;margin:0 0 10px;text-wrap:balance}
+h3{font-family:var(--display);font-size:16px;margin:0 0 6px}
+p{color:var(--ink2);margin:6px 0;max-width:72ch}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--mute);text-transform:uppercase}
+section{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;margin-top:18px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;min-width:0}
+ul{margin:6px 0 0;padding-left:18px;color:var(--ink2)} li{margin:4px 0}
+.pill{display:inline-block;font-size:11px;border-radius:999px;padding:2px 9px;border:1px solid;margin-bottom:6px}
+.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 50%,transparent)}
+.warn{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 50%,transparent)}
+.bad{color:var(--red);border-color:color-mix(in srgb,var(--red) 50%,transparent)}
+.info{color:var(--blue2);border-color:color-mix(in srgb,var(--blue) 50%,transparent)}
+/* jornada */
+.journey{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.jstep{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;min-width:0}
+.jstep .k{font-family:var(--mono);font-size:11px;color:var(--blue2)}
+/* telas */
+.phones{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.phone{background:#03060d;border:2px solid #1d2740;border-radius:28px;padding:9px;max-width:300px;width:100%;justify-self:center}
+.screen{background:var(--ground);border-radius:20px;overflow:hidden;min-height:400px}
+.bar{padding:12px 14px 8px;border-bottom:1px solid var(--line)}
+.bar b{font-family:var(--display);font-size:15px}
+.bar small{display:block;color:var(--mute);font-size:11px}
+.sc{padding:12px;display:grid;gap:9px}
+.c{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 11px;font-size:12.5px;color:var(--ink2)}
+.c b{color:var(--ink)}
+.fld{border:1px solid var(--line);border-radius:10px;padding:7px 10px;font-size:12.5px;color:var(--ink)}
+.fld small{display:block;color:var(--mute);font-size:10.5px}
+.btn{display:block;text-align:center;background:var(--blue);color:#fff;border-radius:11px;padding:9px;font-size:13px;font-weight:600}
+.btn.g{background:#fff;color:#1f2937}
+.btn.out{background:transparent;border:1px solid var(--blue);color:var(--blue2)}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);padding:3px 0}
+.row b{color:var(--ink)}
+.code{display:flex;gap:6px;justify-content:center}
+.code span{width:30px;height:38px;border:1px solid var(--blue);border-radius:8px;display:grid;place-items:center;font-family:var(--mono);color:var(--ink)}
+.mini{font-size:11px;color:var(--mute)}
+.cap{font-size:12.5px;color:var(--ink2);text-align:center;margin-top:8px}
+/* arquitetura */
+.arch{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.node{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+.node.cloud{border-color:color-mix(in srgb,var(--blue) 60%,transparent);background:color-mix(in srgb,var(--blue) 10%,var(--card))}
+.node small{display:block;color:var(--mute);font-size:12px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:13.5px}
+th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-family:var(--display);font-weight:600;font-size:12.5px;color:var(--ink2);background:var(--card)}
+tr:last-child td{border-bottom:0}
+td.y{color:var(--green)} td.n{color:var(--mute)}
+.need li{color:var(--ink)} .need li span{color:var(--ink2)}
+footer{margin-top:30px;color:var(--mute);font-size:13px}
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">LicitaIA · desenho de produto · nada aplicado</div>
+  <h1>LicitaIA na Play Store, para qualquer empresa</h1>
+  <p>Qualquer pessoa baixa o app, cadastra a empresa pelo CNPJ, prova que é dela e libera a própria equipe no celular e no PC. Cada empresa só vê os próprios dados. Você, dono do LicitaIA, administra tudo num painel separado.</p>
+
+  <section>
+    <h2>A jornada de um cliente</h2>
+    <div class="journey">
+      <div class="jstep"><div class="k">1 · Play Store</div><h3>Baixa o app</h3><p>Grátis, com um período de teste.</p></div>
+      <div class="jstep"><div class="k">2 · Entrar</div><h3>Conta Google</h3><p>Sem senha nova. Identifica a pessoa, não dá acesso a e-mails.</p></div>
+      <div class="jstep"><div class="k">3 · Empresa</div><h3>Digita o CNPJ</h3><p>O app preenche os dados pela Receita.</p></div>
+      <div class="jstep"><div class="k">4 · Verificação</div><h3>Prova que é da empresa</h3><p>Código no e-mail da Receita ou certificado da empresa.</p></div>
+      <div class="jstep"><div class="k">5 · Equipe</div><h3>Convida e libera</h3><p>Por e-mail ou código. O dono aprova e escolhe o perfil.</p></div>
+      <div class="jstep"><div class="k">6 · Uso</div><h3>Celular e PC</h3><p>Tudo sincronizado; o robô roda em quem tem o certificado.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Telas de exemplo</h2>
+    <div class="phones">
+      <div>
+        <div class="phone"><div class="screen">
+          <div class="bar"><b>Bem-vindo ao LicitaIA</b><small>Licitações com IA e robô</small></div>
+          <div class="sc">
+            <span class="btn g">Entrar com Google</span>
+            <div class="c"><b>Primeira vez?</b><br>Depois de entrar, cadastre a sua empresa pelo CNPJ ou use o código de convite que recebeu.</div>
+            <span class="btn out">Tenho um código de convite</span>
+            <span class="btn out">Ver demonstração</span>
+          </div></div></div>
+        <div class="cap">Entrada</div>
+      </div>
+      <div>
+        <div class="phone"><div class="screen">
+          <div class="bar"><b>Cadastrar empresa</b><small>Passo 1 de 2</small></div>
+          <div class="sc">
+            <div class="fld"><small>CNPJ</small>27.147.548/0001-15</div>
+            <div class="c"><span class="pill ok">ATIVA na Receita</span><br><b>ME TELECOM SERVICOS DE INTERNET LTDA</b><br>Juazeiro/BA · Telecom/ISP<br>Sócio-administrador: E. F. B.</div>
+            <div class="mini">Dados públicos da Receita Federal. Você revisa antes de salvar.</div>
+            <span class="btn">Continuar para verificação</span>
+          </div></div></div>
+        <div class="cap">CNPJ com preenchimento automático</div>
+      </div>
+      <div>
+        <div class="phone"><div class="screen">
+          <div class="bar"><b>Verificar empresa</b><small>Passo 2 de 2</small></div>
+          <div class="sc">
+            <div class="c">Enviamos um código para o e-mail cadastrado na Receita: <b>co•••••@metelecom•••.com.br</b></div>
+            <div class="code"><span>4</span><span>8</span><span>1</span><span>2</span><span>0</span><span>7</span></div>
+            <span class="btn">Confirmar</span>
+            <div class="mini">Não tem acesso a esse e-mail? Verifique com o certificado da empresa (e-CNPJ/e-CPF do sócio) ou envie o contrato social para análise.</div>
+          </div></div></div>
+        <div class="cap">Prova de que a empresa é sua</div>
+      </div>
+      <div>
+        <div class="phone"><div class="screen">
+          <div class="bar"><b>Equipe · ME Telecom</b><small>3 de 5 usuários do plano</small></div>
+          <div class="sc">
+            <div class="c"><div class="row"><b>Erivan</b><span class="pill info">Dono</span></div><div class="row">Maria<span class="pill ok">Licitações</span></div><div class="row">Pedro<span class="pill ok">Técnico</span></div></div>
+            <div class="c"><b>Pedidos de acesso</b><div class="row">joao@gmail.com<span class="pill warn">Aguardando</span></div><div class="row"><span class="btn" style="padding:5px 10px">Liberar como…</span><span class="btn out" style="padding:5px 10px">Recusar</span></div></div>
+            <span class="btn out">Convidar por e-mail ou link</span>
+            <div class="mini">Código da empresa: <b style="font-family:var(--mono)">MET-7Q4K</b></div>
+          </div></div></div>
+        <div class="cap">Você libera e escolhe o perfil</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Regras de empresa e usuários</h2>
+    <div class="grid2">
+      <div class="box"><h3>Um CNPJ, uma empresa</h3><p>O CNPJ só pode ser cadastrado uma vez. Quem verificar primeiro vira o <b>dono</b>. Se alguém tentar de novo, vira um pedido de acesso enviado ao dono.</p></div>
+      <div class="box"><h3>O dono libera</h3><p>Ninguém entra sozinho: chega por convite ou pede acesso, e o dono aprova escolhendo o perfil (Licitações, Técnico, Financeiro, Diretoria).</p></div>
+      <div class="box"><h3>Várias empresas por pessoa</h3><p>Uma consultoria pode atender várias empresas; troca de empresa no topo da tela, como já existe hoje.</p></div>
+      <div class="box"><h3>Dados separados</h3><p>Cada empresa só enxerga os próprios dados, garantido por regra no servidor, não só no app.</p></div>
+      <div class="box"><h3>Saída de funcionário</h3><p>O dono remove a pessoa e o acesso cai na hora em todos os aparelhos. O histórico do que ela fez continua na auditoria.</p></div>
+      <div class="box"><h3>Troca de dono</h3><p>O dono pode transferir a empresa para outro sócio. Se perder o acesso, a recuperação é feita com nova verificação do CNPJ.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Como o sistema fica montado</h2>
+    <div class="arch">
+      <div class="node"><h3>App Android</h3><small>Play Store · robô com certificado no aparelho</small></div>
+      <div class="node"><h3>LicitaIA Web</h3><small>No navegador do PC: análise, propostas, documentos, equipe</small></div>
+      <div class="node"><h3>LicitaIA Windows</h3><small>Opcional: roda o robô no PC</small></div>
+      <div class="node cloud"><h3>Servidor multiempresa</h3><small>Login · banco separado por CNPJ · arquivos · avisos · cobrança · IA da plataforma</small></div>
+      <div class="node"><h3>Painel do dono do LicitaIA</h3><small>Seu painel: empresas, planos, pagamentos, suporte, uso da IA</small></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Planos (exemplo para discutir)</h2>
+    <div class="tw"><table>
+      <thead><tr><th>Recurso</th><th>Grátis</th><th>Profissional</th><th>Equipe</th></tr></thead>
+      <tbody>
+        <tr><td>Usuários</td><td>1</td><td>1</td><td>até 5 (mais por usuário extra)</td></tr>
+        <tr><td>Busca, radar e alertas</td><td class="y">Sim</td><td class="y">Sim</td><td class="y">Sim</td></tr>
+        <tr><td>Análises por IA</td><td>5 por mês</td><td>ilimitado*</td><td>ilimitado*</td></tr>
+        <tr><td>Pergunte ao edital e proposta pela IA</td><td class="n">Não</td><td class="y">Sim</td><td class="y">Sim</td></tr>
+        <tr><td>Robô de proposta e de lance</td><td class="n">Não</td><td class="y">Sim</td><td class="y">Sim</td></tr>
+        <tr><td>PC (Web)</td><td class="n">Não</td><td class="y">Sim</td><td class="y">Sim</td></tr>
+        <tr><td>Equipe, aprovações e auditoria</td><td class="n">Não</td><td class="n">Não</td><td class="y">Sim</td></tr>
+      </tbody></table></div>
+    <p style="font-size:13px">* Com uso justo. A IA pode ser a da plataforma (custo seu, embutido no plano) ou o cliente conecta a própria conta do ChatGPT/Gemini.</p>
+    <div class="box" style="margin-top:12px"><span class="pill warn">Atenção à cobrança</span><p>Assinatura vendida dentro do app Android normalmente precisa usar o sistema de pagamento do Google Play, que fica com uma comissão (hoje a referência para assinaturas é 15%). Vender pelo site (Pix, cartão, boleto) também é possível, mas as regras sobre o que o app pode mostrar ou linkar mudam com o tempo e por país. Isso precisa ser conferido nas políticas da Play antes de decidir.</p></div>
+  </section>
+
+  <section>
+    <h2>O que muda no app atual</h2>
+    <div class="grid2">
+      <div class="box"><h3>Dados na nuvem</h3><p>Hoje tudo fica no celular. Passa a sincronizar com o servidor; o celular guarda uma cópia para funcionar sem internet.</p></div>
+      <div class="box"><h3>Sem dados da ME Telecom no app</h3><p>Hoje o app foi feito para você. Na loja, cada cliente começa vazio e cadastra a própria empresa.</p></div>
+      <div class="box"><h3>Modo demonstração</h3><p>Já existe. Serve para quem quer conhecer e para os revisores do Google testarem sem certificado.</p></div>
+      <div class="box"><h3>Robô com termo de uso</h3><p>Antes de soltar o robô, o cliente aceita um termo dizendo que ele é responsável pelos valores e lances. O app não decide preços por ele.</p></div>
+      <div class="box"><h3>Versão do Android</h3><p>A Play exige que apps novos mirem uma versão recente do Android; o projeto precisa ser atualizado para a exigência vigente.</p></div>
+      <div class="box"><h3>Suporte</h3><p>Canal de ajuda dentro do app e uma página de perguntas frequentes.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Exigências para publicar na Play Store</h2>
+    <ul>
+      <li>Conta de desenvolvedor do Google (taxa única de US$ 25). Como empresa, o Google pede o número D-U-N-S da ME Telecom (gratuito).</li>
+      <li>Contas pessoais novas precisam de um teste fechado com pelo menos 12 testadores por 14 dias antes de publicar; contas de empresa costumam ficar fora dessa exigência.</li>
+      <li>Política de privacidade publicada num site, e o formulário "Segurança dos dados" preenchido.</li>
+      <li>Opção de excluir a conta dentro do app e por um link na web.</li>
+      <li>Conta de teste ou demonstração para a revisão do Google.</li>
+      <li>Termos de uso e adequação à LGPD (os dados das empresas clientes passam a ficar com você).</li>
+      <li>Ícone, prints, descrição e classificação etária.</li>
+    </ul>
+    <p style="font-size:13px">As regras da loja mudam; confirmar cada item no Play Console na hora de publicar.</p>
+  </section>
+
+  <section>
+    <h2>Fases</h2>
+    <div class="grid2">
+      <div class="box"><span class="pill info">Fase 1</span><h3>Servidor e equipe</h3><p>Conta da empresa na nuvem, convites, perfis e sincronização (o mesmo desenho do LicitaIA em equipe). Usado primeiro só pela ME Telecom.</p></div>
+      <div class="box"><span class="pill info">Fase 2</span><h3>Cadastro aberto</h3><p>Cadastro por CNPJ, verificação, pedidos de acesso e seu painel de administrador.</p></div>
+      <div class="box"><span class="pill info">Fase 3</span><h3>Web e planos</h3><p>LicitaIA no navegador, planos, cobrança e limites de uso.</p></div>
+      <div class="box"><span class="pill info">Fase 4</span><h3>Loja</h3><p>Política de privacidade, termos, teste fechado e publicação. Programa Windows para o robô depois.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>O que eu preciso de você</h2>
+    <ul class="need">
+      <li>Confirmar o modelo: app aberto para qualquer empresa, com planos pagos <span>(ou só convite, sem cobrança)</span>.</li>
+      <li>Criar a conta de desenvolvedor do Google em nome da empresa <span>(e pedir o D-U-N-S)</span>.</li>
+      <li>Escolher o servidor <span>(sugestão: Supabase)</span> e criar a conta.</li>
+      <li>Definir planos e preços, e se a IA será da plataforma ou do cliente.</li>
+      <li>Um domínio e um site simples para política de privacidade, termos e suporte.</li>
+      <li>Revisão jurídica dos termos de uso e da LGPD, por advogado.</li>
+    </ul>
+  </section>
+
+  <footer>Esta é uma proposta para discutir. Nada foi alterado no app. O desenho de equipe (página anterior) é a base da fase 1.</footer>
+</div>

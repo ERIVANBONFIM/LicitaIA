@@ -1,0 +1,187 @@
+<title>LicitaIA em Equipe</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: documento de proposta técnica — resposta direta no topo, depois fluxo, arquitetura, permissões, robô, opções de servidor, fases e o que falta decidir. Visual escuro do app. */
+:root{
+  --ground:#060a14; --panel:#0d1424; --card:#121b2f; --line:#22304d;
+  --ink:#e8eefc; --ink2:#a9b6d3; --mute:#6f7fa3;
+  --blue:#3b82f6; --blue2:#7fb0ff; --green:#22c38e; --amber:#f2a524; --red:#f0566b; --violet:#a78bfa;
+  --display:"Sora","Segoe UI",system-ui,sans-serif;
+  --body:"Inter Tight","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55}
+.wrap{max-width:1080px;margin:0 auto;padding-inline:20px;padding-block:28px 64px}
+h1{font-family:var(--display);font-size:clamp(26px,4vw,40px);line-height:1.1;margin:0 0 8px;letter-spacing:-.01em;text-wrap:balance}
+h2{font-family:var(--display);font-size:22px;margin:0 0 10px;text-wrap:balance}
+h3{font-family:var(--display);font-size:16px;margin:0 0 6px}
+p{color:var(--ink2);margin:6px 0;max-width:72ch}
+.lead{font-size:16px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--mute);text-transform:uppercase}
+section{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;margin-top:18px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;min-width:0}
+.now{border-color:color-mix(in srgb,var(--red) 55%,transparent)}
+.next{border-color:color-mix(in srgb,var(--green) 55%,transparent)}
+.pill{display:inline-block;font-size:11px;border-radius:999px;padding:2px 9px;border:1px solid;margin-bottom:6px}
+.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 50%,transparent)}
+.warn{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 50%,transparent)}
+.bad{color:var(--red);border-color:color-mix(in srgb,var(--red) 50%,transparent)}
+.info{color:var(--blue2);border-color:color-mix(in srgb,var(--blue) 50%,transparent)}
+ul{margin:6px 0 0;padding-left:18px;color:var(--ink2)} li{margin:4px 0}
+/* fluxo */
+.flow{display:grid;gap:10px;counter-reset:s}
+.step{display:grid;grid-template-columns:40px minmax(0,1fr);gap:12px;align-items:start}
+.step .n{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-family:var(--display);font-weight:700;background:var(--card);border:1px solid var(--line);color:var(--blue2)}
+.who{font-weight:600;color:var(--ink)}
+.dev{font-family:var(--mono);font-size:11px;color:var(--mute)}
+/* arquitetura */
+.arch{display:grid;grid-template-columns:1fr auto 1.2fr auto 1fr;gap:10px;align-items:center}
+@media (max-width:760px){.arch{grid-template-columns:1fr}.arrow{transform:rotate(90deg);justify-self:center}}
+.node{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;min-width:0}
+.node.cloud{border-color:color-mix(in srgb,var(--blue) 60%,transparent);background:color-mix(in srgb,var(--blue) 10%,var(--card))}
+.node.portal{border-color:color-mix(in srgb,var(--amber) 55%,transparent)}
+.node small{display:block;color:var(--mute);font-size:12px}
+.arrow{color:var(--blue2);font-family:var(--mono);font-size:18px;text-align:center}
+/* tabela */
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:620px;font-size:13.5px}
+th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-family:var(--display);font-weight:600;font-size:12.5px;color:var(--ink2);background:var(--card)}
+td.y{color:var(--green)} td.n{color:var(--mute)} td.c{color:var(--amber)}
+tr:last-child td{border-bottom:0}
+.rec{border:1px solid color-mix(in srgb,var(--green) 55%,transparent);background:color-mix(in srgb,var(--green) 8%,var(--card))}
+.need li{color:var(--ink)} .need li span{color:var(--ink2)}
+footer{margin-top:30px;color:var(--mute);font-size:13px}
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">LicitaIA · ME Telecom · proposta, nada aplicado</div>
+  <h1>LicitaIA em equipe: celular e PC na mesma conta</h1>
+  <p class="lead">Você escolhe e salva uma licitação; Pedro e Maria veem na hora, no celular ou no PC. Quem tem permissão gera a proposta e solta o robô. Abaixo, como é hoje, como ficaria e o que precisa.</p>
+
+  <section>
+    <h2>Resposta direta</h2>
+    <div class="grid2">
+      <div class="box now"><span class="pill bad">Hoje</span><h3>Cada celular é uma ilha</h3>
+        <ul>
+          <li>Os dados ficam só no aparelho (banco criptografado no celular).</li>
+          <li>Usuários e perfis existem, mas valem só dentro daquele celular.</li>
+          <li>O que você salva, Pedro e Maria <b>não veem</b>.</li>
+          <li>Para levar dados a outro aparelho, só o backup manual (exportar e importar), que não sincroniza.</li>
+          <li>Não existe versão para PC do LicitaIA.</li>
+        </ul></div>
+      <div class="box next"><span class="pill ok">Como ficaria</span><h3>Uma conta da empresa na nuvem</h3>
+        <ul>
+          <li>Um servidor guarda licitações, análises, perguntas, propostas, documentos e planos do robô da ME Telecom.</li>
+          <li>Cada pessoa entra com a própria conta Google e recebe um perfil.</li>
+          <li>Tudo sincroniza em segundos entre celulares e PC.</li>
+          <li>Cada ação fica registrada com o nome de quem fez.</li>
+        </ul></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Um dia de trabalho com a equipe</h2>
+    <div class="flow">
+      <div class="step"><div class="n">1</div><div><span class="who">Erivan</span> <span class="dev">· celular</span><p>Vê o Pregão 48/2026 no Radar e toca em "Tenho interesse". A licitação vai para a pasta da empresa.</p></div></div>
+      <div class="step"><div class="n">2</div><div><span class="who">Maria e Pedro</span> <span class="dev">· celular e PC</span><p>Recebem o aviso "Erivan separou 48/2026". Pedro abre no PC, analisa com a IA, faz perguntas ao edital e confere a viabilidade técnica.</p></div></div>
+      <div class="step"><div class="n">3</div><div><span class="who">Maria</span> <span class="dev">· PC</span><p>Gera a proposta pela IA com os itens do edital, ajusta valores e envia para aprovação.</p></div></div>
+      <div class="step"><div class="n">4</div><div><span class="who">Erivan</span> <span class="dev">· celular</span><p>Recebe "Proposta aguardando aprovação", confere o total e o piso e aprova.</p></div></div>
+      <div class="step"><div class="n">5</div><div><span class="who">Maria</span> <span class="dev">· celular com certificado</span><p>Solta o robô de proposta. A licitação fica marcada "Robô rodando no celular da Maria" para ninguém soltar outro ao mesmo tempo.</p></div></div>
+      <div class="step"><div class="n">6</div><div><span class="who">Todos</span><p>Veem o progresso ("Grupo 1 · 14/24") e recebem "Proposta cadastrada: 77 de 77". No dia da disputa, quem estiver de plantão arma o robô de lance.</p></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Como as peças se ligam</h2>
+    <div class="arch">
+      <div class="node"><h3>Celulares</h3><small>APK do LicitaIA (você, Maria, Pedro)</small></div>
+      <div class="arrow" aria-hidden="true">⇄</div>
+      <div class="node cloud"><h3>Servidor na nuvem</h3><small>Login Google · banco da empresa · arquivos (editais, PDFs, documentos) · avisos para a equipe · chave da IA guardada aqui, nunca no APK</small></div>
+      <div class="arrow" aria-hidden="true">⇄</div>
+      <div class="node"><h3>PC</h3><small>LicitaIA no navegador ou programa Windows</small></div>
+    </div>
+    <div class="node portal" style="margin-top:12px"><h3>Comprasnet</h3><small>Só o aparelho que roda o robô fala com o portal, com o certificado A1 instalado nele. O servidor nunca guarda o certificado nem a senha do gov.br.</small></div>
+  </section>
+
+  <section>
+    <h2>Quem pode o quê</h2>
+    <p>Os perfis já existem no app. Hoje valem num celular só; com a nuvem, passam a valer para a equipe toda.</p>
+    <div class="tw"><table>
+      <thead><tr><th>Ação</th><th>Erivan · Administrador</th><th>Maria · Licitações</th><th>Pedro · Técnico</th><th>Financeiro</th></tr></thead>
+      <tbody>
+        <tr><td>Ver licitações salvas</td><td class="y">Sim</td><td class="y">Sim</td><td class="y">Sim</td><td class="y">Sim</td></tr>
+        <tr><td>Salvar interesse / arquivar</td><td class="y">Sim</td><td class="y">Sim</td><td class="n">Não</td><td class="n">Não</td></tr>
+        <tr><td>Analisar edital e perguntar à IA</td><td class="y">Sim</td><td class="y">Sim</td><td class="y">Sim</td><td class="n">Não</td></tr>
+        <tr><td>Gerar e editar proposta</td><td class="y">Sim</td><td class="y">Sim</td><td class="n">Não</td><td class="n">Não</td></tr>
+        <tr><td>Aprovar proposta</td><td class="y">Sim</td><td class="c">Configurável</td><td class="n">Não</td><td class="n">Não</td></tr>
+        <tr><td>Definir piso e custos</td><td class="y">Sim</td><td class="n">Não</td><td class="n">Não</td><td class="y">Sim</td></tr>
+        <tr><td>Soltar robô de proposta</td><td class="y">Sim</td><td class="y">Sim</td><td class="n">Não</td><td class="n">Não</td></tr>
+        <tr><td>Armar robô de lance</td><td class="y">Sim</td><td class="c">Configurável</td><td class="n">Não</td><td class="n">Não</td></tr>
+        <tr><td>Viabilidade técnica</td><td class="y">Sim</td><td class="y">Sim</td><td class="y">Sim</td><td class="n">Não</td></tr>
+        <tr><td>Convidar pessoas e mudar perfis</td><td class="y">Sim</td><td class="n">Não</td><td class="n">Não</td><td class="n">Não</td></tr>
+      </tbody></table></div>
+  </section>
+
+  <section>
+    <h2>Robô e certificado</h2>
+    <div class="grid2">
+      <div class="box"><h3>Um robô por licitação</h3><p>Quando alguém solta o robô, a licitação fica travada para os outros ("rodando no celular da Maria desde 14:02"). Se o aparelho desligar, a trava expira e outro pode assumir.</p></div>
+      <div class="box"><h3>Certificado A1 em quem roda o robô</h3><p>O login no Comprasnet é feito com o certificado do aparelho. Instale o A1 em quem vai soltar o robô (o seu celular e o da Maria, por exemplo). Quem só analisa não precisa.</p></div>
+      <div class="box"><h3>Robô no PC</h3><p>No navegador, o PC faz tudo menos o robô. Para rodar o robô no PC, seria um programa Windows com o navegador do portal dentro, como no celular. É a fase 4.</p></div>
+      <div class="box"><h3>Disputa</h3><p>Quem armou o robô de lance recebe os avisos da sala; os demais acompanham os lances em tempo real, sem poder disparar outro robô na mesma licitação.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Onde ficaria o servidor</h2>
+    <div class="tw"><table>
+      <thead><tr><th>Opção</th><th>Como é</th><th>Custo aproximado</th><th>Prós</th><th>Contras</th></tr></thead>
+      <tbody>
+        <tr class="rec"><td><b>Supabase</b><br><span class="pill ok">Recomendado</span></td><td>Banco Postgres pronto, login Google, arquivos, tempo real e regras de acesso por perfil</td><td>Plano gratuito para começar; plano pago a partir de cerca de US$ 25/mês quando crescer</td><td>Serve igual para celular e PC; dados fáceis de exportar; regras de permissão no próprio banco</td><td>Plano gratuito pausa o projeto após um período sem uso</td></tr>
+        <tr><td><b>Firebase (Google)</b></td><td>Banco em documentos, login Google, arquivos, avisos push</td><td>Gratuito no início; cobra por uso depois</td><td>Avisos no celular muito simples; já usamos login Google</td><td>Consultas e relatórios mais limitados; preso ao Google</td></tr>
+        <tr><td><b>Servidor próprio</b></td><td>Um servidor alugado (VPS) com banco e API feitos por nós</td><td>Cerca de R$ 40 a R$ 150/mês de servidor</td><td>Controle total</td><td>Mais tempo para montar; você cuida de atualizações, backup e segurança</td></tr>
+      </tbody></table></div>
+    <p class="mini" style="color:var(--mute);font-size:12.5px">Valores de referência; confirmar no momento da contratação.</p>
+  </section>
+
+  <section>
+    <h2>Fases</h2>
+    <div class="grid2">
+      <div class="box"><span class="pill info">Fase 1</span><h3>Conta da empresa e equipe</h3><p>Servidor, login Google, convite por e-mail, perfis. Licitações, análises, perguntas e propostas sincronizadas entre celulares.</p></div>
+      <div class="box"><span class="pill info">Fase 2</span><h3>Arquivos e avisos</h3><p>Editais, PDFs de proposta e documentos da empresa na nuvem. Avisos para a equipe: nova licitação, proposta para aprovar, robô terminou.</p></div>
+      <div class="box"><span class="pill info">Fase 3</span><h3>LicitaIA no PC</h3><p>Versão no navegador com as mesmas telas: Radar, licitação, perguntas, proposta, documentos, painel.</p></div>
+      <div class="box"><span class="pill info">Fase 4</span><h3>Robô no PC e trava</h3><p>Programa Windows com o portal dentro para rodar o robô, e a trava "um robô por licitação" entre todos os aparelhos.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>O que eu preciso de você</h2>
+    <ul class="need">
+      <li>Escolher o servidor <span>(minha sugestão: Supabase)</span>.</li>
+      <li>Criar a conta nele com o e-mail da empresa <span>(eu guio passo a passo; a conta e a cobrança ficam no seu nome)</span>.</li>
+      <li>A lista da equipe: nome, e-mail Google e perfil de cada um <span>(ex.: Maria · Licitações, Pedro · Técnico)</span>.</li>
+      <li>Decidir quem aprova proposta e quem pode armar o robô de lance.</li>
+      <li>Em quais aparelhos ficará o certificado A1 <span>(só nos de quem solta o robô)</span>.</li>
+      <li>Como a IA será usada pela equipe <span>(uma chave da empresa guardada no servidor, ou cada um com o próprio login do ChatGPT)</span>.</li>
+      <li>Se o PC será só no navegador ou também programa Windows para rodar o robô.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Segurança</h2>
+    <ul>
+      <li>Dados da empresa separados por regra de acesso: ninguém de fora vê, e cada perfil só faz o que pode.</li>
+      <li>Certificado e senha do gov.br nunca saem do aparelho.</li>
+      <li>Chave da IA no servidor, nunca dentro do APK.</li>
+      <li>Auditoria com nome, data e aparelho de cada ação (aprovar, soltar robô, alterar piso).</li>
+      <li>Remover alguém da equipe corta o acesso na hora, em todos os aparelhos.</li>
+    </ul>
+  </section>
+
+  <footer>As 12 ideias do protótipo anterior ficaram anotadas. A ideia 10 (Equipe) depende desta conta da empresa na nuvem.</footer>
+</div>
