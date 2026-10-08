@@ -175,8 +175,12 @@ private fun resolvePlatformRoute(route: String, platformMode: Boolean): String {
         Routes.AUDIT -> Routes.PLATFORM_AUDIT
         Routes.ROBOT -> Routes.PLATFORM_ROBOT
         Routes.LIVE -> Routes.PLATFORM_LIVE
-        // Sem endpoint de nuvem ainda: estado gracioso (o modo local segue oferecendo).
-        Routes.ANALYZE, Routes.WARROOM, Routes.STRATEGY -> Routes.PLATFORM_SOON
+        // Analisar Edital → lista de licitações (cada detalhe tem "Analisar com IA" on-device).
+        Routes.ANALYZE -> Routes.PLATFORM_TENDERS
+        // Sala de Guerra → acompanhamento ao vivo das disputas da plataforma.
+        Routes.WARROOM -> Routes.PLATFORM_LIVE
+        // Estratégias do robô → edita as configs ativas na nuvem (dry_run).
+        Routes.STRATEGY -> Routes.PLATFORM_STRATEGY
         // Locais por natureza (device) e o próprio dashboard/notifs: telas locais, sem redirecionar.
         else -> route
     }

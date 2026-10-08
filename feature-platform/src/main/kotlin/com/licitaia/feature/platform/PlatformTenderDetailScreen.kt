@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.QuestionAnswer
 import androidx.compose.material.icons.outlined.RequestQuote
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -66,6 +67,7 @@ import com.licitaia.core.platform.net.PlatformItem
 import com.licitaia.core.platform.net.TenderDto
 import com.licitaia.core.ui.components.AlertBanner
 import com.licitaia.core.ui.components.ErrorState
+import com.licitaia.core.ui.components.IconBubble
 import com.licitaia.core.ui.components.InfoRow
 import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
@@ -161,11 +163,24 @@ private fun RoboCard(
     fun valorMinimo(): Double? = pisosItens().minOfOrNull { it.valorLanceMinimo } ?: piso.trim().toDoubleOrNull()?.takeIf { it > 0 }
     fun decrementoVal(): Double = decremento.trim().toDoubleOrNull()?.takeIf { it > 0 } ?: 0.01
 
-    LicitaCard(Modifier.fillMaxWidth()) {
-        Text("Robô de lance", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
-        Spacer(Modifier.height(8.dp))
+    val armed = robo?.ativo == true
+    val roboAccent = if (armed) LicitaColors.Green else if (robo != null) LicitaColors.Yellow else null
+    LicitaCard(Modifier.fillMaxWidth(), accent = roboAccent) {
+        // Cabeçalho no mesmo formato do robô local (bolha de ícone + título + status pulsante).
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconBubble(Icons.Outlined.SmartToy, roboAccent ?: LicitaColors.Blue)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Robô de lance", style = MaterialTheme.typography.titleMedium, color = LicitaColors.TextPrimary)
+                Text(
+                    if (robo != null) "Disputa no aparelho · certificado local" else "Sem configuração nesta licitação",
+                    style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
+                )
+            }
+            if (robo != null) StatusBadge(if (armed) "Armado" else "Desarmado", if (armed) Tone.SUCCESS else Tone.NEUTRAL, pulsing = armed)
+        }
+        Spacer(Modifier.height(10.dp))
         if (robo != null) {
-            StatusBadge(if (robo.ativo) "Armado" else "Desarmado", if (robo.ativo) Tone.SUCCESS else Tone.NEUTRAL)
             robo.modoExecucao?.let { StatusBadge(if (it == "auto") "AUTO (lance real)" else "teste (dry_run)", if (it == "auto") Tone.DANGER else Tone.INFO) }
             Spacer(Modifier.height(6.dp))
             robo.estrategia?.let { InfoRow("Estratégia", it) }

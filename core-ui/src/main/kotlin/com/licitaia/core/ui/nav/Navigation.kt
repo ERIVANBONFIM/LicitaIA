@@ -84,6 +84,8 @@ object Routes {
     const val PLATFORM_AUDIT = "platform/auditoria"
     /** Robôs de lance ativos (`GET /robo-lances/ativas`). */
     const val PLATFORM_ROBOT = "platform/robo"
+    /** Estratégias do robô na plataforma — edita as configs ativas (`PUT /robo-lances/config/:id`, dry_run). */
+    const val PLATFORM_STRATEGY = "platform/estrategias"
     /** Pregões ao vivo — lista das disputas ativas (`GET /robo-lances/ativas`). */
     const val PLATFORM_LIVE = "platform/pregoes"
     /** Acompanhamento ao vivo de uma licitação (`GET /licitacoes/:id/ao-vivo`, polling). */

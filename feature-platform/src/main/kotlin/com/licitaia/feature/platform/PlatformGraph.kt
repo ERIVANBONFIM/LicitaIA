@@ -22,6 +22,7 @@ fun NavGraphBuilder.platformGraph() {
     composable(Routes.PLATFORM_MESSAGES) { PlatformMessagesScreen() }
     composable(Routes.PLATFORM_AUDIT) { PlatformAuditScreen() }
     composable(Routes.PLATFORM_ROBOT) { PlatformRobotScreen() }
+    composable(Routes.PLATFORM_STRATEGY) { PlatformStrategyScreen() }
     composable(Routes.PLATFORM_LIVE) { PlatformLiveListScreen() }
     composable(
         Routes.PLATFORM_LIVE_TENDER,
