@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -58,6 +59,9 @@ fun PlatformHubScreen() {
             }
             HubRow(Icons.Outlined.Forum, LicitaColors.Blue, "Mensagens do pregoeiro", "Mensagens do chat de disputa") {
                 navigator.navigate(Routes.PLATFORM_MESSAGES)
+            }
+            HubRow(Icons.Outlined.History, LicitaColors.Yellow, "Auditoria", "Trilha de ações da empresa") {
+                navigator.navigate(Routes.PLATFORM_AUDIT)
             }
         }
     }

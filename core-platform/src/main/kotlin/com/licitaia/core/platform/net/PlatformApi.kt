@@ -1,6 +1,7 @@
 package com.licitaia.core.platform.net
 
 import com.licitaia.core.platform.PlatformConfig
+import com.licitaia.core.platform.TenderFiltros
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -100,6 +101,7 @@ class PlatformApi(
         busca: String? = null,
         favorita: Boolean? = null,
         status: String? = null,
+        filtros: TenderFiltros? = null,
     ): TenderPageDto {
         val u = url("licitacoes").newBuilder()
             .addQueryParameter("leve", "true")
@@ -110,6 +112,17 @@ class PlatformApi(
             .apply { busca?.trim()?.takeIf { it.isNotBlank() }?.let { addQueryParameter("busca", it) } }
             .apply { if (favorita == true) addQueryParameter("favorita", "true") }
             .apply { status?.takeIf { it.isNotBlank() }?.let { addQueryParameter("status", it) } }
+            .apply {
+                filtros?.let { f ->
+                    f.estado?.takeIf { it.isNotBlank() }?.let { addQueryParameter("estado", it) }
+                    f.portal?.takeIf { it.isNotBlank() }?.let { addQueryParameter("portal", it) }
+                    f.modalidade?.takeIf { it.isNotBlank() }?.let { addQueryParameter("modalidade", it) }
+                    f.valorMin?.let { addQueryParameter("valorMin", it.toString()) }
+                    f.valorMax?.let { addQueryParameter("valorMax", it.toString()) }
+                    f.dataAberturaInicio?.takeIf { it.isNotBlank() }?.let { addQueryParameter("dataAberturaInicio", it) }
+                    f.dataAberturaFim?.takeIf { it.isNotBlank() }?.let { addQueryParameter("dataAberturaFim", it) }
+                }
+            }
             .build()
         return get(u, TenderPageDto.serializer(), token = token) ?: TenderPageDto()
     }
@@ -142,10 +155,6 @@ class PlatformApi(
     /** `GET /concorrente` → concorrentes mapeados (paginado `{data,total}`). */
     suspend fun concorrentes(token: String): ConcorrentePageDto =
         get(url("concorrente"), ConcorrentePageDto.serializer(), token = token) ?: ConcorrentePageDto()
-
-    /** `GET /mensagens` → mensagens do chat de disputa (array). */
-    suspend fun mensagens(token: String): List<MensagemDto> =
-        get(url("mensagens"), ListSerializer(MensagemDto.serializer()), token = token) ?: emptyList()
 
     /** `GET /licitacoes/:id` → detalhe completo (campos pesados incluídos; só mapeamos os que a UI usa). */
     suspend fun licitacaoDetalhe(token: String, id: String): TenderDto? =
@@ -216,6 +225,70 @@ class PlatformApi(
     suspend fun chatPerguntar(token: String, id: String, mensagem: String) {
         val payload = json.encodeToString(ChatPerguntaRequest.serializer(), ChatPerguntaRequest(mensagem))
         postJson(url("ia/chat-edital/$id"), payload, OkDto.serializer(), token)
+    }
+
+    /** `GET /auditoria?limit=` → trilha de auditoria da empresa. */
+    suspend fun auditoria(token: String, limit: Int = 100): AuditoriaPageDto {
+        val u = url("auditoria").newBuilder().addQueryParameter("limit", limit.coerceIn(1, 500).toString()).build()
+        return get(u, AuditoriaPageDto.serializer(), token = token) ?: AuditoriaPageDto()
+    }
+
+    /** `GET /licitacoes/:id/resultado` (null se não houver). */
+    suspend fun resultado(token: String, id: String): ResultadoDto? =
+        get(url("licitacoes/$id/resultado"), ResultadoDto.serializer(), token = token)
+
+    /** `POST /licitacoes/:id/resultado`. */
+    suspend fun registrarResultado(token: String, id: String, req: ResultadoRequest) {
+        val payload = json.encodeToString(ResultadoRequest.serializer(), req)
+        postJson(url("licitacoes/$id/resultado"), payload, OkDto.serializer(), token)
+    }
+
+    /** `POST /mensagens` {licitacaoId?, conteudo}. */
+    suspend fun enviarMensagem(token: String, licitacaoId: String?, conteudo: String) {
+        val payload = json.encodeToString(MensagemRequest.serializer(), MensagemRequest(licitacaoId, conteudo))
+        postJson(url("mensagens"), payload, OkDto.serializer(), token)
+    }
+
+    /** `GET /mensagens?licitacaoId=` (filtro opcional por licitação). */
+    suspend fun mensagens(token: String, licitacaoId: String? = null): List<MensagemDto> {
+        val u = url("mensagens").newBuilder()
+            .apply { licitacaoId?.takeIf { it.isNotBlank() }?.let { addQueryParameter("licitacaoId", it) } }
+            .build()
+        return get(u, ListSerializer(MensagemDto.serializer()), token = token) ?: emptyList()
+    }
+
+    /** `GET /certidoes`. */
+    suspend fun certidoes(token: String): List<CertidaoDto> =
+        get(url("certidoes"), ListSerializer(CertidaoDto.serializer()), token = token) ?: emptyList()
+
+    /** `POST /documentos` (multipart): envia um arquivo + metadados. */
+    suspend fun uploadDocumento(
+        token: String,
+        bytes: ByteArray,
+        fileName: String,
+        nome: String,
+        categoria: String,
+        validade: String?,
+    ) {
+        val body = okhttp3.MultipartBody.Builder().setType(okhttp3.MultipartBody.FORM)
+            .addFormDataPart("arquivo", fileName, bytes.toRequestBody(OCTET_MEDIA, 0, bytes.size))
+            .addFormDataPart("nome", nome)
+            .addFormDataPart("categoria", categoria)
+            .apply { validade?.takeIf { it.isNotBlank() }?.let { addFormDataPart("validade", it) } }
+            .build()
+        val request = Request.Builder().url(url("documentos"))
+            .header("Accept", "application/json")
+            .header("User-Agent", USER_AGENT)
+            .header("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        execute(request, OkDto.serializer())
+    }
+
+    /** `DELETE /documentos/:id`. */
+    suspend fun deleteDocumento(token: String, id: String) {
+        val request = baseRequest(url("documentos/$id"), token).delete().build()
+        execute(request, OkDto.serializer())
     }
 
     /** Lê a primeira chave string/number não-vazia dentre [keys] (tolerante a objetos/null aninhados). */
@@ -332,6 +405,7 @@ class PlatformApi(
 
     companion object {
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+        private val OCTET_MEDIA = "application/octet-stream".toMediaType()
         private const val USER_AGENT = "LicitaPRO-Android (plataforma)"
     }
 }

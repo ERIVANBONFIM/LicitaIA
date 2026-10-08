@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
@@ -30,17 +31,24 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.licitaia.core.platform.TenderFiltros
 import com.licitaia.core.platform.db.PlatformTenderEntity
 import com.licitaia.core.platform.session.PlatformSession
 import com.licitaia.core.ui.components.AlertBanner
+import com.licitaia.core.ui.components.PrimaryButton
+import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.EmptyState
 import com.licitaia.core.ui.components.InfoRow
 import com.licitaia.core.ui.components.LicitaCard
@@ -60,8 +68,10 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
     val pending by viewModel.pendingMutations.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val recorte by viewModel.recorte.collectAsStateWithLifecycle()
+    val filtros by viewModel.filtros.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val focus = LocalFocusManager.current
+    var showFilters by rememberSaveable { mutableStateOf(false) }
 
     // Sessão perdida (logout ou 401 na sincronização) → volta ao login da plataforma.
     LaunchedEffect(session) {
@@ -77,6 +87,9 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
         subtitle = companyName,
         showBack = true,
         actions = {
+            IconButton(onClick = { showFilters = !showFilters }) {
+                Icon(Icons.Outlined.FilterList, contentDescription = "Filtros", tint = if (!filtros.isEmpty) LicitaColors.BlueBright else LicitaColors.TextPrimary)
+            }
             IconButton(onClick = { navigator.navigate(Routes.PLATFORM_HUB) }) {
                 Icon(Icons.Outlined.Apps, contentDescription = "Mais da plataforma")
             }
@@ -119,6 +132,15 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
                         SelectChip("Participações", recorte == TenderRecorte.PARTICIPACOES, { viewModel.setRecorte(TenderRecorte.PARTICIPACOES) })
                     }
                 }
+                if (showFilters) {
+                    item {
+                        FiltersPanel(
+                            filtros = filtros,
+                            onApply = { viewModel.applyFiltros(it); showFilters = false },
+                            onClear = { viewModel.clearFiltros() },
+                        )
+                    }
+                }
                 sync.message?.let { msg ->
                     item {
                         AlertBanner(
@@ -155,6 +177,62 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
             }
         }
     }
+}
+
+@Composable
+private fun FiltersPanel(filtros: TenderFiltros, onApply: (TenderFiltros) -> Unit, onClear: () -> Unit) {
+    var uf by rememberSaveable { mutableStateOf(filtros.estado.orEmpty()) }
+    var portal by rememberSaveable { mutableStateOf(filtros.portal.orEmpty()) }
+    var modalidade by rememberSaveable { mutableStateOf(filtros.modalidade.orEmpty()) }
+    var valorMin by rememberSaveable { mutableStateOf(filtros.valorMin?.toString().orEmpty()) }
+    var valorMax by rememberSaveable { mutableStateOf(filtros.valorMax?.toString().orEmpty()) }
+    var dataIni by rememberSaveable { mutableStateOf(filtros.dataAberturaInicio.orEmpty()) }
+    var dataFim by rememberSaveable { mutableStateOf(filtros.dataAberturaFim.orEmpty()) }
+    LicitaCard(Modifier.fillMaxWidth(), accent = LicitaColors.Blue) {
+        Text("Filtros", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+        Spacer(Modifier.height(8.dp))
+        FilterField("UF (ex.: BA)", uf, { uf = it.uppercase().take(2) })
+        FilterField("Portal (ex.: Comprasnet)", portal, { portal = it })
+        FilterField("Modalidade (ex.: Pregão)", modalidade, { modalidade = it })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { FilterField("Valor mín. (R$)", valorMin, { valorMin = it.filter(Char::isDigit) }, numeric = true) }
+            Box(Modifier.weight(1f)) { FilterField("Valor máx. (R$)", valorMax, { valorMax = it.filter(Char::isDigit) }, numeric = true) }
+        }
+        FilterField("Abertura de (AAAA-MM-DD)", dataIni, { dataIni = it })
+        FilterField("Abertura até (AAAA-MM-DD)", dataFim, { dataFim = it })
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SecondaryButton("Limpar", {
+                uf = ""; portal = ""; modalidade = ""; valorMin = ""; valorMax = ""; dataIni = ""; dataFim = ""
+                onClear()
+            }, Modifier.weight(1f), tone = Tone.NEUTRAL)
+            PrimaryButton("Aplicar filtros", {
+                onApply(
+                    TenderFiltros(
+                        estado = uf.trim().ifBlank { null },
+                        portal = portal.trim().ifBlank { null },
+                        modalidade = modalidade.trim().ifBlank { null },
+                        valorMin = valorMin.trim().toLongOrNull(),
+                        valorMax = valorMax.trim().toLongOrNull(),
+                        dataAberturaInicio = dataIni.trim().ifBlank { null },
+                        dataAberturaFim = dataFim.trim().ifBlank { null },
+                    ),
+                )
+            }, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun FilterField(label: String, value: String, onChange: (String) -> Unit, numeric: Boolean = false) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(label) },
+        singleLine = true,
+        keyboardOptions = if (numeric) KeyboardOptions(keyboardType = KeyboardType.Number) else KeyboardOptions.Default,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+    )
 }
 
 @Composable

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.core.platform.TenderFilter
+import com.licitaia.core.platform.TenderFiltros
 import com.licitaia.core.platform.db.PlatformTenderEntity
 import com.licitaia.core.platform.session.PlatformSession
 import com.licitaia.domain.network.ConnectivityMonitor
@@ -55,6 +56,9 @@ class PlatformTendersViewModel @Inject constructor(
     private val _recorte = MutableStateFlow(TenderRecorte.TODAS)
     val recorte: StateFlow<TenderRecorte> = _recorte.asStateFlow()
 
+    private val _filtros = MutableStateFlow(TenderFiltros())
+    val filtros: StateFlow<TenderFiltros> = _filtros.asStateFlow()
+
     val pendingMutations: StateFlow<Int> =
         repository.observePendingMutations().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
@@ -85,6 +89,18 @@ class PlatformTendersViewModel @Inject constructor(
         load()
     }
 
+    /** Aplica filtros avançados e reconsulta. */
+    fun applyFiltros(f: TenderFiltros) {
+        _filtros.update { f }
+        load()
+    }
+
+    fun clearFiltros() {
+        if (_filtros.value.isEmpty) return
+        _filtros.update { TenderFiltros() }
+        load()
+    }
+
     /** Busca textual (ação do teclado) e botão atualizar. */
     fun search() = load()
     fun refresh() = load()
@@ -93,6 +109,7 @@ class PlatformTendersViewModel @Inject constructor(
         val recorte = _recorte.value
         val query = _query.value
         loadJob?.cancel()
+        val filtros = _filtros.value
         // Sem conexão (celular): mostra já o espelho local, sem tentar a rede.
         if (!connectivity.hasNetwork) {
             loadJob = viewModelScope.launch { showMirror(recorte, query, reason = "Sem conexão · mostrando dados salvos") }
@@ -100,7 +117,7 @@ class PlatformTendersViewModel @Inject constructor(
         }
         _sync.update { it.copy(syncing = true, message = null, isError = false, offline = false) }
         loadJob = viewModelScope.launch {
-            val result = repository.fetchTenders(recorte.filter, query)
+            val result = repository.fetchTenders(recorte.filter, query, filtros)
             result.fold(
                 onSuccess = { list ->
                     _tenders.value = list

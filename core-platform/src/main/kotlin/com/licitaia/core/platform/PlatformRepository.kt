@@ -6,8 +6,12 @@ import com.licitaia.core.platform.net.ConcorrenteDto
 import com.licitaia.core.platform.net.DocumentoDto
 import com.licitaia.core.platform.net.EmpresaDetailDto
 import com.licitaia.core.platform.net.HealthDto
+import com.licitaia.core.platform.net.AuditoriaItemDto
+import com.licitaia.core.platform.net.CertidaoDto
 import com.licitaia.core.platform.net.ChatMsg
 import com.licitaia.core.platform.net.MensagemDto
+import com.licitaia.core.platform.net.ResultadoDto
+import com.licitaia.core.platform.net.ResultadoRequest
 import com.licitaia.core.platform.net.PlatformApi
 import com.licitaia.core.platform.net.PlatformException
 import com.licitaia.core.platform.net.PlatformFile
@@ -31,6 +35,21 @@ import javax.inject.Singleton
 
 /** Recortes da lista de licitações (consultados no servidor). */
 enum class TenderFilter { TODAS, INTERESSE, ARQUIVADAS, PARTICIPACOES }
+
+/** Filtros avançados da busca (espelham o app local). Segmento não existe na VPS. */
+data class TenderFiltros(
+    val estado: String? = null,
+    val portal: String? = null,
+    val modalidade: String? = null,
+    val valorMin: Long? = null,
+    val valorMax: Long? = null,
+    /** YYYY-MM-DD. */
+    val dataAberturaInicio: String? = null,
+    val dataAberturaFim: String? = null,
+) {
+    val isEmpty: Boolean get() = estado == null && portal == null && modalidade == null &&
+        valorMin == null && valorMax == null && dataAberturaInicio == null && dataAberturaFim == null
+}
 
 /**
  * Fachada da camada de plataforma para a UI: login, sessão, sincronização de leitura e fila offline.
@@ -136,17 +155,18 @@ class PlatformRepository @Inject constructor(
      * Participações usa `GET /licitacoes/minhas`). Pagina até [maxPages] e espelha o resultado localmente.
      * "Todas" com texto vazio volta ao pull padrão; com texto, usa `busca=`.
      */
-    suspend fun fetchTenders(filter: TenderFilter, query: String, maxPages: Int = 5): Result<List<PlatformTenderEntity>> = runCatching {
+    suspend fun fetchTenders(filter: TenderFilter, query: String, filtros: TenderFiltros? = null, maxPages: Int = 5): Result<List<PlatformTenderEntity>> = runCatching {
         val token = tokenStore.token() ?: throw PlatformException("Entre na plataforma.", PlatformException.Kind.UNAUTHORIZED)
         val busca = query.trim().ifBlank { null }
+        val f = filtros?.takeIf { !it.isEmpty }
         val now = System.currentTimeMillis()
         val acc = ArrayList<PlatformTenderEntity>()
         var page = 1
         while (page <= maxPages) {
             val pageData: TenderPageDto = when (filter) {
-                TenderFilter.TODAS -> api.licitacoesLeve(token, page, busca = busca)
-                TenderFilter.INTERESSE -> api.licitacoesLeve(token, page, busca = busca, favorita = true)
-                TenderFilter.ARQUIVADAS -> api.licitacoesLeve(token, page, busca = busca, status = "arquivada")
+                TenderFilter.TODAS -> api.licitacoesLeve(token, page, busca = busca, filtros = f)
+                TenderFilter.INTERESSE -> api.licitacoesLeve(token, page, busca = busca, favorita = true, filtros = f)
+                TenderFilter.ARQUIVADAS -> api.licitacoesLeve(token, page, busca = busca, status = "arquivada", filtros = f)
                 TenderFilter.PARTICIPACOES -> api.licitacoesMinhas(token, page, busca = busca)
             }
             if (pageData.data.isEmpty()) break
@@ -182,8 +202,30 @@ class PlatformRepository @Inject constructor(
     /** `GET /concorrente`. */
     suspend fun concorrentes(): Result<List<ConcorrenteDto>> = authedRead { api.concorrentes(it).data }
 
-    /** `GET /mensagens`. */
-    suspend fun mensagens(): Result<List<MensagemDto>> = authedRead { api.mensagens(it) }
+    /** `GET /mensagens` (opcionalmente filtrado por licitação). */
+    suspend fun mensagens(licitacaoId: String? = null): Result<List<MensagemDto>> = authedRead { api.mensagens(it, licitacaoId) }
+
+    /** `POST /mensagens` (envio; no detalhe passa o licitacaoId). */
+    suspend fun enviarMensagem(conteudo: String, licitacaoId: String? = null): Result<Unit> = authedRead { api.enviarMensagem(it, licitacaoId, conteudo) }
+
+    /** `GET /certidoes`. */
+    suspend fun certidoes(): Result<List<CertidaoDto>> = authedRead { api.certidoes(it) }
+
+    /** `GET /auditoria?limit=`. */
+    suspend fun auditoria(limit: Int = 100): Result<List<AuditoriaItemDto>> = authedRead { api.auditoria(it, limit).data }
+
+    /** `GET /licitacoes/:id/resultado` (null se não houver). */
+    suspend fun resultado(id: String): Result<ResultadoDto?> = authedRead { api.resultado(it, id) }
+
+    /** `POST /licitacoes/:id/resultado`. */
+    suspend fun registrarResultado(id: String, req: ResultadoRequest): Result<Unit> = authedRead { api.registrarResultado(it, id, req) }
+
+    /** `POST /documentos` (multipart). */
+    suspend fun uploadDocumento(bytes: ByteArray, fileName: String, nome: String, categoria: String, validade: String?): Result<Unit> =
+        authedRead { api.uploadDocumento(it, bytes, fileName, nome, categoria, validade) }
+
+    /** `DELETE /documentos/:id`. */
+    suspend fun deleteDocumento(id: String): Result<Unit> = authedRead { api.deleteDocumento(it, id) }
 
     private suspend fun <T> authedRead(block: suspend (token: String) -> T): Result<T> = runCatching {
         val token = tokenStore.token() ?: throw PlatformException("Entre na plataforma.", PlatformException.Kind.UNAUTHORIZED)

@@ -75,6 +75,7 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     onArchive = viewModel::toggleArquivar,
                     onHide = viewModel::toggleOcultar,
                     onAnalyze = viewModel::analyze,
+                    onRegisterResult = viewModel::registrarResultado,
                     onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
                     onOpenPortal = { url ->
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -93,6 +94,7 @@ private fun TenderDetail(
     onArchive: () -> Unit,
     onHide: () -> Unit,
     onAnalyze: () -> Unit,
+    onRegisterResult: (String) -> Unit,
     onOpenQa: () -> Unit,
     onOpenPortal: (String) -> Unit,
 ) {
@@ -171,6 +173,8 @@ private fun TenderDetail(
             t.veredito?.takeIf { it.isNotBlank() }?.let { InfoRow("Veredito", it) }
             t.scoreRelevancia?.let { InfoRow("Relevância", "$it") }
             t.scoreRisco?.let { InfoRow("Risco", "$it") }
+            t.precoSugeridoIA?.takeIf { it.isNotBlank() }?.let { InfoRow("Preço sugerido (IA)", PlatformFormat.currency(it)) }
+            t.margemEstimadaIA?.takeIf { it.isNotBlank() }?.let { InfoRow("Margem estimada (IA)", it) }
             val resumo = t.editalResumoIA?.takeIf { it.isNotBlank() }
             Spacer(Modifier.height(6.dp))
             Text(
@@ -263,13 +267,39 @@ private fun TenderDetail(
             Text("Armar/rodar o robô na nuvem chega em breve (F4). No modo local o robô já opera.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
         }
 
-        // Próximos passos (sem endpoint pronto na VPS)
+        // Resultado do pregão
+        LicitaCard(Modifier.fillMaxWidth()) {
+            Text("Resultado do pregão", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+            Spacer(Modifier.height(8.dp))
+            val res = s.resultado
+            val resStr = res?.resultado
+            if (res != null && resStr != null) {
+                StatusBadge(resStr, if (resStr.equals("vencida", true)) Tone.SUCCESS else Tone.WARNING)
+                res.valorArrematado?.let { InfoRow("Valor arrematado", PlatformFormat.currency(it)) }
+                res.posicaoFinal?.let { InfoRow("Posição final", "$it") }
+                res.totalConcorrentes?.let { InfoRow("Concorrentes", "$it") }
+            } else {
+                Text("Ainda sem resultado. Registre quando o pregão encerrar.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SecondaryButton("Vencemos", { onRegisterResult("vencida") }, Modifier.weight(1f), enabled = !acting, tone = Tone.SUCCESS)
+                    SecondaryButton("Perdemos", { onRegisterResult("perdida") }, Modifier.weight(1f), enabled = !acting, tone = Tone.NEUTRAL)
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SecondaryButton("Desistimos", { onRegisterResult("desistida") }, Modifier.weight(1f), enabled = !acting, tone = Tone.NEUTRAL)
+                    SecondaryButton("Anulada", { onRegisterResult("anulada") }, Modifier.weight(1f), enabled = !acting, tone = Tone.NEUTRAL)
+                }
+            }
+        }
+
+        // Próximos passos (sem endpoint pronto na VPS ou bloqueado)
         LicitaCard(Modifier.fillMaxWidth()) {
             Text("Em breve na nuvem", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Proposta comercial, acompanhar o pregão ao vivo e registrar o resultado (vencemos/perdemos) ainda não " +
-                    "têm endpoint na plataforma. No modo local essas funções já operam.",
+                "Proposta comercial (geração por IA está sem crédito na VPS) e acompanhar o pregão ao vivo chegam em " +
+                    "breve. No modo local essas funções já operam.",
                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted,
             )
         }

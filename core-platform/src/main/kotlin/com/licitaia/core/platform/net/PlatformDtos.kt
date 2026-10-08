@@ -206,6 +206,10 @@ data class TenderDto(
     val editalResumoIA: String? = null,
     /** Veredito da IA (recomendação). */
     val veredito: String? = null,
+    /** Preço sugerido pela IA (decimal como string). */
+    val precoSugeridoIA: String? = null,
+    /** Margem estimada pela IA (decimal como string). */
+    val margemEstimadaIA: String? = null,
     val updatedAt: String? = null,
     val empresaId: String? = null,
 )
@@ -254,6 +258,58 @@ data class ChatMsg(val autor: String, val texto: String)
 /** `POST /ia/chat-edital/:id` body. */
 @Serializable
 data class ChatPerguntaRequest(val mensagem: String, val historico: List<String> = emptyList())
+
+/** `GET /auditoria?limit=` → trilha de auditoria da empresa (detalhes é objeto → omitido aqui). */
+@Serializable
+data class AuditUserDto(val nome: String = "", val email: String = "")
+
+@Serializable
+data class AuditoriaItemDto(
+    val id: String = "",
+    val acao: String = "",
+    val entidade: String? = null,
+    val entidadeId: String? = null,
+    val createdAt: String? = null,
+    val usuario: AuditUserDto? = null,
+)
+
+@Serializable
+data class AuditoriaPageDto(val data: List<AuditoriaItemDto> = emptyList(), val total: Int = 0)
+
+/** `GET /licitacoes/:id/resultado` (null se não houver). Numéricos decimais podem vir como string. */
+@Serializable
+data class ResultadoDto(
+    val resultado: String? = null,
+    val valorProposto: String? = null,
+    val valorArrematado: String? = null,
+    val posicaoFinal: Int? = null,
+    val totalConcorrentes: Int? = null,
+    val margemFinal: String? = null,
+)
+
+/** `POST /licitacoes/:id/resultado`. */
+@Serializable
+data class ResultadoRequest(
+    val resultado: String,
+    val valorProposto: String? = null,
+    val valorArrematado: String? = null,
+    val posicaoFinal: Int? = null,
+    val totalConcorrentes: Int? = null,
+)
+
+/** `GET /certidoes`. */
+@Serializable
+data class CertidaoDto(
+    val id: String = "",
+    val nome: String = "",
+    val tipo: String? = null,
+    val status: String? = null,
+    val validade: String? = null,
+)
+
+/** `POST /mensagens` body (envio no detalhe/menu). */
+@Serializable
+data class MensagemRequest(val licitacaoId: String? = null, val conteudo: String)
 
 /** Item da licitação (shape variável no backend; extraído de forma tolerante). */
 data class PlatformItem(

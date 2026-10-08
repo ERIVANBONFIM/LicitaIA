@@ -77,6 +77,8 @@ object Routes {
     const val PLATFORM_COMPETITORS = "platform/concorrencia"
     /** Mensagens do pregoeiro (`GET /mensagens`). */
     const val PLATFORM_MESSAGES = "platform/mensagens"
+    /** Auditoria da empresa (`GET /auditoria`). */
+    const val PLATFORM_AUDIT = "platform/auditoria"
     /** Estado gracioso para funções ainda sem endpoint de nuvem (em modo plataforma). */
     const val PLATFORM_SOON = "platform/em-breve"
 

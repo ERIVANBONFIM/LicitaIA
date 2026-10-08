@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
+import com.licitaia.core.platform.net.ResultadoDto
+import com.licitaia.core.platform.net.ResultadoRequest
 import com.licitaia.core.platform.net.RoboConfigDto
 import com.licitaia.core.platform.net.TenderDto
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,6 +38,8 @@ data class PlatformDetailUi(
     /** Robô de lance (leitura). */
     val roboConfig: RoboConfigDto? = null,
     val roboLances: Int = 0,
+    /** Resultado registrado (null = ainda não registrado). */
+    val resultado: ResultadoDto? = null,
 )
 
 @HiltViewModel
@@ -67,11 +71,12 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     val analysis = repository.tenderAnalysisStatus(id).getOrNull()
                     val robo = repository.roboConfig(id).getOrNull()
                     val lances = repository.roboHistoricoCount(id).getOrDefault(0)
+                    val resultado = repository.resultado(id).getOrNull()
                     _state.update {
                         it.copy(
                             itens = itens, arquivos = arquivos,
                             analysisStatus = analysis?.first, hasAnalysis = analysis?.second ?: false,
-                            roboConfig = robo, roboLances = lances,
+                            roboConfig = robo, roboLances = lances, resultado = resultado,
                         )
                     }
                 },
@@ -134,6 +139,23 @@ class PlatformTenderDetailViewModel @Inject constructor(
             }
             _state.update { it.copy(analyzing = false) }
             _events.send("A análise está demorando; volte em instantes para ver o resultado.")
+        }
+    }
+
+    /** Registra o resultado do pregão (vencida/perdida/desistida/anulada) e recarrega. */
+    fun registrarResultado(resultado: String) {
+        if (_state.value.acting) return
+        _state.update { it.copy(acting = true) }
+        viewModelScope.launch {
+            val r = repository.registrarResultado(id, ResultadoRequest(resultado = resultado))
+            r.fold(
+                onSuccess = {
+                    _events.send("Resultado registrado: $resultado")
+                    val novo = repository.resultado(id).getOrNull()
+                    _state.update { it.copy(acting = false, resultado = novo) }
+                },
+                onFailure = { _events.send(it.message ?: "Não foi possível registrar o resultado."); _state.update { s -> s.copy(acting = false) } },
+            )
         }
     }
 
