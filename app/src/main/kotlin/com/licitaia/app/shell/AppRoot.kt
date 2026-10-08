@@ -157,6 +157,28 @@ private fun NavHostController.navigateClearingAll(route: String) {
     }
 }
 
+/**
+ * No MODO PLATAFORMA, os itens do menu/barra apontam para as telas alimentadas pela VPS; os que ainda não têm
+ * endpoint caem no estado gracioso ([Routes.PLATFORM_SOON]); os "locais por natureza" (Configurações, Segurança,
+ * IA, Portais) seguem para as telas locais, que operam no aparelho. No modo local, nada é redirecionado.
+ */
+private fun resolvePlatformRoute(route: String, platformMode: Boolean): String {
+    if (!platformMode) return route
+    return when (route) {
+        // Licitações e seus recortes → lista da plataforma (chips favorita/status/minhas lá dentro).
+        Routes.SEARCH, Routes.INTERESTS, Routes.PARTICIPATIONS, Routes.ARCHIVED -> Routes.PLATFORM_TENDERS
+        Routes.RADAR -> Routes.PLATFORM_RADAR
+        Routes.DOCUMENTS -> Routes.PLATFORM_DOCS
+        Routes.COMPETITION -> Routes.PLATFORM_COMPETITORS
+        Routes.MESSAGES -> Routes.PLATFORM_MESSAGES
+        Routes.COMPANIES -> Routes.PLATFORM_DIRECTORY
+        // Sem endpoint de nuvem ainda: estado gracioso (o modo local segue oferecendo).
+        Routes.ANALYZE, Routes.LIVE, Routes.WARROOM, Routes.STRATEGY, Routes.ROBOT, Routes.AUDIT -> Routes.PLATFORM_SOON
+        // Locais por natureza (device) e o próprio dashboard/notifs: telas locais, sem redirecionar.
+        else -> route
+    }
+}
+
 @Composable
 private fun MainShell(
     viewModel: ShellViewModel,
@@ -173,6 +195,8 @@ private fun MainShell(
     val context = LocalContext.current
 
     val session by viewModel.session.collectAsStateWithLifecycle()
+    val shellSession by viewModel.shellSession.collectAsStateWithLifecycle()
+    val platformMode by viewModel.platformMode.collectAsStateWithLifecycle()
     val updateState by updateViewModel.state.collectAsStateWithLifecycle()
     val postponedUpdate by updateViewModel.postponed.collectAsStateWithLifecycle()
     val shell by viewModel.shellState.collectAsStateWithLifecycle()
@@ -185,8 +209,10 @@ private fun MainShell(
 
     val backEntry by nav.currentBackStackEntryAsState()
     val currentRoute = backEntry?.destination?.route
-    val loggedIn = session != null
+    // O shell abre com sessão local OU com a sessão sintética da plataforma (mesmo shell, fonte diferente).
+    val loggedIn = shellSession != null
     val onTopLevel = currentRoute in Routes.topLevel
+    val platformModeState = rememberUpdatedState(platformMode)
     val showBottomBar = loggedIn && onTopLevel && settings.showBottomBar
 
     var confirmLogout by remember { mutableStateOf(false) }
@@ -197,12 +223,14 @@ private fun MainShell(
     val navigator = remember(nav) {
         object : AppNavigator {
             override fun navigate(route: String) {
-                if (route in Routes.topLevel) navigateTop(route)
-                else nav.navigate(route) { launchSingleTop = true }
+                val wasTopLevel = route in Routes.topLevel
+                val target = resolvePlatformRoute(route, platformModeState.value)
+                if (wasTopLevel) navigateTop(target)
+                else nav.navigate(target) { launchSingleTop = true }
             }
 
             override fun navigateTop(route: String) {
-                nav.navigate(route) {
+                nav.navigate(resolvePlatformRoute(route, platformModeState.value)) {
                     popUpTo(Routes.DASHBOARD) { inclusive = false }
                     launchSingleTop = true
                 }
@@ -288,7 +316,7 @@ private fun MainShell(
             gesturesEnabled = loggedIn && !locked && (onTopLevel || drawerState.isOpen),
             drawerContent = {
                 DrawerContent(
-                    session = session,
+                    session = shellSession,
                     companies = companies,
                     currentRoute = currentRoute,
                     criticalPending = shell.criticalPending,

@@ -12,6 +12,7 @@ android {
 
 dependencies {
     implementation(project(":core-ui"))
+    implementation(project(":core-platform"))
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)

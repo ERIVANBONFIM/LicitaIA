@@ -158,6 +158,17 @@ class PlatformRepository @Inject constructor(
     /** Cópia local completa do espelho (fallback offline para o recorte "Todas"). */
     suspend fun mirrorSnapshot(): List<PlatformTenderEntity> = tenderDao.all()
 
+    /** Contagem de um recorte (lê só o `total` da 1ª página, limit=1), para os cards do dashboard. */
+    suspend fun countTenders(filter: TenderFilter): Result<Int> = authedRead { token ->
+        val page = when (filter) {
+            TenderFilter.TODAS -> api.licitacoesLeve(token, 1, limit = 1)
+            TenderFilter.INTERESSE -> api.licitacoesLeve(token, 1, limit = 1, favorita = true)
+            TenderFilter.ARQUIVADAS -> api.licitacoesLeve(token, 1, limit = 1, status = "arquivada")
+            TenderFilter.PARTICIPACOES -> api.licitacoesMinhas(token, 1, limit = 1)
+        }
+        page.total
+    }
+
     /** `GET /documentos` (metadados). */
     suspend fun documentos(): Result<List<DocumentoDto>> = authedRead { api.documentos(it) }
 

@@ -2,6 +2,10 @@ package com.licitaia.feature.dashboard
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.core.platform.PlatformRepository
+import com.licitaia.core.platform.TenderFilter
+import com.licitaia.core.platform.session.PlatformSession
+import com.licitaia.core.platform.session.PlatformSessionManager
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.model.LiveSession
 import com.licitaia.domain.model.LiveStatus
@@ -25,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
@@ -62,11 +67,16 @@ class DashboardViewModel @Inject constructor(
     tenders: TenderRepository,
     documents: DocumentRepository,
     proposals: ProposalRepository,
+    private val platform: PlatformRepository,
+    private val platformSessions: PlatformSessionManager,
 ) : ViewModel() {
 
     val state: StateFlow<DashboardUiState> = auth.session.flatMapLatest { session ->
         if (session == null) {
-            flowOf(DashboardUiState(loading = false))
+            // Sem sessão local: se houver sessão de PLATAFORMA, monta o dashboard com números da VPS.
+            platformSessions.session.flatMapLatest { plat ->
+                if (plat is PlatformSession.SignedIn) platformDashboard(plat) else flowOf(DashboardUiState(loading = false))
+            }
         } else {
             val companyId = session.activeCompany.id
             val counts = combine(
@@ -111,6 +121,21 @@ class DashboardViewModel @Inject constructor(
         .distinctUntilChanged()
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
+
+    /** Dashboard do MODO PLATAFORMA: números vindos da VPS onde há endpoint; os demais ficam em 0 por ora. */
+    private fun platformDashboard(plat: PlatformSession.SignedIn): Flow<DashboardUiState> = flow {
+        val base = DashboardUiState(
+            loading = true,
+            userName = plat.user.nome.ifBlank { plat.user.email },
+            roleLabel = plat.user.role,
+            companyName = plat.companyName,
+            companyCnpj = plat.user.empresa?.cnpj.orEmpty(),
+        )
+        emit(base)
+        val interests = platform.countTenders(TenderFilter.INTERESSE).getOrDefault(0)
+        val radar = platform.radarFiltros().getOrDefault(emptyList()).size
+        emit(base.copy(loading = false, interests = interests, radarMatches = radar))
+    }.catch { emit(DashboardUiState(loading = false, userName = plat.user.nome.ifBlank { plat.user.email }, companyName = plat.companyName)) }
 
     private fun Flow<Int>.safe(default: Int): Flow<Int> = onStart { emit(default) }.catch { emit(default) }
 

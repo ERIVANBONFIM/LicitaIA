@@ -74,6 +74,8 @@ object Routes {
     const val PLATFORM_COMPETITORS = "platform/concorrencia"
     /** Mensagens do pregoeiro (`GET /mensagens`). */
     const val PLATFORM_MESSAGES = "platform/mensagens"
+    /** Estado gracioso para funções ainda sem endpoint de nuvem (em modo plataforma). */
+    const val PLATFORM_SOON = "platform/em-breve"
 
     fun platformTender(id: String) = "platform/licitacao/$id"
 
