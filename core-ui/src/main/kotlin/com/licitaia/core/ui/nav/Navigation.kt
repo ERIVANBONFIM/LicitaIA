@@ -62,6 +62,9 @@ object Routes {
     const val PLATFORM_TENDERS = "platform/licitacoes"
     /** Detalhe de uma licitação da plataforma (`GET /licitacoes/:id`); id é UUID (String). */
     const val PLATFORM_TENDER = "platform/licitacao/{platformId}"
+    /** "Pergunte ao edital" da plataforma (chat IA: `/ia/chat-edital/:id`). */
+    const val PLATFORM_TENDER_QA = "platform/licitacao/{platformId}/perguntas"
+    fun platformTenderQa(id: String) = "platform/licitacao/$id/perguntas"
     /** Empresas e Perfis da plataforma (`GET /empresas` + `GET /usuarios`). */
     const val PLATFORM_DIRECTORY = "platform/diretorio"
     /** Hub "Mais" do modo plataforma: acesso às seções lidas da VPS. */

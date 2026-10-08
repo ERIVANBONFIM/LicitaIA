@@ -2,6 +2,7 @@ package com.licitaia.core.platform.net
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * DTOs de fio da API LicitaPRO (CONTRATO_API). Só os campos que o app usa hoje — o Json de core-network tem
@@ -216,6 +217,43 @@ data class FavoritaResult(val ok: Boolean = false, val favorita: Boolean = false
 /** `PUT /licitacoes/:id/arquivar|ocultar` → `{ok, status}` (alterna ativa↔arquivada/oculta). */
 @Serializable
 data class StatusResult(val ok: Boolean = false, val status: String = "")
+
+/** `GET/POST /ai/tenders/:id/analysis|analyze` → `{analysis, job}`. analysis tem shape variável. */
+@Serializable
+data class AnalysisStatusDto(
+    val analysis: kotlinx.serialization.json.JsonElement? = null,
+    val job: AnalysisJobDto? = null,
+) {
+    val hasAnalysis: Boolean get() = analysis != null && analysis !is kotlinx.serialization.json.JsonNull
+}
+
+@Serializable
+data class AnalysisJobDto(val id: String? = null, val status: String? = null)
+
+/** `GET /robo-lances/config/:id`. */
+@Serializable
+data class RoboConfigDto(
+    val ativo: Boolean = false,
+    val modoExecucao: String? = null,
+    val estrategia: String? = null,
+    val valorMinimo: Double? = null,
+    val decremento: Double? = null,
+    val intervaloSegundos: Int? = null,
+)
+
+/** `GET /ia/chat-edital/:id/historico` → `{ok, mensagens:[...]}` (shape das mensagens tolerante). */
+@Serializable
+data class ChatHistoricoDto(
+    val ok: Boolean = false,
+    val mensagens: List<JsonObject> = emptyList(),
+)
+
+/** Mensagem do "Pergunte ao edital" (extraída de forma tolerante do histórico). */
+data class ChatMsg(val autor: String, val texto: String)
+
+/** `POST /ia/chat-edital/:id` body. */
+@Serializable
+data class ChatPerguntaRequest(val mensagem: String, val historico: List<String> = emptyList())
 
 /** Item da licitação (shape variável no backend; extraído de forma tolerante). */
 data class PlatformItem(

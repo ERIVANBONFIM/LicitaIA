@@ -6,12 +6,14 @@ import com.licitaia.core.platform.net.ConcorrenteDto
 import com.licitaia.core.platform.net.DocumentoDto
 import com.licitaia.core.platform.net.EmpresaDetailDto
 import com.licitaia.core.platform.net.HealthDto
+import com.licitaia.core.platform.net.ChatMsg
 import com.licitaia.core.platform.net.MensagemDto
 import com.licitaia.core.platform.net.PlatformApi
 import com.licitaia.core.platform.net.PlatformException
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
 import com.licitaia.core.platform.net.RadarFiltroDto
+import com.licitaia.core.platform.net.RoboConfigDto
 import com.licitaia.core.platform.net.TenderDto
 import com.licitaia.core.platform.net.TenderPageDto
 import com.licitaia.core.platform.net.UsuarioDto
@@ -202,6 +204,26 @@ class PlatformRepository @Inject constructor(
 
     /** Anexos/arquivos da licitação (`GET /licitacoes/:id/arquivos`). */
     suspend fun tenderArquivos(id: String): Result<List<PlatformFile>> = authedRead { api.licitacaoArquivos(it, id) }
+
+    /** `POST /ai/tenders/:id/analyze` → inicia a análise por IA. Retorna o status do job. */
+    suspend fun analyzeTender(id: String): Result<String> = authedRead { api.analyzeTender(it, id).job?.status ?: "QUEUED" }
+
+    /** `GET /ai/tenders/:id/analysis` → (statusDoJob, temAnalise). */
+    suspend fun tenderAnalysisStatus(id: String): Result<Pair<String?, Boolean>> = authedRead {
+        val a = api.tenderAnalysis(it, id); a.job?.status to a.hasAnalysis
+    }
+
+    /** `GET /robo-lances/config/:id` (leitura). */
+    suspend fun roboConfig(id: String): Result<RoboConfigDto?> = authedRead { api.roboConfig(it, id) }
+
+    /** `GET /robo-lances/historico/:id` → nº de lances. */
+    suspend fun roboHistoricoCount(id: String): Result<Int> = authedRead { api.roboHistoricoCount(it, id) }
+
+    /** `GET /ia/chat-edital/:id/historico`. */
+    suspend fun chatHistorico(id: String): Result<List<ChatMsg>> = authedRead { api.chatHistorico(it, id) }
+
+    /** `POST /ia/chat-edital/:id` → envia pergunta ao edital. */
+    suspend fun chatPerguntar(id: String, mensagem: String): Result<Unit> = authedRead { api.chatPerguntar(it, id, mensagem) }
 
     /** `PUT /licitacoes/:id/favoritar` (alterna). Reflete no espelho local. Retorna o novo estado. */
     suspend fun toggleFavorita(id: String): Result<Boolean> = authedRead { token ->

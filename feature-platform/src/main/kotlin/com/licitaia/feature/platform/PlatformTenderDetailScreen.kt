@@ -11,11 +11,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.QuestionAnswer
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -45,6 +49,7 @@ import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
+import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
 
 @Composable
@@ -65,14 +70,12 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                 }
                 state.error != null -> ErrorState(message = state.error!!, onRetry = viewModel::load)
                 state.tender != null -> TenderDetail(
-                    t = state.tender!!,
-                    itens = state.itens,
-                    arquivos = state.arquivos,
-                    fromCache = state.fromCache,
-                    acting = state.acting,
+                    s = state,
                     onFavorite = viewModel::toggleFavorita,
                     onArchive = viewModel::toggleArquivar,
                     onHide = viewModel::toggleOcultar,
+                    onAnalyze = viewModel::analyze,
+                    onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
                     onOpenPortal = { url ->
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                             .onFailure { navigator.showMessage("Não foi possível abrir o portal.") }
@@ -85,21 +88,23 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
 
 @Composable
 private fun TenderDetail(
-    t: TenderDto,
-    itens: List<PlatformItem>,
-    arquivos: List<PlatformFile>,
-    fromCache: Boolean,
-    acting: Boolean,
+    s: PlatformDetailUi,
     onFavorite: () -> Unit,
     onArchive: () -> Unit,
     onHide: () -> Unit,
+    onAnalyze: () -> Unit,
+    onOpenQa: () -> Unit,
     onOpenPortal: (String) -> Unit,
 ) {
+    val t = s.tender ?: return
+    val itens = s.itens
+    val arquivos = s.arquivos
+    val acting = s.acting
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (fromCache) {
+        if (s.fromCache) {
             AlertBanner("Offline", "Mostrando a cópia salva; ações e detalhes completos voltam ao reconectar.", Tone.INFO)
         }
 
@@ -159,9 +164,9 @@ private fun TenderDetail(
             InfoRow("Participação", if (!t.urlProposta.isNullOrBlank()) "Proposta vinculada" else "Sem proposta vinculada")
         }
 
-        // Análise / IA (leitura)
-        LicitaCard(Modifier.fillMaxWidth()) {
-            Text("Análise do edital (IA)", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+        // Vale a pena participar? / Análise do edital por IA (ler + gerar)
+        LicitaCard(Modifier.fillMaxWidth(), accent = LicitaColors.Yellow) {
+            Text("Vale a pena? · Análise do edital (IA)", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
             Spacer(Modifier.height(8.dp))
             t.veredito?.takeIf { it.isNotBlank() }?.let { InfoRow("Veredito", it) }
             t.scoreRelevancia?.let { InfoRow("Relevância", "$it") }
@@ -169,9 +174,41 @@ private fun TenderDetail(
             val resumo = t.editalResumoIA?.takeIf { it.isNotBlank() }
             Spacer(Modifier.height(6.dp))
             Text(
-                resumo ?: "Nenhuma análise da plataforma ainda. Gerar análise com IA chega em breve no modo nuvem (já disponível no modo local).",
+                resumo ?: "Nenhuma análise da plataforma ainda. Toque em \"Analisar com IA\" para gerar (roda no servidor).",
                 style = MaterialTheme.typography.bodySmall, color = if (resumo != null) LicitaColors.TextSecondary else LicitaColors.TextMuted,
             )
+            if (s.analyzing) {
+                Spacer(Modifier.height(10.dp))
+                AlertBanner("IA analisando o edital…", "Status: ${s.analysisStatus ?: "na fila"}. Pode levar alguns segundos.", Tone.INFO, pulsing = true)
+            }
+            Spacer(Modifier.height(10.dp))
+            SecondaryButton(
+                if (s.analyzing) "Analisando…" else if (t.editalResumoIA.isNullOrBlank()) "Analisar com IA" else "Reanalisar com IA",
+                onAnalyze, Modifier.fillMaxWidth(), enabled = !s.analyzing, tone = Tone.INFO, icon = Icons.Outlined.Analytics,
+            )
+        }
+
+        // Pergunte ao edital (Q&A por IA)
+        LicitaCard(Modifier.fillMaxWidth(), onClick = onOpenQa) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.QuestionAnswer, contentDescription = null, tint = LicitaColors.Blue)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Pergunte ao edital", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                    Text("Tire dúvidas sobre prazos, exigências e documentos (IA)", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                }
+                Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null, tint = LicitaColors.TextMuted)
+            }
+        }
+
+        // Linha do tempo (derivada das datas e fase)
+        LicitaCard(Modifier.fillMaxWidth()) {
+            Text("Linha do tempo", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+            Spacer(Modifier.height(8.dp))
+            InfoRow("Publicação", PlatformFormat.dateTime(t.dataPublicacao))
+            InfoRow("Abertura", PlatformFormat.dateTime(t.dataAbertura))
+            InfoRow("Encerramento", PlatformFormat.dateTime(t.dataEncerramento))
+            t.fase?.let { InfoRow("Fase atual", it.replace('_', ' ')) }
         }
 
         // Itens
@@ -209,13 +246,30 @@ private fun TenderDetail(
             }
         }
 
-        // Próximos passos (ainda sem endpoint pronto/simples no modo nuvem)
+        // Robô de lance (leitura; armar/rodar = F4)
+        LicitaCard(Modifier.fillMaxWidth()) {
+            Text("Robô de lance", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+            Spacer(Modifier.height(8.dp))
+            val robo = s.roboConfig
+            if (robo == null) {
+                Text("Sem configuração de robô para esta licitação.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
+            } else {
+                InfoRow("Status", if (robo.ativo) "Armado" else "Desarmado")
+                robo.modoExecucao?.let { InfoRow("Modo", it) }
+                robo.estrategia?.let { InfoRow("Estratégia", it) }
+                InfoRow("Lances registrados", "${s.roboLances}")
+            }
+            Spacer(Modifier.height(6.dp))
+            Text("Armar/rodar o robô na nuvem chega em breve (F4). No modo local o robô já opera.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+        }
+
+        // Próximos passos (sem endpoint pronto na VPS)
         LicitaCard(Modifier.fillMaxWidth()) {
             Text("Em breve na nuvem", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Gerar proposta, robô de lance, mensagens do pregoeiro desta licitação e gerar análise por IA " +
-                    "estarão disponíveis no modo nuvem em breve. No modo local essas funções já operam.",
+                "Proposta comercial, acompanhar o pregão ao vivo e registrar o resultado (vencemos/perdemos) ainda não " +
+                    "têm endpoint na plataforma. No modo local essas funções já operam.",
                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted,
             )
         }

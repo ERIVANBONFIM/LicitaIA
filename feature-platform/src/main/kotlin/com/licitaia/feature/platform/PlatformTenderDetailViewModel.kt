@@ -6,9 +6,11 @@ import androidx.lifecycle.viewModelScope
 import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
+import com.licitaia.core.platform.net.RoboConfigDto
 import com.licitaia.core.platform.net.TenderDto
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +29,13 @@ data class PlatformDetailUi(
     val fromCache: Boolean = false,
     /** Ação de escrita (favoritar/arquivar/ocultar) em andamento. */
     val acting: Boolean = false,
+    /** Análise por IA: status do job (QUEUED/PROCESSING/DONE…) e se já há resultado. */
+    val analyzing: Boolean = false,
+    val analysisStatus: String? = null,
+    val hasAnalysis: Boolean = false,
+    /** Robô de lance (leitura). */
+    val roboConfig: RoboConfigDto? = null,
+    val roboLances: Int = 0,
 )
 
 @HiltViewModel
@@ -52,10 +61,19 @@ class PlatformTenderDetailViewModel @Inject constructor(
             result.fold(
                 onSuccess = { dto ->
                     _state.update { PlatformDetailUi(loading = false, tender = dto) }
-                    // Itens e arquivos em paralelo (best-effort; não bloqueiam o detalhe).
+                    // Itens, arquivos, status da análise e robô (best-effort; não bloqueiam o detalhe).
                     val itens = repository.tenderItens(id).getOrDefault(emptyList())
                     val arquivos = repository.tenderArquivos(id).getOrDefault(emptyList())
-                    _state.update { it.copy(itens = itens, arquivos = arquivos) }
+                    val analysis = repository.tenderAnalysisStatus(id).getOrNull()
+                    val robo = repository.roboConfig(id).getOrNull()
+                    val lances = repository.roboHistoricoCount(id).getOrDefault(0)
+                    _state.update {
+                        it.copy(
+                            itens = itens, arquivos = arquivos,
+                            analysisStatus = analysis?.first, hasAnalysis = analysis?.second ?: false,
+                            roboConfig = robo, roboLances = lances,
+                        )
+                    }
                 },
                 onFailure = { e ->
                     // Falha de rede/VPS: abre a cópia do espelho local se existir.
@@ -91,6 +109,34 @@ class PlatformTenderDetailViewModel @Inject constructor(
         }
     }
 
+    /** Dispara a análise por IA e acompanha o job (polling curto); ao concluir, recarrega o detalhe. */
+    fun analyze() {
+        if (_state.value.analyzing) return
+        _state.update { it.copy(analyzing = true, analysisStatus = "QUEUED") }
+        viewModelScope.launch {
+            val started = repository.analyzeTender(id)
+            if (started.isFailure) {
+                _state.update { it.copy(analyzing = false, analysisStatus = null) }
+                _events.send(started.exceptionOrNull()?.message ?: "Não foi possível iniciar a análise.")
+                return@launch
+            }
+            // Polling: até ~90s (18 x 5s). A análise roda no servidor (n8n/IA).
+            repeat(18) {
+                delay(5_000)
+                val (status, has) = repository.tenderAnalysisStatus(id).getOrNull() ?: (null to false)
+                _state.update { it.copy(analysisStatus = status) }
+                val terminal = has || (status?.uppercase() ?: "") in TERMINAL
+                if (terminal) {
+                    _events.send(if (has) "Análise concluída." else "Análise finalizada (${status ?: "sem resultado"}).")
+                    load() // recarrega veredito/resumo/score do detalhe
+                    return@launch
+                }
+            }
+            _state.update { it.copy(analyzing = false) }
+            _events.send("A análise está demorando; volte em instantes para ver o resultado.")
+        }
+    }
+
     private fun act(block: suspend () -> Result<String>) {
         if (_state.value.acting) return
         _state.update { it.copy(acting = true) }
@@ -101,6 +147,10 @@ class PlatformTenderDetailViewModel @Inject constructor(
             )
             _state.update { it.copy(acting = false) }
         }
+    }
+
+    private companion object {
+        val TERMINAL = setOf("DONE", "COMPLETED", "SUCCESS", "FAILED", "ERROR", "CONCLUIDO", "CONCLUIDA")
     }
 }
 

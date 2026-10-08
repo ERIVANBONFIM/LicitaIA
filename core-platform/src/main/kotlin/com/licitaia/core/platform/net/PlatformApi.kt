@@ -186,9 +186,46 @@ class PlatformApi(
     suspend fun ocultar(token: String, id: String): StatusResult =
         put(url("licitacoes/$id/ocultar"), StatusResult.serializer(), token) ?: StatusResult()
 
+    /** `POST /ai/tenders/:id/analyze` → inicia a análise (job). */
+    suspend fun analyzeTender(token: String, id: String): AnalysisStatusDto =
+        postJson(url("ai/tenders/$id/analyze"), "{}", AnalysisStatusDto.serializer(), token) ?: AnalysisStatusDto()
+
+    /** `GET /ai/tenders/:id/analysis` → estado/resultado da análise (polling). */
+    suspend fun tenderAnalysis(token: String, id: String): AnalysisStatusDto =
+        get(url("ai/tenders/$id/analysis"), AnalysisStatusDto.serializer(), token = token) ?: AnalysisStatusDto()
+
+    /** `GET /robo-lances/config/:id` → configuração do robô (leitura). */
+    suspend fun roboConfig(token: String, id: String): RoboConfigDto? =
+        get(url("robo-lances/config/$id"), RoboConfigDto.serializer(), token = token)
+
+    /** `GET /robo-lances/historico/:id` → nº de lances registrados. */
+    suspend fun roboHistoricoCount(token: String, id: String): Int =
+        (get(url("robo-lances/historico/$id"), ListSerializer(JsonObject.serializer()), token = token) ?: emptyList()).size
+
+    /** `GET /ia/chat-edital/:id/historico` → mensagens do "Pergunte ao edital". */
+    suspend fun chatHistorico(token: String, id: String): List<ChatMsg> =
+        (get(url("ia/chat-edital/$id/historico"), ChatHistoricoDto.serializer(), token = token)?.mensagens ?: emptyList())
+            .map {
+                ChatMsg(
+                    autor = it.str("role", "autor", "remetente") ?: "ia",
+                    texto = it.str("mensagem", "texto", "content", "conteudo", "resposta").orEmpty(),
+                )
+            }
+
+    /** `POST /ia/chat-edital/:id` → envia uma pergunta ao edital. */
+    suspend fun chatPerguntar(token: String, id: String, mensagem: String) {
+        val payload = json.encodeToString(ChatPerguntaRequest.serializer(), ChatPerguntaRequest(mensagem))
+        postJson(url("ia/chat-edital/$id"), payload, OkDto.serializer(), token)
+    }
+
     /** Lê a primeira chave string/number não-vazia dentre [keys] (tolerante a objetos/null aninhados). */
     private fun JsonObject.str(vararg keys: String): String? =
         keys.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.contentOrNull?.takeIf { s -> s.isNotBlank() && s != "null" } }
+
+    private suspend fun <T> postJson(url: HttpUrl, body: String, serializer: KSerializer<T>, token: String?): T? {
+        val request = baseRequest(url, token).post(body.toRequestBody(JSON_MEDIA)).build()
+        return execute(request, serializer)
+    }
 
     /** `GET /usuarios` → perfis/acessos da empresa (array). */
     suspend fun usuarios(token: String): List<UsuarioDto> =

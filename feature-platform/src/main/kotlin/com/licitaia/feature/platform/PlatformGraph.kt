@@ -21,4 +21,8 @@ fun NavGraphBuilder.platformGraph() {
         Routes.PLATFORM_TENDER,
         arguments = listOf(navArgument("platformId") { type = NavType.StringType }),
     ) { PlatformTenderDetailScreen() }
+    composable(
+        Routes.PLATFORM_TENDER_QA,
+        arguments = listOf(navArgument("platformId") { type = NavType.StringType }),
+    ) { PlatformQuestionsScreen() }
 }
