@@ -71,12 +71,13 @@ class DashboardViewModel @Inject constructor(
     private val platformSessions: PlatformSessionManager,
 ) : ViewModel() {
 
-    val state: StateFlow<DashboardUiState> = auth.session.flatMapLatest { session ->
-        if (session == null) {
-            // Sem sessão local: se houver sessão de PLATAFORMA, monta o dashboard com números da VPS.
-            platformSessions.session.flatMapLatest { plat ->
-                if (plat is PlatformSession.SignedIn) platformDashboard(plat) else flowOf(DashboardUiState(loading = false))
-            }
+    val state: StateFlow<DashboardUiState> =
+        combine(auth.session, platformSessions.session) { s, p -> s to p }.flatMapLatest { (session, plat) ->
+        // MODO PLATAFORMA tem prioridade: números vêm da VPS (mesmo com sessão sintética no holder).
+        if (plat is PlatformSession.SignedIn) {
+            platformDashboard(plat)
+        } else if (session == null) {
+            flowOf(DashboardUiState(loading = false))
         } else {
             val companyId = session.activeCompany.id
             val counts = combine(

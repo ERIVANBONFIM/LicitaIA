@@ -58,7 +58,6 @@ import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.SelectChip
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
-import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.theme.LicitaColors
 import com.licitaia.domain.model.Company
 import com.licitaia.domain.util.Formatters
@@ -75,9 +74,9 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
     LaunchedEffect(state.loggedIn) {
         if (state.loggedIn) navigator.onLoggedIn()
     }
-    // Login/cadastro na plataforma → vai para a lista de licitações sincronizadas da VPS.
+    // Login/cadastro na plataforma → abre o SHELL completo (dashboard/menu/barra) em modo plataforma.
     LaunchedEffect(state.platformSignedIn) {
-        if (state.platformSignedIn) navigator.navigate(Routes.PLATFORM_TENDERS)
+        if (state.platformSignedIn) navigator.onLoggedIn()
     }
 
     var entered by remember { mutableStateOf(false) }

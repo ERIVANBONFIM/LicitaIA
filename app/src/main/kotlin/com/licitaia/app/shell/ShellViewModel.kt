@@ -3,8 +3,9 @@ package com.licitaia.app.shell
 import androidx.biometric.BiometricPrompt
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.core.data.session.SessionHolder
 import com.licitaia.core.platform.PlatformRepository
-import com.licitaia.core.platform.net.UserDto
+import com.licitaia.core.platform.session.PlatformIdentity
 import com.licitaia.core.platform.session.PlatformSession
 import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.nav.ShellState
@@ -15,9 +16,6 @@ import com.licitaia.domain.model.AppNotification
 import com.licitaia.domain.model.AppSettings
 import com.licitaia.domain.model.AuthSession
 import com.licitaia.domain.model.Company
-import com.licitaia.domain.model.Segment
-import com.licitaia.domain.model.UserProfile
-import com.licitaia.domain.model.UserRole
 import com.licitaia.domain.repository.AppNotifier
 import com.licitaia.domain.repository.AuthRepository
 import com.licitaia.domain.repository.CompanyRepository
@@ -53,6 +51,7 @@ class ShellViewModel @Inject constructor(
     appNotifier: AppNotifier,
     private val identitySignOut: IdentitySignOut,
     private val platformRepository: PlatformRepository,
+    private val sessionHolder: SessionHolder,
     connectivity: ConnectivityMonitor,
 ) : ViewModel() {
 
@@ -70,28 +69,22 @@ class ShellViewModel @Inject constructor(
     private val _startRoute = MutableStateFlow<String?>(null)
     val startRoute: StateFlow<String?> = _startRoute.asStateFlow()
 
+    /**
+     * Sessão corrente (fonte única [SessionHolder]). No modo plataforma ela é uma sessão LOCAL SINTÉTICA
+     * derivada do usuário/empresa da VPS (identidade estável), gravada no holder para que o MESMO shell e as
+     * telas locais (Segurança, IA, Portais, Configurações) operem com a identidade da plataforma.
+     */
     val session: StateFlow<AuthSession?> = authRepository.session
 
     /** Sessão da plataforma (VPS). */
     val platformSession: StateFlow<PlatformSession> = platformRepository.session
 
-    /**
-     * true = app rodando em MODO PLATAFORMA (sessão da VPS, sem sessão local). Decide a fonte de dados e o
-     * roteamento dos menus para as telas da plataforma.
-     */
-    val platformMode: StateFlow<Boolean> =
-        combine(session, platformSession) { local, plat ->
-            local == null && plat is PlatformSession.SignedIn
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    /** true = app rodando em MODO PLATAFORMA (sessão sintética ativa). Decide o roteamento dos menus. */
+    private val _platformMode = MutableStateFlow(false)
+    val platformMode: StateFlow<Boolean> = _platformMode.asStateFlow()
 
-    /**
-     * Sessão que alimenta o SHELL (dashboard, barra, menu). No modo local é a sessão local; no modo plataforma
-     * é uma sessão sintética derivada do usuário/empresa da VPS, para reaproveitar o mesmo shell e telas.
-     */
-    val shellSession: StateFlow<AuthSession?> =
-        combine(session, platformSession) { local, plat ->
-            local ?: (plat as? PlatformSession.SignedIn)?.let { syntheticSession(it.user) }
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** Sessão que alimenta o shell (= a sessão corrente do holder; sintética no modo plataforma). */
+    val shellSession: StateFlow<AuthSession?> get() = session
 
     val settings: StateFlow<AppSettings> =
         settingsRepository.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
@@ -132,11 +125,18 @@ class ShellViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             val restored = runCatching { authRepository.restoreSession() }.getOrNull()
-            // Sessão de plataforma salva tem prioridade: abre direto no modo plataforma.
+            // Sessão de plataforma salva tem prioridade quando não há sessão local lembrada.
             val platformSignedIn = runCatching {
                 platformRepository.ensureSessionLoaded()
                 platformRepository.session.value is PlatformSession.SignedIn
             }.getOrDefault(false)
+            // Modo plataforma: grava a sessão sintética no holder para o shell/telas locais usarem a identidade da VPS.
+            if (restored == null && platformSignedIn) {
+                (platformRepository.session.value as? PlatformSession.SignedIn)?.let {
+                    sessionHolder.set(PlatformIdentity.session(it.user))
+                    _platformMode.value = true
+                }
+            }
             // Só aplica o bloqueio local quando a abertura será efetivamente no modo local (dashboard).
             if (restored != null && !platformSignedIn) {
                 // Abertura a frio com sessão lembrada: exige desbloqueio se houver proteção configurada.
@@ -145,32 +145,47 @@ class ShellViewModel @Inject constructor(
                 if (s.biometricLock || _hasPin.value) _locked.value = true
             }
             val target = when {
-                // Sessão de plataforma → abre o SHELL completo (dashboard/menu/barra) em modo plataforma.
-                platformSignedIn -> Routes.DASHBOARD
-                restored != null -> Routes.DASHBOARD
+                // Sessão de plataforma OU local → abre o SHELL completo (dashboard/menu/barra).
+                platformSignedIn || restored != null -> Routes.DASHBOARD
                 // Sem sessão: tela de login unificada (abre com o modo PLATAFORMA já selecionado).
                 else -> Routes.LOGIN
             }
-            // Diagnóstico de abertura (confirmar no aparelho: `adb logcat -s LicitaStart`).
             android.util.Log.i(
                 "LicitaStart",
-                "startRoute=$target (plataforma=$platformSignedIn, localLembrada=${restored != null})",
+                "startRoute=$target (plataforma=$platformSignedIn, localLembrada=${restored != null}, platformMode=${_platformMode.value})",
             )
             _startRoute.value = target
+
+            // Reflete login/logout de plataforma em tempo real na sessão sintética do holder.
+            platformRepository.session.collect { plat ->
+                when {
+                    plat is PlatformSession.SignedIn && _platformMode.value ->
+                        sessionHolder.set(PlatformIdentity.session(plat.user)) // mantém sincronizada
+                    plat is PlatformSession.SignedIn && sessionHolder.current == null -> {
+                        sessionHolder.set(PlatformIdentity.session(plat.user))
+                        _platformMode.value = true
+                    }
+                    plat !is PlatformSession.SignedIn && _platformMode.value -> {
+                        sessionHolder.set(null)
+                        _platformMode.value = false
+                    }
+                }
+            }
         }
         // Login / troca de empresa → restaura (ou cria) as sessões de pregão da empresa ativa.
+        // No modo plataforma NÃO semeia sessões de pregão locais (a identidade é sintética).
         viewModelScope.launch {
             session.map { it?.activeCompany?.id }.distinctUntilChanged().collect { companyId ->
-                if (companyId != null) runCatching { liveSessionManager.restoreOrSeed(companyId) }
-                else _locked.value = false
+                if (companyId != null && !_platformMode.value) runCatching { liveSessionManager.restoreOrSeed(companyId) }
+                else if (companyId == null) _locked.value = false
             }
         }
     }
 
     fun logout() {
         viewModelScope.launch {
-            // Modo plataforma: encerra a sessão da VPS (não há sessão local para limpar).
-            if (session.value == null && platformSession.value is PlatformSession.SignedIn) {
+            // Modo plataforma: encerra a sessão da VPS (o collector limpa o holder sintético e sai do modo).
+            if (_platformMode.value) {
                 runCatching { platformRepository.logout() }
                 return@launch
             }
@@ -179,36 +194,6 @@ class ShellViewModel @Inject constructor(
             // Conta Google: limpa o estado de credencial para que o próximo login mostre o seletor de contas.
             if (provider != null) runCatching { identitySignOut.signOut(provider) }
         }
-    }
-
-    /** Sessão sintética (somente para o shell) a partir do usuário/empresa da plataforma. */
-    private fun syntheticSession(user: UserDto): AuthSession {
-        val role = when (user.role.lowercase()) {
-            "admin" -> UserRole.ADMIN
-            "diretoria" -> UserRole.DIRETORIA
-            "financeiro" -> UserRole.FINANCEIRO
-            "tecnico", "viewer" -> UserRole.TECNICO
-            else -> UserRole.LICITACOES
-        }
-        val company = Company(
-            id = PLATFORM_COMPANY_ID,
-            name = user.empresa?.razaoSocial?.ifBlank { "Minha empresa" } ?: "Minha empresa",
-            tradeName = user.empresa?.razaoSocial?.ifBlank { "Minha empresa" } ?: "Minha empresa",
-            cnpj = user.empresa?.cnpj.orEmpty(),
-            segment = Segment.PERSONALIZADO,
-            uf = "",
-            city = "",
-        )
-        return AuthSession(
-            user = UserProfile(
-                id = PLATFORM_USER_ID,
-                name = user.nome.ifBlank { user.email },
-                email = user.email,
-                role = role,
-                companyIds = listOf(PLATFORM_COMPANY_ID),
-            ),
-            activeCompany = company,
-        )
     }
 
     fun switchCompany(companyId: Long, onResult: (Boolean) -> Unit) {
@@ -243,7 +228,8 @@ class ShellViewModel @Inject constructor(
     fun onForeground() {
         val since = backgroundAt ?: return
         backgroundAt = null
-        if (session.value == null || _locked.value) return
+        // No modo plataforma não aplicamos o bloqueio local (PIN/biometria é fluxo do modo local).
+        if (session.value == null || _locked.value || _platformMode.value) return
         viewModelScope.launch {
             _hasPin.value = runCatching { authRepository.hasPin() }.getOrDefault(false)
             val s = settings.value
@@ -274,11 +260,5 @@ class ShellViewModel @Inject constructor(
     fun unlock(result: BiometricPrompt.AuthenticationResult) {
         // O parâmetro não nulo é a prova: só o BiometricPrompt constrói um AuthenticationResult.
         _locked.value = false
-    }
-
-    private companion object {
-        // IDs sentinela da sessão sintética de plataforma (negativos: nunca colidem com IDs locais).
-        const val PLATFORM_USER_ID = -1000L
-        const val PLATFORM_COMPANY_ID = -1000L
     }
 }
