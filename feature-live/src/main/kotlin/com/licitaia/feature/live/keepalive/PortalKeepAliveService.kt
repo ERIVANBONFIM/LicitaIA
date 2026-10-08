@@ -114,7 +114,7 @@ class PortalKeepAliveService : Service() {
             val title = "Mantendo sessão do ${portalNames.joinToString(", ")} ativa"
             val body = "Recarrega sua página do portal a cada $minutes min. O portal ainda pode encerrar a sessão pelo tempo máximo dele; nesse caso você recebe um alerta."
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_stat_licitaia)
+                .setSmallIcon(R.drawable.ic_stat_licitapro)
                 .setContentTitle(title)
                 .setContentText(body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(body))

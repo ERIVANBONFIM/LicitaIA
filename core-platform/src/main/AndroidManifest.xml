@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- A plataforma LicitaPRO exige rede; o app já declara INTERNET. HTTPS-only vem do OkHttpClient de core-network. -->
+</manifest>

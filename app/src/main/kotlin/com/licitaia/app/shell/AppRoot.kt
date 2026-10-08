@@ -106,6 +106,7 @@ import com.licitaia.feature.dashboard.dashboardGraph
 import com.licitaia.feature.documents.documentsGraph
 import com.licitaia.feature.live.liveGraph
 import com.licitaia.feature.messages.messagesGraph
+import com.licitaia.feature.platform.platformGraph
 import com.licitaia.feature.radar.radarGraph
 import com.licitaia.feature.settings.settingsGraph
 import com.licitaia.feature.tender.tenderGraph
@@ -353,6 +354,7 @@ private fun MainShell(
                             competitionGraph()
                             auditGraph()
                             settingsGraph()
+                            platformGraph()
                         }
                     }
                     AnimatedVisibility(visible = showBottomBar) {

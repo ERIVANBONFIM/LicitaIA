@@ -12,6 +12,8 @@ android {
 
 dependencies {
     implementation(project(":core-ui"))
+    // Camada da plataforma LicitaPRO (sessão online opcional) para a opção "Entrar na plataforma".
+    implementation(project(":core-platform"))
     // GoogleAiAuthorizer: fluxo "Entrar com conta Google" (PendingIntent) da tela Provedor de IA.
     implementation(project(":core-ai"))
     // Navegador interno de portais (PortalWebPolicy/PortalWebSessions): "Sair do portal" limpa cookies.

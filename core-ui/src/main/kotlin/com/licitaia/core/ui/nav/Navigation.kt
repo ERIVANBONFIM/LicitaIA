@@ -57,6 +57,10 @@ object Routes {
     const val AI_SETTINGS = "settings/ai"
     const val SECURITY = "security"
 
+    /** Plataforma LicitaPRO (modo online opcional): login e lista de licitações sincronizadas da VPS. */
+    const val PLATFORM_LOGIN = "platform/login"
+    const val PLATFORM_TENDERS = "platform/licitacoes"
+
     fun radarEdit(radarId: Long = -1) = "radar/edit/$radarId"
     fun radarResults(radarId: Long) = "radar/results/$radarId"
     fun tender(tenderId: Long) = "tender/$tenderId"

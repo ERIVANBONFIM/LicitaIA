@@ -90,6 +90,7 @@ dependencies {
     implementation(project(":core-network"))
     implementation(project(":core-security"))
     implementation(project(":core-ai"))
+    implementation(project(":core-platform"))
     implementation(project(":connector-api"))
     implementation(project(":connector-mock"))
     implementation(project(":ai-provider-api"))
@@ -106,6 +107,7 @@ dependencies {
     implementation(project(":feature-audit"))
     implementation(project(":feature-messages"))
     implementation(project(":feature-competition"))
+    implementation(project(":feature-platform"))
 
     implementation(libs.androidx.fragment.ktx)
     implementation(libs.androidx.biometric)

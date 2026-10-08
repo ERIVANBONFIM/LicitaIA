@@ -145,6 +145,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         SectionHeader("Áreas")
+                        PlatformAccessRow()
                         NavRow(
                             Icons.Outlined.AutoAwesome, "Provedor de IA",
                             if (state.activeAi == AiProviderType.MOCK) "Configure um provedor real" else "Ativo: ${state.activeAi.label}", LicitaColors.Purple,
