@@ -260,6 +260,9 @@ class PlatformRepository @Inject constructor(
     /** `DELETE /documentos/:id`. */
     suspend fun deleteDocumento(id: String): Result<Unit> = authedRead { api.deleteDocumento(it, id) }
 
+    /** `GET /documentos/:id/download` → bytes do arquivo. */
+    suspend fun downloadDocumento(id: String): Result<ByteArray> = authedRead { api.downloadDocumento(it, id) }
+
     private suspend fun <T> authedRead(block: suspend (token: String) -> T): Result<T> = runCatching {
         val token = tokenStore.token() ?: throw PlatformException("Entre na plataforma.", PlatformException.Kind.UNAUTHORIZED)
         block(token)

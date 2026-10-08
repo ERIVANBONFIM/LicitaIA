@@ -6,7 +6,7 @@ package com.licitaia.domain.demo
  * se mistura com contas ou empresas reais. [EMAIL] continua reservado: login local/Google o recusam.
  */
 object DemoAccount {
-    const val EMAIL = "demo@licitaia.app"
+    const val EMAIL = "demo@licitapro.app"
     const val USER_NAME = "Visitante da demonstração"
     const val COMPANY_NAME = "Demo Telecom Ltda"
     const val COMPANY_TRADE_NAME = "Demo Telecom"

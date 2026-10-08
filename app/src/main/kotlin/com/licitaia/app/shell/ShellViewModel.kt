@@ -150,10 +150,6 @@ class ShellViewModel @Inject constructor(
                 // Sem sessão: tela de login unificada (abre com o modo PLATAFORMA já selecionado).
                 else -> Routes.LOGIN
             }
-            android.util.Log.i(
-                "LicitaStart",
-                "startRoute=$target (plataforma=$platformSignedIn, localLembrada=${restored != null}, platformMode=${_platformMode.value})",
-            )
             _startRoute.value = target
 
             // Reflete login/logout de plataforma em tempo real na sessão sintética do holder.

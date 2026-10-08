@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -114,6 +115,10 @@ class PlatformDocumentsViewModel @Inject constructor(
         }
     }
 
+    /** Baixa os bytes do documento (Bearer) e devolve ao chamador para salvar em Downloads (MediaStore). */
+    suspend fun fetchBytes(id: String): Result<ByteArray> = repository.downloadDocumento(id)
+    fun notify(msg: String) { viewModelScope.launch { _events.send(msg) } }
+
     private suspend fun reload() {
         repository.documentos().fold(
             onSuccess = { list -> _state.update { it.copy(busy = false, docs = list) } },
@@ -127,10 +132,28 @@ fun PlatformDocumentsScreen(viewModel: PlatformDocumentsViewModel = hiltViewMode
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val navigator = LocalAppNavigator.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var pending by remember { mutableStateOf<PendingUpload?>(null) }
+    var downloading by remember { mutableStateOf(false) }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.events.collect { navigator.showMessage(it) }
+    }
+
+    val baixar: (DocumentoDto) -> Unit = { d ->
+        if (!downloading) {
+            downloading = true
+            scope.launch {
+                viewModel.fetchBytes(d.id).fold(
+                    onSuccess = { bytes ->
+                        val saved = runCatching { saveToDownloads(context, bytes, downloadFileName(d)) }.getOrNull()
+                        viewModel.notify(if (saved != null) "Salvo em Downloads: $saved" else "Baixado, mas não foi possível salvar em Downloads.")
+                    },
+                    onFailure = { viewModel.notify(it.message ?: "Não foi possível baixar o documento.") },
+                )
+                downloading = false
+            }
+        }
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -165,7 +188,7 @@ fun PlatformDocumentsScreen(viewModel: PlatformDocumentsViewModel = hiltViewMode
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item { Spacer(Modifier.height(4.dp)) }
-                    items(state.docs, key = { it.id }) { DocCard(it, enabled = !state.busy) { viewModel.delete(it.id) } }
+                    items(state.docs, key = { it.id }) { DocCard(it, enabled = !state.busy && !downloading, onDownload = { baixar(it) }, onDelete = { viewModel.delete(it.id) }) }
                     item { Spacer(Modifier.height(80.dp)) }
                 }
             }
@@ -218,10 +241,11 @@ private fun queryDisplayName(context: android.content.Context, uri: Uri): String
     }.getOrNull()
 
 @Composable
-private fun DocCard(d: DocumentoDto, enabled: Boolean, onDelete: () -> Unit) {
+private fun DocCard(d: DocumentoDto, enabled: Boolean, onDownload: () -> Unit, onDelete: () -> Unit) {
     LicitaCard(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(d.nome.ifBlank { "Documento" }, style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            IconButton(onClick = onDownload, enabled = enabled) { Icon(Icons.Outlined.Download, contentDescription = "Baixar", tint = LicitaColors.Blue) }
             IconButton(onClick = onDelete, enabled = enabled) { Icon(Icons.Outlined.Delete, contentDescription = "Excluir", tint = LicitaColors.RedBright) }
         }
         Spacer(Modifier.height(4.dp))
@@ -232,4 +256,47 @@ private fun DocCard(d: DocumentoDto, enabled: Boolean, onDelete: () -> Unit) {
             StatusBadge(it, if (it.equals("regular", true)) Tone.SUCCESS else Tone.WARNING)
         }
     }
+}
+
+/** Nome do arquivo para salvar: usa o nome do doc + extensão plausível (default .pdf). */
+private fun downloadFileName(d: DocumentoDto): String {
+    val base = d.nome.ifBlank { "documento" }.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+    return if (base.contains('.')) base else "$base.pdf"
+}
+
+private fun mimeOf(fileName: String): String = when (fileName.substringAfterLast('.', "").lowercase()) {
+    "pdf" -> "application/pdf"
+    "png" -> "image/png"
+    "jpg", "jpeg" -> "image/jpeg"
+    "webp" -> "image/webp"
+    "doc" -> "application/msword"
+    "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    "xml" -> "application/xml"
+    "zip" -> "application/zip"
+    else -> "application/octet-stream"
+}
+
+/** Salva os bytes em Downloads (MediaStore no 29+; app-external em 26-28). Retorna o local salvo. */
+private fun saveToDownloads(context: android.content.Context, bytes: ByteArray, fileName: String): String {
+    val mime = mimeOf(fileName)
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+        val resolver = context.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+            put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("Downloads indisponível.")
+        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("Falha ao escrever.")
+        values.clear()
+        values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        return "Downloads/$fileName"
+    }
+    // 26-28: pasta de Downloads do app (sem permissão), aberta pelo gerenciador de arquivos.
+    val dir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+    val file = java.io.File(dir, fileName)
+    file.writeBytes(bytes)
+    return file.absolutePath
 }

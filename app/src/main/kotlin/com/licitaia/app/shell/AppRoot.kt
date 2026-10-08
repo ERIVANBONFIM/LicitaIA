@@ -391,6 +391,7 @@ private fun MainShell(
                     AnimatedVisibility(visible = showBottomBar) {
                         BottomBar(
                             currentRoute = currentRoute,
+                            platformMode = platformMode,
                             critical = shell.criticalPending,
                             onNavigate = navigator::navigateTop,
                             onMore = navigator::openDrawer,
@@ -511,7 +512,7 @@ private fun MainShell(
 }
 
 @Composable
-private fun BottomBar(currentRoute: String?, critical: Boolean, onNavigate: (String) -> Unit, onMore: () -> Unit) {
+private fun BottomBar(currentRoute: String?, platformMode: Boolean, critical: Boolean, onNavigate: (String) -> Unit, onMore: () -> Unit) {
     val colors = NavigationBarItemDefaults.colors(
         selectedIconColor = LicitaColors.BlueBright,
         selectedTextColor = LicitaColors.BlueBright,
@@ -519,17 +520,19 @@ private fun BottomBar(currentRoute: String?, critical: Boolean, onNavigate: (Str
         unselectedIconColor = LicitaColors.TextSecondary,
         unselectedTextColor = LicitaColors.TextSecondary,
     )
+    // No modo plataforma os itens redirecionam (ex.: Radar→platform/radar): destacar comparando com a rota resolvida.
+    fun sel(route: String) = currentRoute == resolvePlatformRoute(route, platformMode)
     NavigationBar(containerColor = LicitaColors.Surface, tonalElevation = 0.dp) {
         NavigationBarItem(
-            selected = currentRoute == Routes.DASHBOARD, onClick = { onNavigate(Routes.DASHBOARD) }, colors = colors,
+            selected = sel(Routes.DASHBOARD), onClick = { onNavigate(Routes.DASHBOARD) }, colors = colors,
             icon = { Icon(Icons.Outlined.Home, contentDescription = null) }, label = { Text("Início") },
         )
         NavigationBarItem(
-            selected = currentRoute == Routes.RADAR, onClick = { onNavigate(Routes.RADAR) }, colors = colors,
+            selected = sel(Routes.RADAR), onClick = { onNavigate(Routes.RADAR) }, colors = colors,
             icon = { Icon(Icons.Outlined.Radar, contentDescription = null) }, label = { Text("Radar") },
         )
         NavigationBarItem(
-            selected = currentRoute == Routes.LIVE, onClick = { onNavigate(Routes.LIVE) }, colors = colors,
+            selected = sel(Routes.LIVE), onClick = { onNavigate(Routes.LIVE) }, colors = colors,
             icon = {
                 Box {
                     Icon(Icons.Outlined.Gavel, contentDescription = null)
@@ -539,7 +542,7 @@ private fun BottomBar(currentRoute: String?, critical: Boolean, onNavigate: (Str
             label = { Text("Pregões") },
         )
         NavigationBarItem(
-            selected = currentRoute == Routes.ROBOT, onClick = { onNavigate(Routes.ROBOT) }, colors = colors,
+            selected = sel(Routes.ROBOT), onClick = { onNavigate(Routes.ROBOT) }, colors = colors,
             icon = { Icon(Icons.Outlined.SmartToy, contentDescription = null) }, label = { Text("Robô") },
         )
         NavigationBarItem(

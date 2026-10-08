@@ -361,6 +361,28 @@ class PlatformApi(
         execute(request, OkDto.serializer())
     }
 
+    /** `GET /documentos/:id/download` → bytes do arquivo (Bearer). Erros em pt-BR como nas demais rotas. */
+    suspend fun downloadDocumento(token: String, id: String): ByteArray =
+        getBytes(url("documentos/$id/download"), token)
+
+    private suspend fun getBytes(url: HttpUrl, token: String?): ByteArray = withContext(Dispatchers.IO) {
+        val request = baseRequest(url, token).get().build()
+        val response = try {
+            client.newCall(request).await()
+        } catch (e: SocketTimeoutException) {
+            throw PlatformException("A plataforma demorou demais para responder. Tente novamente.", PlatformException.Kind.TIMEOUT, cause = e)
+        } catch (e: UnknownHostException) {
+            throw PlatformException("Sem conexão com a plataforma. Verifique sua internet.", PlatformException.Kind.OFFLINE, cause = e)
+        } catch (e: IOException) {
+            if (e is PlatformException) throw e
+            throw PlatformException("Não foi possível conectar à plataforma. Verifique sua internet.", PlatformException.Kind.OFFLINE, cause = e)
+        }
+        response.use { r ->
+            if (!r.isSuccessful) throw httpError(r)
+            r.body?.bytes() ?: throw PlatformException("Arquivo vazio.", PlatformException.Kind.INVALID_RESPONSE, r.code)
+        }
+    }
+
     /** Lê a primeira chave string/number não-vazia dentre [keys] (tolerante a objetos/null aninhados). */
     private fun JsonObject.str(vararg keys: String): String? =
         keys.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.contentOrNull?.takeIf { s -> s.isNotBlank() && s != "null" } }
