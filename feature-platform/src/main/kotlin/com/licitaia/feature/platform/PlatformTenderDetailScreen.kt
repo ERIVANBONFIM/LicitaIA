@@ -20,6 +20,7 @@ import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.QuestionAnswer
+import androidx.compose.material.icons.outlined.RequestQuote
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -75,6 +76,7 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     onArchive = viewModel::toggleArquivar,
                     onHide = viewModel::toggleOcultar,
                     onAnalyze = viewModel::analyze,
+                    onGerarProposta = viewModel::gerarProposta,
                     onRegisterResult = viewModel::registrarResultado,
                     onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
                     onOpenPortal = { url ->
@@ -94,6 +96,7 @@ private fun TenderDetail(
     onArchive: () -> Unit,
     onHide: () -> Unit,
     onAnalyze: () -> Unit,
+    onGerarProposta: () -> Unit,
     onRegisterResult: (String) -> Unit,
     onOpenQa: () -> Unit,
     onOpenPortal: (String) -> Unit,
@@ -181,14 +184,37 @@ private fun TenderDetail(
                 resumo ?: "Nenhuma análise da plataforma ainda. Toque em \"Analisar com IA\" para gerar (roda no servidor).",
                 style = MaterialTheme.typography.bodySmall, color = if (resumo != null) LicitaColors.TextSecondary else LicitaColors.TextMuted,
             )
+            if (t.editalTexto.isNullOrBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text("Sem texto do edital ainda — a IA usará os metadados. Você pode abrir no portal para obter o edital.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+            }
             if (s.analyzing) {
                 Spacer(Modifier.height(10.dp))
-                AlertBanner("IA analisando o edital…", "Status: ${s.analysisStatus ?: "na fila"}. Pode levar alguns segundos.", Tone.INFO, pulsing = true)
+                AlertBanner("Analisando no aparelho…", "${s.analysisStatus ?: "Rodando a IA local"} (usa a sua chave de IA; nenhuma chave sobe para a nuvem).", Tone.INFO, pulsing = true)
             }
             Spacer(Modifier.height(10.dp))
             SecondaryButton(
-                if (s.analyzing) "Analisando…" else if (t.editalResumoIA.isNullOrBlank()) "Analisar com IA" else "Reanalisar com IA",
+                if (s.analyzing) "Analisando…" else if (t.editalResumoIA.isNullOrBlank()) "Analisar com IA (no aparelho)" else "Reanalisar com IA",
                 onAnalyze, Modifier.fillMaxWidth(), enabled = !s.analyzing, tone = Tone.INFO, icon = Icons.Outlined.Analytics,
+            )
+        }
+
+        // Proposta comercial (gerada no aparelho; metadados salvos na VPS)
+        LicitaCard(Modifier.fillMaxWidth(), accent = LicitaColors.Green) {
+            Text("Proposta comercial", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                s.proposalSummary ?: "Gere uma proposta inicial com IA no aparelho (usa a sua chave). O conteúdo fica no aparelho; os metadados são salvos na plataforma.",
+                style = MaterialTheme.typography.bodySmall, color = if (s.proposalSummary != null) LicitaColors.TextSecondary else LicitaColors.TextMuted,
+            )
+            if (s.generatingProposal) {
+                Spacer(Modifier.height(10.dp))
+                AlertBanner("Gerando proposta no aparelho…", "Rodando a IA local.", Tone.INFO, pulsing = true)
+            }
+            Spacer(Modifier.height(10.dp))
+            SecondaryButton(
+                if (s.generatingProposal) "Gerando…" else "Gerar proposta (IA)",
+                onGerarProposta, Modifier.fillMaxWidth(), enabled = !s.generatingProposal, tone = Tone.SUCCESS, icon = Icons.Outlined.RequestQuote,
             )
         }
 
@@ -298,8 +324,7 @@ private fun TenderDetail(
             Text("Em breve na nuvem", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Proposta comercial (geração por IA está sem crédito na VPS) e acompanhar o pregão ao vivo chegam em " +
-                    "breve. No modo local essas funções já operam.",
+                "Acompanhar o pregão ao vivo (sessão/tempo real) ainda não tem endpoint na plataforma. No modo local já opera.",
                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted,
             )
         }

@@ -210,6 +210,8 @@ data class TenderDto(
     val precoSugeridoIA: String? = null,
     /** Margem estimada pela IA (decimal como string). */
     val margemEstimadaIA: String? = null,
+    /** Texto integral do edital coletado pela VPS (só no detalhe; pode ser grande/null). */
+    val editalTexto: String? = null,
     val updatedAt: String? = null,
     val empresaId: String? = null,
 )
@@ -310,6 +312,26 @@ data class CertidaoDto(
 /** `POST /mensagens` body (envio no detalhe/menu). */
 @Serializable
 data class MensagemRequest(val licitacaoId: String? = null, val conteudo: String)
+
+/** `POST /licitacoes/:id/analise-local` → grava o resultado da análise feita no aparelho (não usa IA no servidor). */
+@Serializable
+data class AnaliseLocalRequest(
+    val veredito: String? = null,
+    val scoreRelevancia: Int? = null,
+    val scoreRisco: Int? = null,
+    val editalResumoIA: String? = null,
+    val precoSugeridoIA: String? = null,
+    val margemEstimadaIA: String? = null,
+)
+
+/** `POST /propostas` → grava metadados da proposta (conteúdo completo fica no aparelho por ora). */
+@Serializable
+data class PropostaCreateRequest(
+    val licitacaoId: String,
+    val valorTotal: Double,
+    val status: String = "gerada_ia",
+    val geradaPorIA: Boolean = true,
+)
 
 /** Item da licitação (shape variável no backend; extraído de forma tolerante). */
 data class PlatformItem(

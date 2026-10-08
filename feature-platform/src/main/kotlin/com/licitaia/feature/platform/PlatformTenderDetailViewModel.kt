@@ -3,22 +3,36 @@ package com.licitaia.feature.platform
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.ai.api.AiGateway
+import com.licitaia.ai.api.TenderAnalysisRequest
 import com.licitaia.core.platform.PlatformRepository
+import com.licitaia.core.platform.net.AnaliseLocalRequest
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
+import com.licitaia.core.platform.net.PropostaCreateRequest
 import com.licitaia.core.platform.net.ResultadoDto
 import com.licitaia.core.platform.net.ResultadoRequest
 import com.licitaia.core.platform.net.RoboConfigDto
 import com.licitaia.core.platform.net.TenderDto
+import com.licitaia.core.platform.session.PlatformIdentity
+import com.licitaia.core.platform.session.PlatformSession
+import com.licitaia.domain.model.Company
+import com.licitaia.domain.model.Modality
+import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.Tender
+import com.licitaia.domain.model.TenderAnalysis
+import com.licitaia.domain.model.TenderStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.Instant
 import javax.inject.Inject
 
 data class PlatformDetailUi(
@@ -31,10 +45,12 @@ data class PlatformDetailUi(
     val fromCache: Boolean = false,
     /** Ação de escrita (favoritar/arquivar/ocultar) em andamento. */
     val acting: Boolean = false,
-    /** Análise por IA: status do job (QUEUED/PROCESSING/DONE…) e se já há resultado. */
+    /** Análise por IA ON-DEVICE em andamento. */
     val analyzing: Boolean = false,
     val analysisStatus: String? = null,
-    val hasAnalysis: Boolean = false,
+    /** Geração de proposta ON-DEVICE em andamento + resumo da última gerada (conteúdo fica no aparelho). */
+    val generatingProposal: Boolean = false,
+    val proposalSummary: String? = null,
     /** Robô de lance (leitura). */
     val roboConfig: RoboConfigDto? = null,
     val roboLances: Int = 0,
@@ -45,6 +61,7 @@ data class PlatformDetailUi(
 @HiltViewModel
 class PlatformTenderDetailViewModel @Inject constructor(
     private val repository: PlatformRepository,
+    private val gateway: AiGateway,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -65,23 +82,16 @@ class PlatformTenderDetailViewModel @Inject constructor(
             result.fold(
                 onSuccess = { dto ->
                     _state.update { PlatformDetailUi(loading = false, tender = dto) }
-                    // Itens, arquivos, status da análise e robô (best-effort; não bloqueiam o detalhe).
                     val itens = repository.tenderItens(id).getOrDefault(emptyList())
                     val arquivos = repository.tenderArquivos(id).getOrDefault(emptyList())
-                    val analysis = repository.tenderAnalysisStatus(id).getOrNull()
                     val robo = repository.roboConfig(id).getOrNull()
                     val lances = repository.roboHistoricoCount(id).getOrDefault(0)
                     val resultado = repository.resultado(id).getOrNull()
                     _state.update {
-                        it.copy(
-                            itens = itens, arquivos = arquivos,
-                            analysisStatus = analysis?.first, hasAnalysis = analysis?.second ?: false,
-                            roboConfig = robo, roboLances = lances, resultado = resultado,
-                        )
+                        it.copy(itens = itens, arquivos = arquivos, roboConfig = robo, roboLances = lances, resultado = resultado)
                     }
                 },
                 onFailure = { e ->
-                    // Falha de rede/VPS: abre a cópia do espelho local se existir.
                     val cached = repository.tenderFromMirror(id)
                     if (cached != null) {
                         _state.update { PlatformDetailUi(loading = false, tender = cached.toDto(), fromCache = true) }
@@ -90,6 +100,76 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     }
                 },
             )
+        }
+    }
+
+    /**
+     * Análise do edital ON-DEVICE: usa o motor de IA local (chave do aparelho; heurística se não houver chave),
+     * sobre o texto do edital vindo da VPS. Depois grava o resultado textual na VPS (sem subir chave).
+     */
+    fun analyze() {
+        val dto = _state.value.tender ?: return
+        if (_state.value.analyzing) return
+        val company = currentCompany()
+        if (company == null) { viewModelScope.launch { _events.send("Entre na plataforma para analisar.") }; return }
+        _state.update { it.copy(analyzing = true, analysisStatus = "Analisando no aparelho…") }
+        viewModelScope.launch {
+            val analysis = runCatching {
+                withContext(Dispatchers.Default) {
+                    val tender = dto.toDomainTender(company.id)
+                    val request = TenderAnalysisRequest(
+                        tender = tender, company = company, documents = emptyList(),
+                        editalText = dto.editalTexto?.takeIf { it.isNotBlank() }, now = System.currentTimeMillis(),
+                    )
+                    gateway.current().analyzeTender(request)
+                }
+            }.getOrElse { e ->
+                _state.update { it.copy(analyzing = false, analysisStatus = null) }
+                _events.send(e.message ?: "Não foi possível analisar no aparelho.")
+                return@launch
+            }
+            // Reflete no detalhe exibido.
+            val req = analysis.toAnaliseLocal()
+            _state.update {
+                it.copy(
+                    analyzing = false, analysisStatus = null,
+                    tender = it.tender?.copy(
+                        veredito = req.veredito, scoreRelevancia = req.scoreRelevancia, scoreRisco = req.scoreRisco,
+                        editalResumoIA = req.editalResumoIA, precoSugeridoIA = req.precoSugeridoIA, margemEstimadaIA = req.margemEstimadaIA,
+                    ),
+                )
+            }
+            val heur = analysis.heuristicOnly
+            _events.send(if (heur) "Análise local (heurística). Configure uma chave de IA para uma análise mais rica." else "Análise concluída no aparelho.")
+            // Grava na VPS para a equipe ver (best-effort; não quebra se 404/offline).
+            repository.saveAnaliseLocal(id, req)
+        }
+    }
+
+    /** Gera a proposta ON-DEVICE (chave local) e grava os metadados na VPS; o conteúdo fica no aparelho. */
+    fun gerarProposta() {
+        val dto = _state.value.tender ?: return
+        if (_state.value.generatingProposal) return
+        val company = currentCompany()
+        if (company == null) { viewModelScope.launch { _events.send("Entre na plataforma para gerar a proposta.") }; return }
+        _state.update { it.copy(generatingProposal = true) }
+        viewModelScope.launch {
+            val draft = runCatching {
+                withContext(Dispatchers.Default) {
+                    gateway.current().draftProposal(dto.toDomainTender(company.id), null, company)
+                }
+            }.getOrElse { e ->
+                _state.update { it.copy(generatingProposal = false) }
+                _events.send(e.message ?: "Não foi possível gerar a proposta no aparelho.")
+                return@launch
+            }
+            val total = draft.items.sumOf { it.total }
+            val resumo = "Proposta gerada no aparelho: ${draft.items.size} item(ns) · total ${PlatformFmt.money(total)} · " +
+                "entrega ${draft.deliveryDays}d · validade ${draft.validityDays}d."
+            _state.update { it.copy(generatingProposal = false, proposalSummary = resumo) }
+            _events.send("Proposta gerada no aparelho.")
+            // Grava metadados na VPS (conteúdo completo fica no aparelho por ora).
+            repository.criarProposta(PropostaCreateRequest(licitacaoId = id, valorTotal = total))
         }
     }
 
@@ -114,35 +194,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
         }
     }
 
-    /** Dispara a análise por IA e acompanha o job (polling curto); ao concluir, recarrega o detalhe. */
-    fun analyze() {
-        if (_state.value.analyzing) return
-        _state.update { it.copy(analyzing = true, analysisStatus = "QUEUED") }
-        viewModelScope.launch {
-            val started = repository.analyzeTender(id)
-            if (started.isFailure) {
-                _state.update { it.copy(analyzing = false, analysisStatus = null) }
-                _events.send(started.exceptionOrNull()?.message ?: "Não foi possível iniciar a análise.")
-                return@launch
-            }
-            // Polling: até ~90s (18 x 5s). A análise roda no servidor (n8n/IA).
-            repeat(18) {
-                delay(5_000)
-                val (status, has) = repository.tenderAnalysisStatus(id).getOrNull() ?: (null to false)
-                _state.update { it.copy(analysisStatus = status) }
-                val terminal = has || (status?.uppercase() ?: "") in TERMINAL
-                if (terminal) {
-                    _events.send(if (has) "Análise concluída." else "Análise finalizada (${status ?: "sem resultado"}).")
-                    load() // recarrega veredito/resumo/score do detalhe
-                    return@launch
-                }
-            }
-            _state.update { it.copy(analyzing = false) }
-            _events.send("A análise está demorando; volte em instantes para ver o resultado.")
-        }
-    }
-
-    /** Registra o resultado do pregão (vencida/perdida/desistida/anulada) e recarrega. */
+    /** Registra o resultado do pregão e recarrega. */
     fun registrarResultado(resultado: String) {
         if (_state.value.acting) return
         _state.update { it.copy(acting = true) }
@@ -159,6 +211,9 @@ class PlatformTenderDetailViewModel @Inject constructor(
         }
     }
 
+    private fun currentCompany(): Company? =
+        (repository.session.value as? PlatformSession.SignedIn)?.user?.let { PlatformIdentity.session(it).activeCompany }
+
     private fun act(block: suspend () -> Result<String>) {
         if (_state.value.acting) return
         _state.update { it.copy(acting = true) }
@@ -170,11 +225,66 @@ class PlatformTenderDetailViewModel @Inject constructor(
             _state.update { it.copy(acting = false) }
         }
     }
+}
 
-    private companion object {
-        val TERMINAL = setOf("DONE", "COMPLETED", "SUCCESS", "FAILED", "ERROR", "CONCLUIDO", "CONCLUIDA")
+/** Mapeia o DTO de fio para um [Tender] de domínio (para o motor de IA on-device). */
+private fun TenderDto.toDomainTender(companyId: Long): Tender = Tender(
+    id = 0,
+    companyId = companyId,
+    opportunityId = id,
+    portal = mapPortal(portal),
+    number = numero,
+    agency = orgao,
+    objectDescription = objeto,
+    modality = mapModality(modalidade),
+    segment = com.licitaia.domain.model.Segment.PERSONALIZADO,
+    uf = estado.orEmpty(),
+    city = cidade.orEmpty(),
+    estimatedValue = valorEstimado?.toDoubleOrNull() ?: 0.0,
+    proposalDeadline = parseIso(dataEncerramento),
+    sessionAt = parseIso(dataAbertura),
+    status = TenderStatus.EM_ANALISE,
+    editalChars = editalTexto?.length ?: 0,
+    editalTextPath = if (!editalTexto.isNullOrBlank()) "vps" else null,
+    uasg = uasg,
+)
+
+private fun TenderAnalysis.toAnaliseLocal(): AnaliseLocalRequest {
+    val risco = maxOf(fit.operationalRisk.ordinal, fit.contractualRisk.ordinal, fit.documentaryRisk.ordinal)
+    return AnaliseLocalRequest(
+        veredito = recommendation.name,
+        scoreRelevancia = fit.overall,
+        scoreRisco = (risco * 30 + 10).coerceAtMost(100),
+        editalResumoIA = summary,
+        precoSugeridoIA = priceRange.suggested.toString(),
+        margemEstimadaIA = fit.estimatedMarginPct.toString(),
+    )
+}
+
+private fun mapPortal(p: String?): Portal {
+    val s = p?.lowercase().orEmpty()
+    return when {
+        s.contains("compras") || s.contains("comprasnet") -> Portal.COMPRAS_GOV
+        s.contains("pncp") -> Portal.PNCP
+        s.contains("bll") -> Portal.BLL
+        s.contains("licitanet") -> Portal.LICITANET
+        else -> Portal.PNCP
     }
 }
+
+private fun mapModality(m: String?): Modality {
+    val s = m?.lowercase().orEmpty()
+    return when {
+        s.contains("preg") -> Modality.PREGAO_ELETRONICO
+        s.contains("dispensa") -> Modality.DISPENSA_ELETRONICA
+        s.contains("concorr") -> Modality.CONCORRENCIA
+        s.contains("credenc") -> Modality.CREDENCIAMENTO
+        else -> Modality.PREGAO_ELETRONICO
+    }
+}
+
+private fun parseIso(iso: String?): Long =
+    if (iso.isNullOrBlank()) 0L else runCatching { Instant.parse(iso).toEpochMilli() }.getOrDefault(0L)
 
 /** Reconstrói um [TenderDto] mínimo a partir do espelho local (campos que a tela de detalhe usa). */
 private fun com.licitaia.core.platform.db.PlatformTenderEntity.toDto(): TenderDto = TenderDto(
@@ -199,3 +309,8 @@ private fun com.licitaia.core.platform.db.PlatformTenderEntity.toDto(): TenderDt
     updatedAt = updatedAt,
     empresaId = empresaId,
 )
+
+/** Formatação monetária compacta para mensagens (a UI usa PlatformFormat). */
+private object PlatformFmt {
+    fun money(v: Double): String = "R$ " + String.format(java.util.Locale("pt", "BR"), "%,.2f", v)
+}

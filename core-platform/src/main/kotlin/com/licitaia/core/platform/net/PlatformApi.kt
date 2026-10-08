@@ -243,6 +243,18 @@ class PlatformApi(
         postJson(url("licitacoes/$id/resultado"), payload, OkDto.serializer(), token)
     }
 
+    /** `POST /licitacoes/:id/analise-local` → grava o resultado da análise feita no aparelho. */
+    suspend fun saveAnaliseLocal(token: String, id: String, req: AnaliseLocalRequest) {
+        val payload = json.encodeToString(AnaliseLocalRequest.serializer(), req)
+        postJson(url("licitacoes/$id/analise-local"), payload, OkDto.serializer(), token)
+    }
+
+    /** `POST /propostas` → grava metadados da proposta (conteúdo fica no aparelho). */
+    suspend fun criarProposta(token: String, req: PropostaCreateRequest) {
+        val payload = json.encodeToString(PropostaCreateRequest.serializer(), req)
+        postJson(url("propostas"), payload, OkDto.serializer(), token)
+    }
+
     /** `POST /mensagens` {licitacaoId?, conteudo}. */
     suspend fun enviarMensagem(token: String, licitacaoId: String?, conteudo: String) {
         val payload = json.encodeToString(MensagemRequest.serializer(), MensagemRequest(licitacaoId, conteudo))

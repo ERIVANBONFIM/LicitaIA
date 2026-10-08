@@ -6,8 +6,10 @@ import com.licitaia.core.platform.net.ConcorrenteDto
 import com.licitaia.core.platform.net.DocumentoDto
 import com.licitaia.core.platform.net.EmpresaDetailDto
 import com.licitaia.core.platform.net.HealthDto
+import com.licitaia.core.platform.net.AnaliseLocalRequest
 import com.licitaia.core.platform.net.AuditoriaItemDto
 import com.licitaia.core.platform.net.CertidaoDto
+import com.licitaia.core.platform.net.PropostaCreateRequest
 import com.licitaia.core.platform.net.ChatMsg
 import com.licitaia.core.platform.net.MensagemDto
 import com.licitaia.core.platform.net.ResultadoDto
@@ -219,6 +221,12 @@ class PlatformRepository @Inject constructor(
 
     /** `POST /licitacoes/:id/resultado`. */
     suspend fun registrarResultado(id: String, req: ResultadoRequest): Result<Unit> = authedRead { api.registrarResultado(it, id, req) }
+
+    /** `POST /licitacoes/:id/analise-local` → grava a análise feita no aparelho (falha tratada pelo chamador). */
+    suspend fun saveAnaliseLocal(id: String, req: AnaliseLocalRequest): Result<Unit> = authedRead { api.saveAnaliseLocal(it, id, req) }
+
+    /** `POST /propostas` → grava metadados da proposta gerada no aparelho. */
+    suspend fun criarProposta(req: PropostaCreateRequest): Result<Unit> = authedRead { api.criarProposta(it, req) }
 
     /** `POST /documentos` (multipart). */
     suspend fun uploadDocumento(bytes: ByteArray, fileName: String, nome: String, categoria: String, validade: String?): Result<Unit> =

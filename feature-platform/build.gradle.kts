@@ -13,6 +13,8 @@ android {
 dependencies {
     implementation(project(":core-ui"))
     implementation(project(":core-platform"))
+    // Motor de IA on-device (análise/proposta com a chave local do aparelho).
+    implementation(project(":ai-provider-api"))
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)
