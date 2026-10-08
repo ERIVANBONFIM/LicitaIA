@@ -9,7 +9,7 @@ import androidx.room.RoomDatabase
  */
 @Database(
     entities = [PlatformTenderEntity::class, PlatformMutationEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class PlatformDatabase : RoomDatabase() {

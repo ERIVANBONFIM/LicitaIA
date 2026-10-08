@@ -60,6 +60,12 @@ object Routes {
     /** Plataforma LicitaPRO (modo online opcional): login e lista de licitações sincronizadas da VPS. */
     const val PLATFORM_LOGIN = "platform/login"
     const val PLATFORM_TENDERS = "platform/licitacoes"
+    /** Detalhe de uma licitação da plataforma (`GET /licitacoes/:id`); id é UUID (String). */
+    const val PLATFORM_TENDER = "platform/licitacao/{platformId}"
+    /** Empresas e Perfis da plataforma (`GET /empresas` + `GET /usuarios`). */
+    const val PLATFORM_DIRECTORY = "platform/diretorio"
+
+    fun platformTender(id: String) = "platform/licitacao/$id"
 
     fun radarEdit(radarId: Long = -1) = "radar/edit/$radarId"
     fun radarResults(radarId: Long) = "radar/results/$radarId"

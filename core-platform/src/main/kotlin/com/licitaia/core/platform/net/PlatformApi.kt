@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import okhttp3.Call
@@ -77,6 +78,7 @@ class PlatformApi(
         limit: Int = PlatformConfig.SYNC_PAGE_SIZE,
         ordenar: String = "updatedAt",
         incluirOcultas: Boolean = true,
+        busca: String? = null,
     ): TenderPageDto {
         val u = url("licitacoes").newBuilder()
             .addQueryParameter("leve", "true")
@@ -84,9 +86,22 @@ class PlatformApi(
             .addQueryParameter("page", page.coerceAtLeast(1).toString())
             .addQueryParameter("ordenar", ordenar)
             .apply { if (incluirOcultas) addQueryParameter("incluirOcultas", "true") }
+            .apply { busca?.trim()?.takeIf { it.isNotBlank() }?.let { addQueryParameter("busca", it) } }
             .build()
         return get(u, TenderPageDto.serializer(), token = token) ?: TenderPageDto()
     }
+
+    /** `GET /licitacoes/:id` → detalhe completo (campos pesados incluídos; só mapeamos os que a UI usa). */
+    suspend fun licitacaoDetalhe(token: String, id: String): TenderDto? =
+        get(url("licitacoes/$id"), TenderDto.serializer(), token = token)
+
+    /** `GET /usuarios` → perfis/acessos da empresa (array). */
+    suspend fun usuarios(token: String): List<UsuarioDto> =
+        get(url("usuarios"), ListSerializer(UsuarioDto.serializer()), token = token) ?: emptyList()
+
+    /** `GET /empresas` → empresas visíveis ao usuário (array). */
+    suspend fun empresas(token: String): List<EmpresaDetailDto> =
+        get(url("empresas"), ListSerializer(EmpresaDetailDto.serializer()), token = token) ?: emptyList()
 
     // ------------------------------------------------------------------ infra
 

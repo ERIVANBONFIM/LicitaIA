@@ -16,6 +16,8 @@ data class PlatformTenderEntity(
     val dataEncerramento: String?,
     val portal: String?,
     val portalUrl: String?,
+    /** Link da proposta: não-nulo indica participação da empresa (recorte "Minhas Participações"). */
+    val urlProposta: String?,
     val estado: String?,
     val cidade: String?,
     val fase: String?,

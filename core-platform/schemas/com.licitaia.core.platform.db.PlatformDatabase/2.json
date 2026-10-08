@@ -1,0 +1,204 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "c165520698cb935cddfd51452544611f",
+    "entities": [
+      {
+        "tableName": "platform_tender",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `numero` TEXT NOT NULL, `orgao` TEXT NOT NULL, `objeto` TEXT NOT NULL, `modalidade` TEXT, `valorEstimado` TEXT, `dataAbertura` TEXT, `dataEncerramento` TEXT, `portal` TEXT, `portalUrl` TEXT, `urlProposta` TEXT, `estado` TEXT, `cidade` TEXT, `fase` TEXT, `status` TEXT, `favorita` INTEGER NOT NULL, `scoreRelevancia` INTEGER, `updatedAt` TEXT, `empresaId` TEXT, `syncedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "numero",
+            "columnName": "numero",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orgao",
+            "columnName": "orgao",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "objeto",
+            "columnName": "objeto",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modalidade",
+            "columnName": "modalidade",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "valorEstimado",
+            "columnName": "valorEstimado",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "dataAbertura",
+            "columnName": "dataAbertura",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "dataEncerramento",
+            "columnName": "dataEncerramento",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "portal",
+            "columnName": "portal",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "portalUrl",
+            "columnName": "portalUrl",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "urlProposta",
+            "columnName": "urlProposta",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "estado",
+            "columnName": "estado",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "cidade",
+            "columnName": "cidade",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "fase",
+            "columnName": "fase",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "favorita",
+            "columnName": "favorita",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scoreRelevancia",
+            "columnName": "scoreRelevancia",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "empresaId",
+            "columnName": "empresaId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "syncedAt",
+            "columnName": "syncedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "platform_mutation",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `type` TEXT NOT NULL, `targetId` TEXT NOT NULL, `payload` TEXT, `createdAt` INTEGER NOT NULL, `attempts` INTEGER NOT NULL, `lastError` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetId",
+            "columnName": "targetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payload",
+            "columnName": "payload",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attempts",
+            "columnName": "attempts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c165520698cb935cddfd51452544611f')"
+    ]
+  }
+}

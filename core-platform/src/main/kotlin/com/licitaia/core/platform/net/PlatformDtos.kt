@@ -33,6 +33,28 @@ data class EmpresaDto(
     val razaoSocial: String = "",
 )
 
+/** `GET /empresas` → empresas do escopo do usuário (admin vê a própria empresa). */
+@Serializable
+data class EmpresaDetailDto(
+    val id: String = "",
+    val cnpj: String = "",
+    val razaoSocial: String = "",
+    val nomeFantasia: String? = null,
+    val cidade: String? = null,
+    val estado: String? = null,
+)
+
+/** `GET /usuarios` → usuários da empresa (perfis/acessos). */
+@Serializable
+data class UsuarioDto(
+    val id: String,
+    val nome: String = "",
+    val email: String = "",
+    val role: String = "operador",
+    val ativo: Boolean = true,
+    val createdAt: String? = null,
+)
+
 /** `{ "error": "mensagem" }` (algumas rotas antigas usam `erro`; aceitamos as duas). */
 @Serializable
 data class ErrorDto(
@@ -81,6 +103,8 @@ data class TenderDto(
     val dataEncerramento: String? = null,
     val portal: String? = null,
     val portalUrl: String? = null,
+    /** Link da proposta (quando a empresa já tem proposta vinculada → sinal de participação). */
+    val urlProposta: String? = null,
     val estado: String? = null,
     val cidade: String? = null,
     val fase: String? = null,

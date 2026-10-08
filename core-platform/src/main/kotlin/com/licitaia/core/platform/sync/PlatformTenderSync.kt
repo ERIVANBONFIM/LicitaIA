@@ -56,6 +56,7 @@ fun TenderDto.toEntity(syncedAt: Long): PlatformTenderEntity = PlatformTenderEnt
     dataEncerramento = dataEncerramento,
     portal = portal,
     portalUrl = portalUrl,
+    urlProposta = urlProposta,
     estado = estado,
     cidade = cidade,
     fase = fase,

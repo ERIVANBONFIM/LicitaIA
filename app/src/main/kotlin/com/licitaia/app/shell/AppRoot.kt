@@ -127,8 +127,8 @@ fun AppRoot(
     onRouteConsumed: () -> Unit,
     viewModel: ShellViewModel = hiltViewModel(),
 ) {
-    val startLoggedIn by viewModel.startLoggedIn.collectAsStateWithLifecycle()
-    when (val start = startLoggedIn) {
+    val startRoute by viewModel.startRoute.collectAsStateWithLifecycle()
+    when (val start = startRoute) {
         null -> SplashScreen()
         else -> MainShell(viewModel, start, pendingRoute, onRouteConsumed)
     }
@@ -160,7 +160,7 @@ private fun NavHostController.navigateClearingAll(route: String) {
 @Composable
 private fun MainShell(
     viewModel: ShellViewModel,
-    startLoggedIn: Boolean,
+    startRoute: String,
     pendingRoute: StateFlow<String?>,
     onRouteConsumed: () -> Unit,
     updateViewModel: UpdateViewModel = hiltViewModel(),
@@ -227,9 +227,10 @@ private fun MainShell(
         }
     }
 
-    // Logout (ou sessão perdida) → volta ao login limpando a pilha.
+    // Logout (ou sessão perdida) do modo LOCAL → volta ao login local limpando a pilha.
+    // As rotas da plataforma (platform/...) não dependem da sessão local: não são redirecionadas aqui.
     LaunchedEffect(loggedIn, currentRoute) {
-        if (!loggedIn && currentRoute != null && currentRoute != Routes.LOGIN) {
+        if (!loggedIn && currentRoute != null && currentRoute != Routes.LOGIN && !currentRoute.startsWith("platform")) {
             drawerState.close()
             nav.navigateClearingAll(Routes.LOGIN)
         }
@@ -336,7 +337,7 @@ private fun MainShell(
                     ) {
                         NavHost(
                             navController = nav,
-                            startDestination = if (startLoggedIn) Routes.DASHBOARD else Routes.LOGIN,
+                            startDestination = startRoute,
                             enterTransition = { fadeIn(tween(220)) + slideInHorizontally(tween(220)) { it / 14 } },
                             exitTransition = { fadeOut(tween(160)) },
                             popEnterTransition = { fadeIn(tween(220)) },
@@ -409,7 +410,7 @@ private fun MainShell(
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
 
-                if (locked && loggedIn) {
+                if (locked && loggedIn && currentRoute?.startsWith("platform") != true) {
                     LockScreen(
                         userName = session?.user?.name.orEmpty(),
                         biometricEnabled = settings.biometricLock,

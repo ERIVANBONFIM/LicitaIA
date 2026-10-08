@@ -3,6 +3,9 @@ package com.licitaia.app.shell
 import androidx.biometric.BiometricPrompt
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.licitaia.core.platform.PlatformRepository
+import com.licitaia.core.platform.session.PlatformSession
+import com.licitaia.core.ui.nav.Routes
 import com.licitaia.core.ui.nav.ShellState
 import com.licitaia.domain.auth.IdentitySignOut
 import com.licitaia.domain.auth.PinVerification
@@ -45,15 +48,23 @@ class ShellViewModel @Inject constructor(
     settingsRepository: SettingsRepository,
     appNotifier: AppNotifier,
     private val identitySignOut: IdentitySignOut,
+    private val platformRepository: PlatformRepository,
     connectivity: ConnectivityMonitor,
 ) : ViewModel() {
 
     /** Conexão com a internet (rede validada) — faixa global "Sem internet" e aviso de reconexão. */
     val online: StateFlow<Boolean> = connectivity.online
 
-    /** null = restaurando sessão; true/false = iniciar logado ou no login. */
-    private val _startLoggedIn = MutableStateFlow<Boolean?>(null)
-    val startLoggedIn: StateFlow<Boolean?> = _startLoggedIn.asStateFlow()
+    /**
+     * Rota inicial do app (null = ainda restaurando). Opção A — login único da plataforma:
+     * a porta de entrada padrão é o login da plataforma. Ordem de prioridade na abertura:
+     *  1) sessão de plataforma salva → abre direto no modo plataforma ([Routes.PLATFORM_TENDERS]);
+     *  2) sessão local lembrada → mantém o comportamento local atual ([Routes.DASHBOARD]);
+     *  3) sem nenhuma sessão → login da plataforma ([Routes.PLATFORM_LOGIN]).
+     * O modo local e a demonstração continuam acessíveis pelo link discreto no rodapé do login da plataforma.
+     */
+    private val _startRoute = MutableStateFlow<String?>(null)
+    val startRoute: StateFlow<String?> = _startRoute.asStateFlow()
 
     val session: StateFlow<AuthSession?> = authRepository.session
 
@@ -96,13 +107,23 @@ class ShellViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             val restored = runCatching { authRepository.restoreSession() }.getOrNull()
-            if (restored != null) {
+            // Sessão de plataforma salva tem prioridade: abre direto no modo plataforma.
+            val platformSignedIn = runCatching {
+                platformRepository.ensureSessionLoaded()
+                platformRepository.session.value is PlatformSession.SignedIn
+            }.getOrDefault(false)
+            // Só aplica o bloqueio local quando a abertura será efetivamente no modo local (dashboard).
+            if (restored != null && !platformSignedIn) {
                 // Abertura a frio com sessão lembrada: exige desbloqueio se houver proteção configurada.
                 val s = settingsRepository.settings.first()
                 _hasPin.value = runCatching { authRepository.hasPin() }.getOrDefault(false)
                 if (s.biometricLock || _hasPin.value) _locked.value = true
             }
-            _startLoggedIn.value = restored != null
+            _startRoute.value = when {
+                platformSignedIn -> Routes.PLATFORM_TENDERS
+                restored != null -> Routes.DASHBOARD
+                else -> Routes.PLATFORM_LOGIN
+            }
         }
         // Login / troca de empresa → restaura (ou cria) as sessões de pregão da empresa ativa.
         viewModelScope.launch {

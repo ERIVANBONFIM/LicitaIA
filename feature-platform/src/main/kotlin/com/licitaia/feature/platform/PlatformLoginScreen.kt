@@ -19,6 +19,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -124,6 +125,18 @@ fun PlatformLoginScreen(viewModel: PlatformLoginViewModel = hiltViewModel()) {
                     Spacer(Modifier.height(10.dp))
                     AlertBanner("Conectividade", it, Tone.INFO)
                 }
+            }
+
+            // Opção secundária e discreta: continuar no modo local (sem nuvem) ou explorar a demonstração.
+            TextButton(
+                onClick = { navigator.navigate(Routes.LOGIN) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "Usar modo local / Explorar demonstração",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = LicitaColors.TextSecondary,
+                )
             }
         }
     }
