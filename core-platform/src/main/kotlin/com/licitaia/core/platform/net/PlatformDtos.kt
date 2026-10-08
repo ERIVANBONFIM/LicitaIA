@@ -333,6 +333,35 @@ data class PropostaCreateRequest(
     val geradaPorIA: Boolean = true,
 )
 
+/** `GET /propostas?licitacaoId=` → propostas da licitação (valorTotal vem como string). */
+@Serializable
+data class PropostaDto(
+    val id: String = "",
+    val valorTotal: String? = null,
+    val status: String? = null,
+    val geradaPorIA: Boolean = false,
+    val createdAt: String? = null,
+)
+
+@Serializable
+data class PropostaPageDto(val data: List<PropostaDto> = emptyList(), val total: Int = 0)
+
+/** `PUT /propostas/:id` {valorTotal?, status?}. */
+@Serializable
+data class PropostaUpdateRequest(val valorTotal: Double? = null, val status: String? = null)
+
+/** `POST/PUT /radar/filtros[/:id]` → mesmos campos do GET (segmento não existe na VPS). */
+@Serializable
+data class RadarUpsertRequest(
+    val nome: String,
+    val palavrasChave: List<String> = emptyList(),
+    val portais: List<String> = emptyList(),
+    val estados: List<String> = emptyList(),
+    val valorMinimo: Double? = null,
+    val valorMaximo: Double? = null,
+    val ativo: Boolean = true,
+)
+
 /** Item da licitação (shape variável no backend; extraído de forma tolerante). */
 data class PlatformItem(
     val descricao: String? = null,

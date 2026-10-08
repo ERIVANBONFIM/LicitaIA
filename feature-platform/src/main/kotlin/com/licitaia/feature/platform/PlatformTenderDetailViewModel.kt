@@ -7,9 +7,11 @@ import com.licitaia.ai.api.AiGateway
 import com.licitaia.ai.api.TenderAnalysisRequest
 import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.core.platform.net.AnaliseLocalRequest
+import com.licitaia.core.platform.net.MensagemDto
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
 import com.licitaia.core.platform.net.PropostaCreateRequest
+import com.licitaia.core.platform.net.PropostaDto
 import com.licitaia.core.platform.net.ResultadoDto
 import com.licitaia.core.platform.net.ResultadoRequest
 import com.licitaia.core.platform.net.RoboConfigDto
@@ -56,6 +58,12 @@ data class PlatformDetailUi(
     val roboLances: Int = 0,
     /** Resultado registrado (null = ainda não registrado). */
     val resultado: ResultadoDto? = null,
+    /** Propostas da licitação (metadados na VPS). */
+    val propostas: List<PropostaDto> = emptyList(),
+    /** Mensagens desta licitação + envio. */
+    val mensagens: List<MensagemDto> = emptyList(),
+    val msgInput: String = "",
+    val sendingMsg: Boolean = false,
 )
 
 @HiltViewModel
@@ -87,8 +95,13 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     val robo = repository.roboConfig(id).getOrNull()
                     val lances = repository.roboHistoricoCount(id).getOrDefault(0)
                     val resultado = repository.resultado(id).getOrNull()
+                    val propostas = repository.propostas(id).getOrDefault(emptyList())
+                    val mensagens = repository.mensagens(id).getOrDefault(emptyList())
                     _state.update {
-                        it.copy(itens = itens, arquivos = arquivos, roboConfig = robo, roboLances = lances, resultado = resultado)
+                        it.copy(
+                            itens = itens, arquivos = arquivos, roboConfig = robo, roboLances = lances, resultado = resultado,
+                            propostas = propostas, mensagens = mensagens,
+                        )
                     }
                 },
                 onFailure = { e ->
@@ -168,8 +181,44 @@ class PlatformTenderDetailViewModel @Inject constructor(
                 "entrega ${draft.deliveryDays}d · validade ${draft.validityDays}d."
             _state.update { it.copy(generatingProposal = false, proposalSummary = resumo) }
             _events.send("Proposta gerada no aparelho.")
-            // Grava metadados na VPS (conteúdo completo fica no aparelho por ora).
+            // Grava metadados na VPS (conteúdo completo fica no aparelho por ora) e recarrega a lista.
             repository.criarProposta(PropostaCreateRequest(licitacaoId = id, valorTotal = total))
+            val novas = repository.propostas(id).getOrDefault(_state.value.propostas)
+            _state.update { it.copy(propostas = novas) }
+        }
+    }
+
+    fun aprovarProposta(pid: String) = propostaOp("Proposta aprovada (revisada).") { repository.updateProposta(pid, null, "revisada") }
+    fun editarProposta(pid: String, valorTotal: Double?, status: String?) = propostaOp("Proposta atualizada.") { repository.updateProposta(pid, valorTotal, status) }
+    fun excluirProposta(pid: String) = propostaOp("Proposta excluída.") { repository.deleteProposta(pid) }
+
+    private fun propostaOp(okMsg: String, block: suspend () -> Result<Unit>) {
+        if (_state.value.acting) return
+        _state.update { it.copy(acting = true) }
+        viewModelScope.launch {
+            val r = block()
+            if (r.isSuccess) {
+                _events.send(okMsg)
+                val novas = repository.propostas(id).getOrDefault(_state.value.propostas)
+                _state.update { it.copy(acting = false, propostas = novas) }
+            } else {
+                _events.send(r.exceptionOrNull()?.message ?: "Não foi possível concluir.")
+                _state.update { it.copy(acting = false) }
+            }
+        }
+    }
+
+    fun onMsgInput(v: String) = _state.update { it.copy(msgInput = v) }
+
+    fun sendMessage() {
+        val msg = _state.value.msgInput.trim()
+        if (msg.isBlank() || _state.value.sendingMsg) return
+        _state.update { it.copy(sendingMsg = true, msgInput = "") }
+        viewModelScope.launch {
+            val r = repository.enviarMensagem(msg, id)
+            val novas = repository.mensagens(id).getOrDefault(_state.value.mensagens)
+            _state.update { it.copy(sendingMsg = false, mensagens = novas) }
+            if (r.isFailure) _events.send(r.exceptionOrNull()?.message ?: "Mensagem enviada.")
         }
     }
 

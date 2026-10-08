@@ -255,6 +255,40 @@ class PlatformApi(
         postJson(url("propostas"), payload, OkDto.serializer(), token)
     }
 
+    /** `GET /propostas?licitacaoId=`. */
+    suspend fun propostas(token: String, licitacaoId: String): PropostaPageDto {
+        val u = url("propostas").newBuilder().addQueryParameter("licitacaoId", licitacaoId).build()
+        return get(u, PropostaPageDto.serializer(), token = token) ?: PropostaPageDto()
+    }
+
+    /** `PUT /propostas/:id`. */
+    suspend fun updateProposta(token: String, id: String, req: PropostaUpdateRequest) {
+        val payload = json.encodeToString(PropostaUpdateRequest.serializer(), req)
+        putJson(url("propostas/$id"), payload, OkDto.serializer(), token)
+    }
+
+    /** `DELETE /propostas/:id`. */
+    suspend fun deleteProposta(token: String, id: String) {
+        execute(baseRequest(url("propostas/$id"), token).delete().build(), OkDto.serializer())
+    }
+
+    /** `POST /radar/filtros`. */
+    suspend fun criarRadar(token: String, req: RadarUpsertRequest) {
+        val payload = json.encodeToString(RadarUpsertRequest.serializer(), req)
+        postJson(url("radar/filtros"), payload, OkDto.serializer(), token)
+    }
+
+    /** `PUT /radar/filtros/:id`. */
+    suspend fun updateRadar(token: String, id: String, req: RadarUpsertRequest) {
+        val payload = json.encodeToString(RadarUpsertRequest.serializer(), req)
+        putJson(url("radar/filtros/$id"), payload, OkDto.serializer(), token)
+    }
+
+    /** `DELETE /radar/filtros/:id`. */
+    suspend fun deleteRadar(token: String, id: String) {
+        execute(baseRequest(url("radar/filtros/$id"), token).delete().build(), OkDto.serializer())
+    }
+
     /** `POST /mensagens` {licitacaoId?, conteudo}. */
     suspend fun enviarMensagem(token: String, licitacaoId: String?, conteudo: String) {
         val payload = json.encodeToString(MensagemRequest.serializer(), MensagemRequest(licitacaoId, conteudo))
@@ -309,6 +343,11 @@ class PlatformApi(
 
     private suspend fun <T> postJson(url: HttpUrl, body: String, serializer: KSerializer<T>, token: String?): T? {
         val request = baseRequest(url, token).post(body.toRequestBody(JSON_MEDIA)).build()
+        return execute(request, serializer)
+    }
+
+    private suspend fun <T> putJson(url: HttpUrl, body: String, serializer: KSerializer<T>, token: String?): T? {
+        val request = baseRequest(url, token).put(body.toRequestBody(JSON_MEDIA)).build()
         return execute(request, serializer)
     }
 

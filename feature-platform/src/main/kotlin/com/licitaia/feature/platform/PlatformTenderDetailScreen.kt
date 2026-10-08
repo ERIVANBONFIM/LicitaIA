@@ -3,6 +3,7 @@ package com.licitaia.feature.platform
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,9 +15,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.OpenInNew
@@ -38,8 +42,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -52,6 +63,7 @@ import com.licitaia.core.ui.components.ErrorState
 import com.licitaia.core.ui.components.InfoRow
 import com.licitaia.core.ui.components.LicitaCard
 import com.licitaia.core.ui.components.LicitaScaffold
+import com.licitaia.core.ui.components.PrimaryButton
 import com.licitaia.core.ui.components.SecondaryButton
 import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
@@ -83,6 +95,11 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     onHide = viewModel::toggleOcultar,
                     onAnalyze = viewModel::analyze,
                     onGerarProposta = viewModel::gerarProposta,
+                    onAprovarProposta = viewModel::aprovarProposta,
+                    onExcluirProposta = viewModel::excluirProposta,
+                    onEditarProposta = viewModel::editarProposta,
+                    onMsgInput = viewModel::onMsgInput,
+                    onSendMsg = viewModel::sendMessage,
                     onRegisterResult = viewModel::registrarResultado,
                     onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
                     onOpenPortal = { url ->
@@ -92,6 +109,105 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun PropostaRow(
+    p: com.licitaia.core.platform.net.PropostaDto,
+    enabled: Boolean,
+    onAprovar: () -> Unit,
+    onExcluir: () -> Unit,
+    onEditar: (String, Double?, String?) -> Unit,
+) {
+    var editing by rememberSaveable(p.id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(PlatformFormat.currency(p.valorTotal), style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            p.status?.let { StatusBadge(it.replace('_', ' '), if (it == "aceita") Tone.SUCCESS else Tone.INFO) }
+        }
+        p.createdAt?.let { Text(PlatformFormat.dateTime(it), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SecondaryButton("Editar", { editing = true }, Modifier.weight(1f), enabled = enabled, tone = Tone.NEUTRAL)
+            if (!p.status.equals("revisada", true)) {
+                SecondaryButton("Aprovar", onAprovar, Modifier.weight(1f), enabled = enabled, tone = Tone.SUCCESS)
+            }
+            SecondaryButton("Excluir", onExcluir, Modifier.weight(1f), enabled = enabled, tone = Tone.DANGER)
+        }
+    }
+    if (editing) {
+        PropostaEditDialog(p, onDismiss = { editing = false }, onSave = { v, st -> onEditar(p.id, v, st); editing = false })
+    }
+}
+
+private val PROPOSTA_STATUS = listOf("rascunho", "gerada_ia", "revisada", "enviada", "aceita", "recusada")
+
+@Composable
+private fun PropostaEditDialog(p: com.licitaia.core.platform.net.PropostaDto, onDismiss: () -> Unit, onSave: (Double?, String?) -> Unit) {
+    var valor by rememberSaveable { mutableStateOf(p.valorTotal?.filter { it.isDigit() || it == '.' } ?: "") }
+    var status by rememberSaveable { mutableStateOf(p.status ?: "gerada_ia") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Editar proposta") },
+        text = {
+            Column {
+                androidx.compose.material3.OutlinedTextField(valor, { valor = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Valor total") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                Text("Status", style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary)
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    PROPOSTA_STATUS.forEach { opt ->
+                        com.licitaia.core.ui.components.SelectChip(opt.replace('_', ' '), status == opt, { status = opt })
+                    }
+                }
+            }
+        },
+        confirmButton = { PrimaryButton("Salvar", { onSave(valor.trim().toDoubleOrNull(), status) }) },
+        dismissButton = { SecondaryButton("Cancelar", onDismiss, tone = Tone.NEUTRAL) },
+    )
+}
+
+@Composable
+private fun MensagensCard(mensagens: List<com.licitaia.core.platform.net.MensagemDto>, input: String, sending: Boolean, onInput: (String) -> Unit, onSend: () -> Unit) {
+    val focus = LocalFocusManager.current
+    LicitaCard(Modifier.fillMaxWidth()) {
+        Text("Mensagens (${mensagens.size})", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+        Spacer(Modifier.height(8.dp))
+        if (mensagens.isEmpty()) {
+            Text("Nenhuma mensagem nesta licitação. Envie uma abaixo.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
+        } else {
+            mensagens.take(50).forEachIndexed { i, m ->
+                if (i > 0) Spacer(Modifier.height(8.dp))
+                Text(m.displayTitle, style = MaterialTheme.typography.labelMedium, color = LicitaColors.BlueBright, fontWeight = FontWeight.SemiBold)
+                if (m.displayBody.isNotBlank()) Text(m.displayBody, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
+                m.createdAt?.let { Text(PlatformFormat.dateTime(it), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        androidx.compose.material3.OutlinedTextField(
+            value = input,
+            onValueChange = onInput,
+            label = { Text("Escreva uma mensagem") },
+            enabled = !sending,
+            trailingIcon = {
+                androidx.compose.material3.IconButton(onClick = { focus.clearFocus(); onSend() }, enabled = !sending && input.isNotBlank()) {
+                    if (sending) CircularProgressIndicator(Modifier.height(20.dp), strokeWidth = 2.dp, color = LicitaColors.Blue)
+                    else Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "Enviar")
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { focus.clearFocus(); onSend() }),
+            // Consome o ENTER para NUNCA navegar/voltar (mesmo cuidado do campo de busca).
+            modifier = Modifier.fillMaxWidth().onPreviewKeyEvent { e ->
+                if (e.key == Key.Enter || e.key == Key.NumPadEnter) {
+                    if (e.type == KeyEventType.KeyUp) { focus.clearFocus(); onSend() }
+                    true
+                } else {
+                    false
+                }
+            },
+        )
     }
 }
 
@@ -141,6 +257,11 @@ private fun TenderDetail(
     onHide: () -> Unit,
     onAnalyze: () -> Unit,
     onGerarProposta: () -> Unit,
+    onAprovarProposta: (String) -> Unit,
+    onExcluirProposta: (String) -> Unit,
+    onEditarProposta: (String, Double?, String?) -> Unit,
+    onMsgInput: (String) -> Unit,
+    onSendMsg: () -> Unit,
     onRegisterResult: (String) -> Unit,
     onOpenQa: () -> Unit,
     onOpenPortal: (String) -> Unit,
@@ -243,14 +364,21 @@ private fun TenderDetail(
             )
         }
 
-        // Proposta comercial (gerada no aparelho; metadados salvos na VPS)
+        // Proposta comercial (gerada no aparelho; metadados/gestão na VPS)
         LicitaCard(Modifier.fillMaxWidth(), accent = LicitaColors.Green) {
-            Text("Proposta comercial", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                s.proposalSummary ?: "Gere uma proposta inicial com IA no aparelho (usa a sua chave). O conteúdo fica no aparelho; os metadados são salvos na plataforma.",
-                style = MaterialTheme.typography.bodySmall, color = if (s.proposalSummary != null) LicitaColors.TextSecondary else LicitaColors.TextMuted,
-            )
+            Text("Proposta comercial (${s.propostas.size})", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary)
+            if (s.propostas.isEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    s.proposalSummary ?: "Gere uma proposta inicial com IA no aparelho (usa a sua chave). O conteúdo fica no aparelho; os metadados são salvos na plataforma.",
+                    style = MaterialTheme.typography.bodySmall, color = if (s.proposalSummary != null) LicitaColors.TextSecondary else LicitaColors.TextMuted,
+                )
+            } else {
+                s.propostas.forEachIndexed { i, p ->
+                    if (i == 0) Spacer(Modifier.height(8.dp)) else HorizontalDivider(Modifier.padding(vertical = 10.dp), color = LicitaColors.Outline)
+                    PropostaRow(p, enabled = !s.acting, onAprovar = { onAprovarProposta(p.id) }, onExcluir = { onExcluirProposta(p.id) }, onEditar = onEditarProposta)
+                }
+            }
             if (s.generatingProposal) {
                 Spacer(Modifier.height(10.dp))
                 AlertBanner("Gerando proposta no aparelho…", "Rodando a IA local.", Tone.INFO, pulsing = true)
@@ -261,6 +389,15 @@ private fun TenderDetail(
                 onGerarProposta, Modifier.fillMaxWidth(), enabled = !s.generatingProposal, tone = Tone.SUCCESS, icon = Icons.Outlined.RequestQuote,
             )
         }
+
+        // Mensagens desta licitação (enviar + listar)
+        MensagensCard(
+            mensagens = s.mensagens,
+            input = s.msgInput,
+            sending = s.sendingMsg,
+            onInput = onMsgInput,
+            onSend = onSendMsg,
+        )
 
         // Pergunte ao edital (Q&A por IA)
         LicitaCard(Modifier.fillMaxWidth(), onClick = onOpenQa) {

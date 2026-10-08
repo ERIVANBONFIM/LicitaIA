@@ -18,7 +18,10 @@ import com.licitaia.core.platform.net.PlatformApi
 import com.licitaia.core.platform.net.PlatformException
 import com.licitaia.core.platform.net.PlatformFile
 import com.licitaia.core.platform.net.PlatformItem
+import com.licitaia.core.platform.net.PropostaDto
+import com.licitaia.core.platform.net.PropostaUpdateRequest
 import com.licitaia.core.platform.net.RadarFiltroDto
+import com.licitaia.core.platform.net.RadarUpsertRequest
 import com.licitaia.core.platform.net.RoboConfigDto
 import com.licitaia.core.platform.net.TenderDto
 import com.licitaia.core.platform.net.TenderPageDto
@@ -221,6 +224,25 @@ class PlatformRepository @Inject constructor(
 
     /** `POST /licitacoes/:id/resultado`. */
     suspend fun registrarResultado(id: String, req: ResultadoRequest): Result<Unit> = authedRead { api.registrarResultado(it, id, req) }
+
+    /** `GET /propostas?licitacaoId=`. */
+    suspend fun propostas(licitacaoId: String): Result<List<PropostaDto>> = authedRead { api.propostas(it, licitacaoId).data }
+
+    /** `PUT /propostas/:id` (editar valor/status; "aprovar" = status "revisada"). */
+    suspend fun updateProposta(id: String, valorTotal: Double?, status: String?): Result<Unit> =
+        authedRead { api.updateProposta(it, id, PropostaUpdateRequest(valorTotal, status)) }
+
+    /** `DELETE /propostas/:id`. */
+    suspend fun deleteProposta(id: String): Result<Unit> = authedRead { api.deleteProposta(it, id) }
+
+    /** `POST /radar/filtros`. */
+    suspend fun criarRadar(req: RadarUpsertRequest): Result<Unit> = authedRead { api.criarRadar(it, req) }
+
+    /** `PUT /radar/filtros/:id`. */
+    suspend fun updateRadar(id: String, req: RadarUpsertRequest): Result<Unit> = authedRead { api.updateRadar(it, id, req) }
+
+    /** `DELETE /radar/filtros/:id`. */
+    suspend fun deleteRadar(id: String): Result<Unit> = authedRead { api.deleteRadar(it, id) }
 
     /** `POST /licitacoes/:id/analise-local` → grava a análise feita no aparelho (falha tratada pelo chamador). */
     suspend fun saveAnaliseLocal(id: String, req: AnaliseLocalRequest): Result<Unit> = authedRead { api.saveAnaliseLocal(it, id, req) }
