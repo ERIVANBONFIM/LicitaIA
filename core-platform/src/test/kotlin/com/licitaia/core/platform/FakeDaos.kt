@@ -18,6 +18,7 @@ class FakeTenderDao : PlatformTenderDao {
     }
 
     override fun observeAll(): Flow<List<PlatformTenderEntity>> = flow
+    override suspend fun all(): List<PlatformTenderEntity> = rows.values.toList()
     override suspend fun byId(id: String): PlatformTenderEntity? = rows[id]
     override suspend fun latestUpdatedAt(): String? = rows.values.mapNotNull { it.updatedAt }.maxOrNull()
     override suspend fun count(): Int = rows.size

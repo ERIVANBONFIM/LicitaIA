@@ -95,6 +95,8 @@ class PlatformApi(
         ordenar: String = "updatedAt",
         incluirOcultas: Boolean = true,
         busca: String? = null,
+        favorita: Boolean? = null,
+        status: String? = null,
     ): TenderPageDto {
         val u = url("licitacoes").newBuilder()
             .addQueryParameter("leve", "true")
@@ -103,9 +105,44 @@ class PlatformApi(
             .addQueryParameter("ordenar", ordenar)
             .apply { if (incluirOcultas) addQueryParameter("incluirOcultas", "true") }
             .apply { busca?.trim()?.takeIf { it.isNotBlank() }?.let { addQueryParameter("busca", it) } }
+            .apply { if (favorita == true) addQueryParameter("favorita", "true") }
+            .apply { status?.takeIf { it.isNotBlank() }?.let { addQueryParameter("status", it) } }
             .build()
         return get(u, TenderPageDto.serializer(), token = token) ?: TenderPageDto()
     }
+
+    /** `GET /licitacoes/minhas?leve=true` → favoritas OU fase=participando (recorte "Minhas Participações"). */
+    suspend fun licitacoesMinhas(
+        token: String,
+        page: Int,
+        limit: Int = PlatformConfig.SYNC_PAGE_SIZE,
+        busca: String? = null,
+    ): TenderPageDto {
+        val u = url("licitacoes/minhas").newBuilder()
+            .addQueryParameter("leve", "true")
+            .addQueryParameter("limit", limit.coerceIn(1, 200).toString())
+            .addQueryParameter("page", page.coerceAtLeast(1).toString())
+            .addQueryParameter("ordenar", "updatedAt")
+            .apply { busca?.trim()?.takeIf { it.isNotBlank() }?.let { addQueryParameter("busca", it) } }
+            .build()
+        return get(u, TenderPageDto.serializer(), token = token) ?: TenderPageDto()
+    }
+
+    /** `GET /documentos` → metadados dos documentos da empresa (array). */
+    suspend fun documentos(token: String): List<DocumentoDto> =
+        get(url("documentos"), ListSerializer(DocumentoDto.serializer()), token = token) ?: emptyList()
+
+    /** `GET /radar/filtros` → filtros de radar salvos (array). */
+    suspend fun radarFiltros(token: String): List<RadarFiltroDto> =
+        get(url("radar/filtros"), ListSerializer(RadarFiltroDto.serializer()), token = token) ?: emptyList()
+
+    /** `GET /concorrente` → concorrentes mapeados (paginado `{data,total}`). */
+    suspend fun concorrentes(token: String): ConcorrentePageDto =
+        get(url("concorrente"), ConcorrentePageDto.serializer(), token = token) ?: ConcorrentePageDto()
+
+    /** `GET /mensagens` → mensagens do chat de disputa (array). */
+    suspend fun mensagens(token: String): List<MensagemDto> =
+        get(url("mensagens"), ListSerializer(MensagemDto.serializer()), token = token) ?: emptyList()
 
     /** `GET /licitacoes/:id` → detalhe completo (campos pesados incluídos; só mapeamos os que a UI usa). */
     suspend fun licitacaoDetalhe(token: String, id: String): TenderDto? =

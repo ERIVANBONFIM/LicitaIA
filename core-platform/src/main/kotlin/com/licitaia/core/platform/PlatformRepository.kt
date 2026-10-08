@@ -2,11 +2,16 @@ package com.licitaia.core.platform
 
 import com.licitaia.core.platform.db.PlatformTenderDao
 import com.licitaia.core.platform.db.PlatformTenderEntity
+import com.licitaia.core.platform.net.ConcorrenteDto
+import com.licitaia.core.platform.net.DocumentoDto
 import com.licitaia.core.platform.net.EmpresaDetailDto
 import com.licitaia.core.platform.net.HealthDto
+import com.licitaia.core.platform.net.MensagemDto
 import com.licitaia.core.platform.net.PlatformApi
 import com.licitaia.core.platform.net.PlatformException
+import com.licitaia.core.platform.net.RadarFiltroDto
 import com.licitaia.core.platform.net.TenderDto
+import com.licitaia.core.platform.net.TenderPageDto
 import com.licitaia.core.platform.net.UsuarioDto
 import com.licitaia.core.platform.queue.OfflineMutationQueue
 import com.licitaia.core.platform.session.PlatformSession
@@ -19,6 +24,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** Recortes da lista de licitações (consultados no servidor). */
+enum class TenderFilter { TODAS, INTERESSE, ARQUIVADAS, PARTICIPACOES }
 
 /**
  * Fachada da camada de plataforma para a UI: login, sessão, sincronização de leitura e fila offline.
@@ -117,6 +125,54 @@ class PlatformRepository @Inject constructor(
             page++
         }
         SyncResult(fetched = fetched, upserted = fetched, totalLocal = tenderDao.count(), pages = pagesRead)
+    }.onFailure { if (it is PlatformException && it.isUnauthorized) handleUnauthorized() }
+
+    /**
+     * Recorte da lista de licitações consultando o SERVIDOR (o backend já respeita `favorita`/`status`;
+     * Participações usa `GET /licitacoes/minhas`). Pagina até [maxPages] e espelha o resultado localmente.
+     * "Todas" com texto vazio volta ao pull padrão; com texto, usa `busca=`.
+     */
+    suspend fun fetchTenders(filter: TenderFilter, query: String, maxPages: Int = 5): Result<List<PlatformTenderEntity>> = runCatching {
+        val token = tokenStore.token() ?: throw PlatformException("Entre na plataforma.", PlatformException.Kind.UNAUTHORIZED)
+        val busca = query.trim().ifBlank { null }
+        val now = System.currentTimeMillis()
+        val acc = ArrayList<PlatformTenderEntity>()
+        var page = 1
+        while (page <= maxPages) {
+            val pageData: TenderPageDto = when (filter) {
+                TenderFilter.TODAS -> api.licitacoesLeve(token, page, busca = busca)
+                TenderFilter.INTERESSE -> api.licitacoesLeve(token, page, busca = busca, favorita = true)
+                TenderFilter.ARQUIVADAS -> api.licitacoesLeve(token, page, busca = busca, status = "arquivada")
+                TenderFilter.PARTICIPACOES -> api.licitacoesMinhas(token, page, busca = busca)
+            }
+            if (pageData.data.isEmpty()) break
+            val entities = pageData.data.map { it.toEntity(now) }
+            acc += entities
+            tenderDao.upsert(entities)
+            if (page >= pageData.totalPages) break
+            page++
+        }
+        acc
+    }.onFailure { if (it is PlatformException && it.isUnauthorized) handleUnauthorized() }
+
+    /** Cópia local completa do espelho (fallback offline para o recorte "Todas"). */
+    suspend fun mirrorSnapshot(): List<PlatformTenderEntity> = tenderDao.all()
+
+    /** `GET /documentos` (metadados). */
+    suspend fun documentos(): Result<List<DocumentoDto>> = authedRead { api.documentos(it) }
+
+    /** `GET /radar/filtros`. */
+    suspend fun radarFiltros(): Result<List<RadarFiltroDto>> = authedRead { api.radarFiltros(it) }
+
+    /** `GET /concorrente`. */
+    suspend fun concorrentes(): Result<List<ConcorrenteDto>> = authedRead { api.concorrentes(it).data }
+
+    /** `GET /mensagens`. */
+    suspend fun mensagens(): Result<List<MensagemDto>> = authedRead { api.mensagens(it) }
+
+    private suspend fun <T> authedRead(block: suspend (token: String) -> T): Result<T> = runCatching {
+        val token = tokenStore.token() ?: throw PlatformException("Entre na plataforma.", PlatformException.Kind.UNAUTHORIZED)
+        block(token)
     }.onFailure { if (it is PlatformException && it.isUnauthorized) handleUnauthorized() }
 
     /** `GET /licitacoes/:id`. Em falha de rede, cai para o espelho local se existir. */

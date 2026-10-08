@@ -64,6 +64,16 @@ object Routes {
     const val PLATFORM_TENDER = "platform/licitacao/{platformId}"
     /** Empresas e Perfis da plataforma (`GET /empresas` + `GET /usuarios`). */
     const val PLATFORM_DIRECTORY = "platform/diretorio"
+    /** Hub "Mais" do modo plataforma: acesso às seções lidas da VPS. */
+    const val PLATFORM_HUB = "platform/mais"
+    /** Documentos da empresa (`GET /documentos`). */
+    const val PLATFORM_DOCS = "platform/documentos"
+    /** Radares salvos (`GET /radar/filtros`). */
+    const val PLATFORM_RADAR = "platform/radar"
+    /** Concorrentes mapeados (`GET /concorrente`). */
+    const val PLATFORM_COMPETITORS = "platform/concorrencia"
+    /** Mensagens do pregoeiro (`GET /mensagens`). */
+    const val PLATFORM_MESSAGES = "platform/mensagens"
 
     fun platformTender(id: String) = "platform/licitacao/$id"
 

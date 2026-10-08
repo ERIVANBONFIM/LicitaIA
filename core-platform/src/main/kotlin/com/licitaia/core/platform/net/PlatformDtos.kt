@@ -74,6 +74,76 @@ data class UsuarioDto(
     val createdAt: String? = null,
 )
 
+/** `GET /documentos` → documentos/metadados da empresa (sem baixar o arquivo). */
+@Serializable
+data class DocumentoDto(
+    val id: String = "",
+    val nome: String = "",
+    val categoria: String? = null,
+    val status: String? = null,
+    val validade: String? = null,
+    val tamanho: Long? = null,
+)
+
+/** `GET /radar/filtros` → filtros de radar salvos da empresa. */
+@Serializable
+data class RadarFiltroDto(
+    val id: String = "",
+    val nome: String = "",
+    val palavrasChave: List<String> = emptyList(),
+    val portais: List<String> = emptyList(),
+    val estados: List<String> = emptyList(),
+    val modalidades: List<String> = emptyList(),
+    val valorMinimo: String? = null,
+    val valorMaximo: String? = null,
+    val ativo: Boolean = true,
+    val countMatch: Int? = null,
+    val updatedAt: String? = null,
+)
+
+/** `GET /concorrente` → concorrentes mapeados da empresa (paginado). */
+@Serializable
+data class ConcorrentePageDto(
+    val data: List<ConcorrenteDto> = emptyList(),
+    val total: Int = 0,
+)
+
+@Serializable
+data class ConcorrenteDto(
+    val id: String = "",
+    val cnpj: String = "",
+    val razaoSocial: String = "",
+    val nomeFantasia: String? = null,
+    val cidade: String? = null,
+    val estado: String? = null,
+    val porte: String? = null,
+    val situacao: String? = null,
+)
+
+/**
+ * `GET /mensagens` → mensagens do chat de disputa (array). Todos os campos opcionais: o backend ainda não
+ * tem registros, então o formato exato não foi observado ao vivo — tolerante a chaves desconhecidas.
+ */
+@Serializable
+data class MensagemDto(
+    val id: String? = null,
+    val titulo: String? = null,
+    val assunto: String? = null,
+    val mensagem: String? = null,
+    val texto: String? = null,
+    val conteudo: String? = null,
+    val remetente: String? = null,
+    val autor: String? = null,
+    val licitacaoId: String? = null,
+    val lida: Boolean = false,
+    val createdAt: String? = null,
+) {
+    /** Melhor título disponível. */
+    val displayTitle: String get() = titulo ?: assunto ?: remetente ?: autor ?: "Mensagem"
+    /** Melhor corpo disponível. */
+    val displayBody: String get() = mensagem ?: texto ?: conteudo ?: ""
+}
+
 /** `{ "error": "mensagem" }` (algumas rotas antigas usam `erro`; aceitamos as duas). */
 @Serializable
 data class ErrorDto(

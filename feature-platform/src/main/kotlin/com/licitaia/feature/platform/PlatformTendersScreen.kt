@@ -17,7 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Business
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
@@ -77,8 +77,8 @@ fun PlatformTendersScreen(viewModel: PlatformTendersViewModel = hiltViewModel())
         subtitle = companyName,
         showBack = true,
         actions = {
-            IconButton(onClick = { navigator.navigate(Routes.PLATFORM_DIRECTORY) }) {
-                Icon(Icons.Outlined.Business, contentDescription = "Empresas e perfis")
+            IconButton(onClick = { navigator.navigate(Routes.PLATFORM_HUB) }) {
+                Icon(Icons.Outlined.Apps, contentDescription = "Mais da plataforma")
             }
             IconButton(onClick = viewModel::refresh, enabled = !sync.syncing) {
                 if (sync.syncing) {

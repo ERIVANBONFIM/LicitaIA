@@ -10,7 +10,12 @@ import com.licitaia.core.ui.nav.Routes
 fun NavGraphBuilder.platformGraph() {
     composable(Routes.PLATFORM_LOGIN) { PlatformLoginScreen() }
     composable(Routes.PLATFORM_TENDERS) { PlatformTendersScreen() }
+    composable(Routes.PLATFORM_HUB) { PlatformHubScreen() }
     composable(Routes.PLATFORM_DIRECTORY) { PlatformDirectoryScreen() }
+    composable(Routes.PLATFORM_DOCS) { PlatformDocumentsScreen() }
+    composable(Routes.PLATFORM_RADAR) { PlatformRadarScreen() }
+    composable(Routes.PLATFORM_COMPETITORS) { PlatformCompetitorsScreen() }
+    composable(Routes.PLATFORM_MESSAGES) { PlatformMessagesScreen() }
     composable(
         Routes.PLATFORM_TENDER,
         arguments = listOf(navArgument("platformId") { type = NavType.StringType }),

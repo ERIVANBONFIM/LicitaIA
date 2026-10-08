@@ -15,6 +15,9 @@ interface PlatformTenderDao {
     @Query("SELECT * FROM platform_tender ORDER BY datetime(updatedAt) DESC")
     fun observeAll(): Flow<List<PlatformTenderEntity>>
 
+    @Query("SELECT * FROM platform_tender ORDER BY datetime(updatedAt) DESC")
+    suspend fun all(): List<PlatformTenderEntity>
+
     @Query("SELECT * FROM platform_tender WHERE id = :id LIMIT 1")
     suspend fun byId(id: String): PlatformTenderEntity?
 
