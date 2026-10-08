@@ -487,7 +487,7 @@ private fun TenderDto.toDomainTender(companyId: Long): Tender = Tender(
     id = 0,
     companyId = companyId,
     opportunityId = id,
-    portal = mapPortal(portal),
+    portal = mapPortal(portal, portalUrl),
     number = numero,
     agency = orgao,
     objectDescription = objeto,
@@ -516,7 +516,19 @@ private fun TenderAnalysis.toAnaliseLocal(): AnaliseLocalRequest {
     )
 }
 
-private fun mapPortal(p: String?): Portal {
+/**
+ * Portal REAL da licitação. A URL manda mais que o rótulo: a VPS às vezes marca "Comprasnet" numa compra
+ * cujo link abre no pncp.gov.br (ou vice-versa). Então, quando a URL identifica o portal, ela decide; o
+ * rótulo [p] só é usado como fallback. Isso evita oferecer o robô on-device (Comprasnet) numa licitação do PNCP.
+ */
+private fun mapPortal(p: String?, url: String? = null): Portal {
+    val u = url?.lowercase().orEmpty()
+    when {
+        u.contains("comprasnet.gov.br") || u.contains("compras.gov.br") || u.contains("gov.br/compras") -> return Portal.COMPRAS_GOV
+        u.contains("pncp.gov.br") -> return Portal.PNCP
+        u.contains("bll") -> return Portal.BLL
+        u.contains("licitanet") -> return Portal.LICITANET
+    }
     val s = p?.lowercase().orEmpty()
     return when {
         s.contains("compras") || s.contains("comprasnet") -> Portal.COMPRAS_GOV
