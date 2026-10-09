@@ -450,7 +450,7 @@ private fun parseValor(s: String?): Double? {
 private val ESTRATEGIAS = listOf(
     "conservadora" to "Conservadora",
     "agressiva" to "Agressiva",
-    "acompanhar_concorrente" to "Acompanhar concorrente",
+    "acompanhar_concorrente" to "Acompanhar",
     "personalizada" to "Personalizada",
 )
 
