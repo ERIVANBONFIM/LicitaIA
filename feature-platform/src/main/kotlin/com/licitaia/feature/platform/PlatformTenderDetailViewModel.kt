@@ -90,6 +90,9 @@ data class PlatformDetailUi(
     /** Itens candidatos do robô de PROPOSTA; não-nulo = confirmação "Soltar robô — cadastrar proposta" aberta. */
     val propostaRoboItens: List<ProposalItemPlan>? = null,
     val propostaRoboBusy: Boolean = false,
+    /** Último resultado do robô de proposta GUARDADO no plano local (sobrevive a reiniciar o app). */
+    val propostaUltimoStatus: com.licitaia.domain.portal.RobotProposalStatus? = null,
+    val propostaUltimoLog: List<String> = emptyList(),
 )
 
 @HiltViewModel
@@ -145,6 +148,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     val propostas = repository.propostas(id).getOrDefault(emptyList())
                     val mensagens = repository.mensagens(id).getOrDefault(emptyList())
                     val conteudo = repository.propostaConteudo(id)
+                    carregarUltimoResultadoProposta(dto)
                     _state.update {
                         it.copy(
                             itens = itens, arquivos = arquivos, roboConfig = robo, roboLances = lances, prontidao = prontidao,
@@ -405,6 +409,17 @@ class PlatformTenderDetailViewModel @Inject constructor(
     }
 
     fun fecharCadastroProposta() = _state.update { it.copy(propostaRoboItens = null) }
+
+    /** Lê do plano local o último status/log do robô de proposta desta licitação (para o card após reiniciar). */
+    private fun carregarUltimoResultadoProposta(dto: TenderDto) {
+        val company = currentCompany() ?: return
+        val key = roboKeyOf(dto) ?: return
+        viewModelScope.launch {
+            val plan = runCatching { roboRepo.getPlan(company.id, key) }.getOrNull() ?: return@launch
+            if (plan.proposalStatus == com.licitaia.domain.portal.RobotProposalStatus.NAO_CONFIGURADA) return@launch
+            _state.update { it.copy(propostaUltimoStatus = plan.proposalStatus, propostaUltimoLog = plan.proposalLog.takeLast(6)) }
+        }
+    }
 
     /**
      * "Soltar o robô" (o usuário confirmou na tela: itens, declarações e a autorização do termo). Importa a compra

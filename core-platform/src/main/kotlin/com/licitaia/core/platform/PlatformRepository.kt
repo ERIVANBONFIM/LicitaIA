@@ -71,6 +71,7 @@ class PlatformRepository @Inject constructor(
     private val sessionManager: PlatformSessionManager,
     private val tenderDao: PlatformTenderDao,
     private val queue: OfflineMutationQueue,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
 ) {
     val session: StateFlow<PlatformSession> get() = sessionManager.session
 
@@ -261,9 +262,23 @@ class PlatformRepository @Inject constructor(
      * Cache em memória do CONTEÚDO (texto/planilha) da proposta gerada no aparelho, por licitação. A VPS só guarda
      * metadados (valor/status), então o texto gerado fica aqui para a tela "Ver proposta" exibir dentro da sessão.
      */
+    /**
+     * Conteúdo da proposta gerada pela IA no aparelho: memória + ARQUIVO no armazenamento privado do app
+     * (sobrevive a fechar/reabrir; não sobe para a VPS — lá vão só os metadados).
+     */
     private val propostaConteudoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
-    fun cacheProposta(licitacaoId: String, conteudo: String) { if (conteudo.isNotBlank()) propostaConteudoCache[licitacaoId] = conteudo }
-    fun propostaConteudo(licitacaoId: String): String? = propostaConteudoCache[licitacaoId]
+    private fun propostaFile(licitacaoId: String) =
+        java.io.File(java.io.File(context.filesDir, "propostas_ia").apply { mkdirs() }, licitacaoId.filter { it.isLetterOrDigit() || it == '-' } + ".txt")
+
+    fun cacheProposta(licitacaoId: String, conteudo: String) {
+        if (conteudo.isBlank()) return
+        propostaConteudoCache[licitacaoId] = conteudo
+        runCatching { propostaFile(licitacaoId).writeText(conteudo) }
+    }
+
+    fun propostaConteudo(licitacaoId: String): String? =
+        propostaConteudoCache[licitacaoId] ?: runCatching { propostaFile(licitacaoId).takeIf { it.exists() }?.readText() }.getOrNull()
+            ?.takeIf { it.isNotBlank() }?.also { propostaConteudoCache[licitacaoId] = it }
 
     /** `POST /documentos` (multipart). */
     suspend fun uploadDocumento(bytes: ByteArray, fileName: String, nome: String, categoria: String, validade: String?): Result<Unit> =

@@ -108,7 +108,12 @@ internal fun PropostaRoboCard(
             }
         }
         Spacer(Modifier.height(8.dp))
-        if (run == null) {
+        val ultimo = s.propostaUltimoStatus
+        if (run == null && ultimo != null) {
+            // App reiniciado: mostra o último resultado guardado no plano local.
+            Text("Último resultado: ${ultimo.label}", style = MaterialTheme.typography.bodyMedium, color = LicitaColors.TextPrimary)
+            s.propostaUltimoLog.forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+        } else if (run == null) {
             Text(
                 "O robô abre o Compras.gov.br, procura a compra pela UASG e pelo número, confere que é a compra certa, " +
                     "aceita o termo com a sua autorização e preenche e salva os itens que você selecionar. " +
