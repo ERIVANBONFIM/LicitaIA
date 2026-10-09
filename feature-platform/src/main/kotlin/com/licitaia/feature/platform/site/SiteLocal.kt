@@ -29,6 +29,7 @@ import com.licitaia.feature.platform.PlatformRobotSync
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -78,7 +79,55 @@ class SiteLocal @Inject constructor(
         "*" to Regex("^/api/empresa/certificado$"),
         "*" to Regex("^/api/ia/provedores(/.*)?$"),
         "*" to Regex("^/__app/.*$"),
+        "GET" to Regex("^/api/notificacoes$"),
     )
+
+    // ---- avisos REAIS dos robôs do celular para o sino (VPS: POST /api/notificacoes/evento) ----
+    private val escopo = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    private val ultimoStatus = java.util.concurrent.ConcurrentHashMap<String, RunStatus>()
+    @Volatile private var avisando = false
+
+    /** Começa a observar os robôs do celular (uma vez): proposta cadastrada, esperando você, falhou → sino. */
+    private fun garantirAvisos() {
+        if (avisando) return
+        avisando = true
+        escopo.launch {
+            engine.runs.collect { runs ->
+                runs.values.forEach { r ->
+                    val antes = ultimoStatus.put(r.id, r.status)
+                    if (antes == r.status || antes == null && r.status == RunStatus.EXECUTANDO) return@forEach
+                    runCatching { avisar(r) }
+                }
+            }
+        }
+    }
+
+    private suspend fun avisar(r: com.licitaia.feature.live.automation.RobotRun) {
+        val qual = if (r.kind == RobotKind.LANCE) "Robô de lance" else "Robô de proposta"
+        val (tipo, titulo, msg) = when (r.status) {
+            RunStatus.AGUARDANDO_USUARIO, RunStatus.PAUSADO ->
+                Triple("alerta", "$qual do celular esperando você", "${r.title}: ${r.message ?: r.step}. Abra o app para continuar.")
+            RunStatus.CONCLUIDO -> {
+                val plan = if (r.kind == RobotKind.PROPOSTA) roboRepo.getPlan(r.companyId, r.tenderKey) else null
+                if (r.kind == RobotKind.PROPOSTA && plan?.proposalStatus == RobotProposalStatus.CADASTRADA)
+                    Triple("sucesso", "Proposta cadastrada pelo celular", "${r.title}: ${r.message ?: r.log.lastOrNull().orEmpty()}")
+                else Triple("info", "$qual do celular terminou", "${r.title}: ${r.message ?: r.log.lastOrNull().orEmpty()}")
+            }
+            RunStatus.FALHOU -> Triple("erro", "$qual do celular falhou", "${r.title}: ${r.message ?: r.log.lastOrNull().orEmpty()}")
+            else -> return
+        }
+        vps("POST", "/api/notificacoes/evento", JSONObject().put("origem", "celular").put("tipo", tipo)
+            .put("titulo", titulo).put("mensagem", msg.take(900)).toString())
+    }
+
+    /** Alertas internos do NAVEGADOR DA VPS (login gov.br, primary/standby, redundância, captcha noVNC): no app quem
+     *  trabalha é o robô do celular; esses alertas só confundem (mesma regra do programa do PC). */
+    private fun daVps(n: JSONObject): Boolean {
+        val canal = n.optString("canal")
+        val txt = n.optString("titulo") + " " + n.optString("mensagem")
+        return canal.contains("captcha", true) || canal.startsWith("browser-ha") ||
+            Regex("autenticac[aã]o necess[aá]ria|primary|standby|failover|novnc|redund[aâ]ncia|navegador (esta|está)|browser-0", RegexOption.IGNORE_CASE).containsMatchIn(txt)
+    }
 
     fun handles(method: String, path: String): Boolean {
         val p = path.substringBefore('?')
@@ -93,6 +142,18 @@ class SiteLocal @Inject constructor(
     }
 
     private suspend fun route(m: String, p: String, full: String, body: String): Resp {
+        garantirAvisos()
+        // ---- sino: sem os alertas do navegador da VPS; o número é o da lista que aparece ----
+        if (m == "GET" && p == "/api/notificacoes") {
+            val (st, txt) = vps("GET", full)
+            val d = runCatching { JSONObject(txt) }.getOrNull() ?: return Resp(st, txt)
+            val lista = d.optJSONArray("data") ?: return Resp(st, txt)
+            val fica = JSONArray()
+            for (i in 0 until lista.length()) lista.optJSONObject(i)?.let { if (!daVps(it)) fica.put(it) }
+            d.put("data", fica)
+            d.put("naoLidas", (0 until fica.length()).count { !fica.getJSONObject(it).optBoolean("lida", false) })
+            return Resp(st, d.toString())
+        }
         // ---- telas nativas e respostas da empresa (cartões que o app coloca no site) ----
         if (p == "/__app/declaracoes") {
             if (m == "POST") salvarDeclaracoes(JSONObject(body.ifBlank { "{}" }))
@@ -386,14 +447,16 @@ class SiteLocal @Inject constructor(
     }
 
     // ================================================================== VPS (passa direto, com o login)
-    private suspend fun vps(method: String, pathAndQuery: String): Pair<Int, String> {
-        val token = repository.siteAuth()?.first ?: return 401 to obj("error" to "sem login")
+    private suspend fun vps(method: String, pathAndQuery: String, body: String? = null): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val token = repository.siteAuth()?.first ?: return@withContext 401 to obj("error" to "sem login")
         val base = PlatformConfig.DEFAULT_BASE_URL.removeSuffix("/").removeSuffix("/api")
         val c = (URL(base + pathAndQuery).openConnection() as HttpURLConnection).apply {
             requestMethod = method; connectTimeout = 15000; readTimeout = 30000
             setRequestProperty("Authorization", "Bearer $token"); setRequestProperty("Accept", "application/json")
+            if (body != null) { doOutput = true; setRequestProperty("Content-Type", "application/json; charset=utf-8") }
         }
-        return try {
+        if (body != null) c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        try {
             val st = c.responseCode
             val txt = (if (st in 200..399) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             st to txt

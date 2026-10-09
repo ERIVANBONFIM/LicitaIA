@@ -30,8 +30,8 @@ android {
     defaultConfig {
         applicationId = "com.licitaia.app"
         targetSdk = 34
-        versionCode = 18
-        versionName = "0.7.0"
+        versionCode = 19
+        versionName = "0.7.1"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
         // Inspeção do WebView (chrome://inspect) só em builds locais de diagnóstico: -Plicitaia.webviewDebug=true.
         // Releases publicados nunca usam essa flag.

@@ -279,6 +279,12 @@ internal object PlatformSiteScript {
     // textos longos (avisos tecnicos, codigos) quebram dentro do cartao
     '.layout-content pre,.layout-content code{white-space:pre-wrap !important;word-break:break-word}',
     '.layout-content [class*="aviso"],.layout-content [class*="alert"],.layout-content [class*="motivo"]{overflow-wrap:anywhere;min-width:0}',
+    // sino: a lista abre inteira na tela do celular (no site ela fica presa a direita e saia da tela)
+    '.notif-dropdown{position:fixed !important;left:10px !important;right:10px !important;top:66px !important;width:auto !important;max-width:none !important;max-height:72vh !important;overflow-y:auto !important;z-index:1001 !important;border-radius:14px !important;box-shadow:0 14px 34px rgba(0,0,0,.18) !important}',
+    '.notif-dropdown-header{display:flex !important;justify-content:space-between;align-items:center;gap:8px;padding:12px 14px !important}',
+    '.notif-item{padding:10px 14px !important}',
+    '.notif-titulo{font-size:13px !important;font-weight:700 !important;white-space:normal !important}',
+    '.notif-msg{font-size:12.5px !important;white-space:normal !important;overflow-wrap:anywhere}',
     // IA: no app vale so a IA DESTE celular (o cartao Claude e o cadastro do site configuram a IA da VPS)
     '.aba-provedores-ia > *:not(#lz-ia){display:none !important}',
     // selos/etiquetas nao quebram no meio da palavra ("ATIV / O")
