@@ -332,13 +332,13 @@ class PlatformApi(
         postJson(url("mensagens"), payload, OkDto.serializer(), token)
     }
 
-    /** `POST /mensagens` de uma mensagem do PREGOEIRO lida no portal pelo robô do aparelho. */
+    /** `POST /licitacoes/:id/mensagens-portal`: mensagem do PREGOEIRO lida no portal pelo robô do aparelho. */
     suspend fun enviarMensagemPregoeiro(token: String, licitacaoId: String, conteudo: String, remetente: String, enviadaEm: Long) {
         val payload = json.encodeToString(
             MensagemRequest.serializer(),
             MensagemRequest(licitacaoId, conteudo, tipo = "pregoeiro", remetente = remetente, enviadaEm = enviadaEm),
         )
-        postJson(url("mensagens"), payload, OkDto.serializer(), token)
+        postJson(url("licitacoes/$licitacaoId/mensagens-portal"), payload, OkDto.serializer(), token)
     }
 
     /** `POST /licitacoes/:id/robo-eventos` (lances/posição vistos pelo robô do aparelho). */

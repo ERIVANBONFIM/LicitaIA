@@ -91,7 +91,10 @@ class PlatformRobotSync @Inject constructor(
                                 if (e.id == 0L || jaEnviado(k)) return@forEach
                                 val req = RoboEventoRequest(
                                     tipo = e.type.name, valor = e.value, ator = e.actor, descricao = e.description,
-                                    item = s.itemLabel.takeIf { it.isNotBlank() }, momento = e.timestamp, idLocal = k,
+                                    item = s.itemLabel.takeIf { it.isNotBlank() },
+                                    itemNumero = Regex("\\d+").find(s.itemLabel)?.value?.toIntOrNull(),
+                                    posicao = s.position.takeIf { it > 0 },
+                                    momento = e.timestamp, idLocal = k,
                                 )
                                 repository.enviarRoboEvento(lic, req).onSuccess { marcar(k) }
                             }

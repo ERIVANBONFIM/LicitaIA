@@ -410,6 +410,10 @@ data class RoboEventoRequest(
     val ator: String,
     val descricao: String,
     val item: String? = null,
+    /** Número do item ("Item 1" → 1): atualiza o quadro do item no "Pregão ao vivo". */
+    val itemNumero: Int? = null,
+    /** Nossa posição no item no momento (1 = vencendo). */
+    val posicao: Int? = null,
     /** Momento do evento no aparelho (epoch ms). */
     val momento: Long,
     /** Id local do evento (evita duplicar no servidor se o envio for repetido). */
