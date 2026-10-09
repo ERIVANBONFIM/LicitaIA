@@ -169,7 +169,7 @@ private fun RoboCard(
     var piso by rememberSaveable(robo?.valorMinimo) { mutableStateOf(robo?.valorMinimo?.takeIf { it > 0 }?.let { fmtNum(it) } ?: "") }
     var decremento by rememberSaveable(robo?.decremento) { mutableStateOf(robo?.decremento?.takeIf { it > 0 }?.let { fmtNum(it) } ?: "") }
     var intervalo by rememberSaveable(robo?.intervaloSegundos) { mutableStateOf(robo?.intervaloSegundos?.toString() ?: "30") }
-    var estrategia by rememberSaveable(robo?.estrategia) { mutableStateOf(robo?.estrategia ?: "moderada") }
+    var estrategia by rememberSaveable(robo?.estrategia) { mutableStateOf(robo?.estrategia ?: "conservadora") }
     // Piso POR ITEM (numero → texto), pré-preenchido com o valor já salvo em cada item.
     val itemFloors = remember(s.itens) {
         mutableStateMapOf<Int, String>().apply {
@@ -180,14 +180,15 @@ private fun RoboCard(
     val itensComNumero = s.itens.filter { it.numero != null }
     fun pisosItens(): List<PisoItemRequest> = itensComNumero.mapNotNull { pi ->
         val num = pi.numero ?: return@mapNotNull null
-        val v = itemFloors[num]?.trim()?.toDoubleOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
+        val v = parseValor(itemFloors[num])?.takeIf { it > 0 } ?: return@mapNotNull null
         PisoItemRequest(num, v)
     }
     // valorMinimo (obrigatório): MENOR piso informado; se nenhum item tiver piso, usa o "piso geral".
-    fun valorMinimo(): Double? = pisosItens().minOfOrNull { it.valorLanceMinimo } ?: piso.trim().toDoubleOrNull()?.takeIf { it > 0 }
-    fun decrementoVal(): Double = decremento.trim().toDoubleOrNull()?.takeIf { it > 0 } ?: 0.01
+    fun valorMinimo(): Double? = pisosItens().minOfOrNull { it.valorLanceMinimo } ?: parseValor(piso)?.takeIf { it > 0 }
+    fun decrementoVal(): Double = parseValor(decremento)?.takeIf { it > 0 } ?: 0.01
+    var showNuvem by rememberSaveable { mutableStateOf(false) }
 
-    val armed = robo?.ativo == true
+    val armed = robo?.ativo == true && (robo.valorMinimo ?: 0.0) > 0
     val roboAccent = if (armed) LicitaColors.Green else if (robo != null) LicitaColors.Yellow else null
     LicitaCard(Modifier.fillMaxWidth(), accent = roboAccent) {
         // Cabeçalho no mesmo formato do robô local (bolha de ícone + título + status pulsante).
@@ -204,16 +205,27 @@ private fun RoboCard(
             if (robo != null) StatusBadge(if (armed) "Armado" else "Desarmado", if (armed) Tone.SUCCESS else Tone.NEUTRAL, pulsing = armed)
         }
         Spacer(Modifier.height(10.dp))
-        if (robo != null) {
-            robo.modoExecucao?.let { StatusBadge(if (it == "auto") "AUTO (lance real)" else "teste (dry_run)", if (it == "auto") Tone.DANGER else Tone.INFO) }
+        InfoRow("Modo", "Manual — o robô sugere, você toca Enviar")
+        if (robo?.modoExecucao == "auto") {
             Spacer(Modifier.height(6.dp))
-            robo.estrategia?.let { InfoRow("Estratégia", it) }
-            InfoRow("Piso (valor mínimo)", robo.valorMinimo?.let { PlatformFormat.currency(fmtNum(it)) } ?: "—")
-            robo.decremento?.let { InfoRow("Decremento", fmtNum(it)) }
-            robo.intervaloSegundos?.let { InfoRow("Intervalo (s)", "$it") }
+            AlertBanner(
+                "Lance automático na NUVEM ligado",
+                "O robô do servidor está armado para dar lances sozinho ao Participar. Veja \"Robô na nuvem (avançado)\".",
+                Tone.DANGER,
+            )
+        }
+        if (robo != null) {
+            robo.estrategia?.let { InfoRow("Estratégia", estrategiaLabel(it)) }
+            InfoRow("Piso (valor mínimo)", robo.valorMinimo?.takeIf { it > 0 }?.let { PlatformFormat.currency(it.toString()) } ?: "não definido")
+            InfoRow("Decremento", robo.decremento?.takeIf { it > 0 }?.let { PlatformFormat.currency(it.toString()) } ?: "não definido")
+            robo.intervaloSegundos?.let { InfoRow("Intervalo entre lances", "$it s") }
             InfoRow("Lances registrados", "${s.roboLances}")
         } else {
-            Text("Sem configuração de robô para esta licitação.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
+            Text("Robô ainda não armado nesta licitação.", style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextMuted)
+        }
+        if (!armed) {
+            Spacer(Modifier.height(4.dp))
+            Text("Arme o robô com o piso de cada item antes de iniciar.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.Yellow)
         }
         s.prontidao?.let { p ->
             Spacer(Modifier.height(6.dp))
@@ -223,32 +235,28 @@ private fun RoboCard(
             }
         }
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SecondaryButton("Preparar", onPrepararRobo, Modifier.weight(1f), enabled = !s.roboBusy, tone = Tone.NEUTRAL)
-            SecondaryButton("Participar", onParticiparRobo, Modifier.weight(1f), enabled = !s.roboBusy, tone = Tone.INFO)
-        }
-        Spacer(Modifier.height(8.dp))
-        SecondaryButton(
-            "Armar robô (teste / dry_run)", { showConfig = true }, Modifier.fillMaxWidth(), enabled = !s.roboBusy, tone = Tone.SUCCESS,
+        PrimaryButton(
+            if (armed) "Editar configuração do robô" else "Armar robô", { showConfig = true }, Modifier.fillMaxWidth(),
+            enabled = !s.roboBusy, icon = Icons.Outlined.SmartToy, tone = Tone.SUCCESS,
         )
 
-        // Prévia do lance (dry_run): cálculo LOCAL a partir da config; NADA é enviado ao portal.
+        // Prévia do lance: cálculo LOCAL a partir da config; NADA é enviado ao portal.
         val pisoAtual = robo?.valorMinimo?.takeIf { it > 0 }
         if (pisoAtual != null) {
             HorizontalDivider(Modifier.padding(vertical = 12.dp), color = LicitaColors.Outline)
-            Text("Prévia do lance (dry_run)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+            Text("Prévia do lance (só cálculo, nada é enviado)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             var bestInput by rememberSaveable { mutableStateOf("") }
             var preview by rememberSaveable { mutableStateOf<String?>(null) }
             androidx.compose.material3.OutlinedTextField(
                 value = bestInput,
-                onValueChange = { bestInput = it.filter { c -> c.isDigit() || c == '.' } },
+                onValueChange = { bestInput = it.filter { c -> c.isDigit() || c == '.' || c == ',' } },
                 label = { Text("Melhor lance atual (R$)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(6.dp))
-            SecondaryButton("Simular lance", { preview = simularLance(pisoAtual, robo?.decremento, bestInput) }, Modifier.fillMaxWidth(), tone = Tone.INFO)
+            SecondaryButton("Simular lance", { preview = simularLance(pisoAtual, robo?.decremento, parseValor(bestInput)?.toString() ?: "") }, Modifier.fillMaxWidth(), tone = Tone.INFO)
             preview?.let {
                 Spacer(Modifier.height(6.dp))
                 Text(it, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary)
@@ -258,7 +266,7 @@ private fun RoboCard(
         // Execução ON-DEVICE (modo MANUAL): roda o motor local reusado; lê a sala e SUGERE. Só envia quando o
         // usuário toca "Enviar" na sugestão (mesmas travas de piso/intervalo do modo local). Nunca envia sozinho.
         HorizontalDivider(Modifier.padding(vertical = 12.dp), color = LicitaColors.Outline)
-        Text("Rodar no aparelho (modo manual)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+        Text("Disputa no aparelho", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         if (roboRun != null) {
             StatusBadge(roboRun.status.name.lowercase().replace('_', ' '), Tone.INFO)
@@ -289,13 +297,40 @@ private fun RoboCard(
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
             )
             Spacer(Modifier.height(8.dp))
-            SecondaryButton("Iniciar robô no aparelho (manual)", onIniciarRoboLocal, Modifier.fillMaxWidth(), enabled = !s.roboBusy, tone = Tone.SUCCESS)
+            SecondaryButton("Iniciar robô no aparelho", onIniciarRoboLocal, Modifier.fillMaxWidth(), enabled = !s.roboBusy && armed, tone = Tone.SUCCESS)
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "Lance automático (sem você tocar) não é liberado aqui: no aparelho o robô sugere e você decide cada envio. O certificado nunca sai do aparelho.",
+            "No aparelho o robô sugere e você decide cada envio. O certificado nunca sai do aparelho.",
             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
         )
+
+        // Robô da NUVEM (servidor): recolhido — o caminho principal é o robô do aparelho.
+        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = LicitaColors.Outline)
+        Row(
+            Modifier.fillMaxWidth().clickable { showNuvem = !showNuvem }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Robô na nuvem (avançado)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f))
+            Text(if (showNuvem) "ocultar" else "mostrar", style = MaterialTheme.typography.labelMedium, color = LicitaColors.Blue)
+        }
+        if (showNuvem) {
+            Text(
+                "Roda no SERVIDOR da plataforma, não no seu celular. Preparar confere o portal; Participar coloca o robô do servidor " +
+                    "na disputa. Só dá lances sozinho se o lance automático da nuvem estiver ligado.",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryButton("Preparar", onPrepararRobo, Modifier.weight(1f), enabled = !s.roboBusy, tone = Tone.NEUTRAL)
+                SecondaryButton("Participar", onParticiparRobo, Modifier.weight(1f), enabled = !s.roboBusy, tone = Tone.INFO)
+            }
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton(
+                "Lance automático pela nuvem…", { if (valorMinimo()?.let { it > 0 } == true) confirmAuto = true else showConfig = true },
+                Modifier.fillMaxWidth(), enabled = !s.roboBusy, tone = Tone.DANGER,
+            )
+        }
     }
 
     if (showConfig) {
@@ -304,20 +339,31 @@ private fun RoboCard(
             title = { Text("Armar robô") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    androidx.compose.material3.OutlinedTextField(estrategia, { estrategia = it }, label = { Text("Estratégia (ex.: moderada)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Text("Estratégia", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ESTRATEGIAS.take(2).forEach { (v, l) -> androidx.compose.material3.FilterChip(selected = estrategia == v, onClick = { estrategia = v }, label = { Text(l) }) }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ESTRATEGIAS.drop(2).forEach { (v, l) -> androidx.compose.material3.FilterChip(selected = estrategia == v, onClick = { estrategia = v }, label = { Text(l) }) }
+                    }
+                    Text(estrategiaDescricao(estrategia), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        androidx.compose.material3.OutlinedTextField(decremento, { decremento = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Decremento") }, singleLine = true, modifier = Modifier.weight(1f))
+                        androidx.compose.material3.OutlinedTextField(decremento, { decremento = it.filter { c -> c.isDigit() || c == '.' || c == ',' } }, label = { Text("Decremento (R$)") }, singleLine = true, modifier = Modifier.weight(1f))
                         androidx.compose.material3.OutlinedTextField(intervalo, { intervalo = it.filter { c -> c.isDigit() } }, label = { Text("Intervalo (s)") }, singleLine = true, modifier = Modifier.weight(1f))
                     }
+                    Text(
+                        "Decremento: diferença mínima entre lances exigida no edital (ex.: R$ 10,00). Intervalo: mínimo de 20 s entre lances seus (regra do Compras.gov).",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                    )
                     Spacer(Modifier.height(12.dp))
                     if (itensComNumero.isEmpty()) {
                         // Sem itens com nº: cai para um piso geral único (obrigatório).
-                        androidx.compose.material3.OutlinedTextField(piso, { piso = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Piso / valor mínimo (obrigatório)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        androidx.compose.material3.OutlinedTextField(piso, { piso = it.filter { c -> c.isDigit() || c == '.' || c == ',' } }, label = { Text("Piso / valor mínimo (R$)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     } else {
                         Text("Piso por item (lance mínimo)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "O robô nunca dá lance abaixo do piso de cada item. Para LANCE REAL (auto), o backend exige o piso de TODOS os itens.",
+                            "O menor valor que você aceita em cada item. O robô nunca sugere nem envia lance abaixo dele.",
                             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
                         )
                         itensComNumero.forEach { pi ->
@@ -332,18 +378,21 @@ private fun RoboCard(
                             if (meta.isNotEmpty()) Text(meta.joinToString("  ·  "), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                             androidx.compose.material3.OutlinedTextField(
                                 value = itemFloors[num].orEmpty(),
-                                onValueChange = { itemFloors[num] = it.filter { c -> c.isDigit() || c == '.' } },
+                                onValueChange = { itemFloors[num] = it.filter { c -> c.isDigit() || c == '.' || c == ',' } },
                                 label = { Text("Piso do item $num (R$)") },
                                 singleLine = true, modifier = Modifier.fillMaxWidth(),
                             )
                         }
                     }
                     Spacer(Modifier.height(10.dp))
-                    Text("Será armado em modo de TESTE (dry_run): decide e registra, sem enviar lances reais.", style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
+                    Text(
+                        "No dia, o robô do aparelho lê a sala e sugere cada lance a partir desses valores; o lance só sai quando você toca Enviar.",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
+                    )
                 }
             },
             confirmButton = {
-                PrimaryButton("Armar (dry_run)", {
+                PrimaryButton("Armar robô", {
                     val vm = valorMinimo()
                     if (vm != null && vm > 0) {
                         onArmarRobo(vm, decrementoVal(), estrategia.trim().ifBlank { null }, intervalo.trim().toIntOrNull(), pisosItens(), false)
@@ -351,12 +400,7 @@ private fun RoboCard(
                     }
                 }, enabled = valorMinimo()?.let { it > 0 } == true)
             },
-            dismissButton = {
-                // "Ativar lance real" exige confirmação extra (trava).
-                SecondaryButton("Lance REAL…", {
-                    if (valorMinimo()?.let { it > 0 } == true) { showConfig = false; confirmAuto = true }
-                }, tone = Tone.DANGER)
-            },
+            dismissButton = { SecondaryButton("Cancelar", { showConfig = false }, tone = Tone.NEUTRAL) },
         )
     }
 
@@ -364,10 +408,13 @@ private fun RoboCard(
         val faltamPisos = itensComNumero.isNotEmpty() && pisosItens().size < itensComNumero.size
         AlertDialog(
             onDismissRequest = { confirmAuto = false },
-            title = { Text("Ativar lance REAL?") },
+            title = { Text("Ligar lance automático na NUVEM?") },
             text = {
                 Column {
-                    Text("Isto vai DAR LANCES REAIS no portal, respeitando o piso de cada item. A disputa roda no aparelho com o seu certificado local. Confirma?")
+                    Text(
+                        "Isto arma o robô do SERVIDOR da plataforma para DAR LANCES REAIS SOZINHO quando você tocar Participar, " +
+                            "respeitando o piso de cada item. Não é o robô do seu celular. Confirma?",
+                    )
                     if (faltamPisos) {
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -378,7 +425,7 @@ private fun RoboCard(
                 }
             },
             confirmButton = {
-                PrimaryButton("Sim, lance real", {
+                PrimaryButton("Sim, lance automático na nuvem", {
                     val vm = valorMinimo()
                     if (vm != null && vm > 0) onArmarRobo(vm, decrementoVal(), estrategia.trim().ifBlank { null }, intervalo.trim().toIntOrNull(), pisosItens(), true)
                     confirmAuto = false
@@ -390,6 +437,32 @@ private fun RoboCard(
 }
 
 private fun fmtNum(v: Double): String = if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
+
+/** "1.500,00" (BR) ou "1500.5": com vírgula, ponto é milhar; sem vírgula, ponto é decimal. */
+private fun parseValor(s: String?): Double? {
+    val t = s?.trim().orEmpty()
+    if (t.isEmpty()) return null
+    val n = if (t.contains(',')) t.replace(".", "").replace(',', '.') else t
+    return n.toDoubleOrNull()?.takeIf { it.isFinite() }
+}
+
+/** Estratégias do robô (valor gravado na VPS → rótulo), no padrão da tela Estratégias. */
+private val ESTRATEGIAS = listOf(
+    "conservadora" to "Conservadora",
+    "agressiva" to "Agressiva",
+    "acompanhar_concorrente" to "Acompanhar concorrente",
+    "personalizada" to "Personalizada",
+)
+
+private fun estrategiaLabel(v: String): String = ESTRATEGIAS.firstOrNull { it.first == v }?.second ?: v.replace('_', ' ').replaceFirstChar { it.uppercase() }
+
+private fun estrategiaDescricao(v: String): String = when (v) {
+    "conservadora" -> "Só reage quando perde a 1ª posição e cobre pelo decremento mínimo. Poucos lances, preserva margem."
+    "agressiva" -> "Cobre o melhor lance rapidamente, com mais lances, sempre respeitando o piso."
+    "acompanhar_concorrente" -> "Segue o líder de perto, cobrindo cada lance dele pelo decremento."
+    "personalizada" -> "Usa o decremento e o intervalo que você definir."
+    else -> "Estratégia atual: ${estrategiaLabel(v)}. Escolha uma acima para trocar."
+}
 
 /**
  * Prévia (dry_run) do próximo lance, cálculo LOCAL e transparente: cobre o melhor lance pelo decremento,
