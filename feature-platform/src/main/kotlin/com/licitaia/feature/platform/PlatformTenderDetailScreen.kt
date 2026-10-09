@@ -166,14 +166,19 @@ private fun RoboCard(
     var showConfig by rememberSaveable { mutableStateOf(false) }
     var confirmAuto by rememberSaveable { mutableStateOf(false) }
     // Campos editáveis (piso é obrigatório).
-    var piso by rememberSaveable(robo?.valorMinimo) { mutableStateOf(robo?.valorMinimo?.takeIf { it > 0 }?.let { fmtNum(it) } ?: "") }
-    var decremento by rememberSaveable(robo?.decremento) { mutableStateOf(robo?.decremento?.takeIf { it > 0 }?.let { fmtNum(it) } ?: "") }
+    var piso by rememberSaveable(robo?.valorMinimo) { mutableStateOf(robo?.valorMinimo?.takeIf { it > 0 }?.let { fmtBR(it) } ?: "") }
+    var decremento by rememberSaveable(robo?.decremento) { mutableStateOf(robo?.decremento?.takeIf { it > 0 }?.let { fmtBR(it) } ?: "") }
     var intervalo by rememberSaveable(robo?.intervaloSegundos) { mutableStateOf(robo?.intervaloSegundos?.toString() ?: "30") }
     var estrategia by rememberSaveable(robo?.estrategia) { mutableStateOf(robo?.estrategia ?: "conservadora") }
     // Piso POR ITEM (numero → texto), pré-preenchido com o valor já salvo em cada item.
-    val itemFloors = remember(s.itens) {
+    val itemFloors = remember(s.itens, robo?.valorMinimo) {
         mutableStateMapOf<Int, String>().apply {
-            s.itens.forEach { pi -> pi.numero?.let { n -> put(n, pi.valorLanceMinimo?.toDoubleOrNull()?.takeIf { it > 0 }?.let { fmtNum(it) } ?: "") } }
+            // Piso salvo do item; com UM item só, cai no piso geral salvo (era gravado assim antes).
+            val umItem = s.itens.count { it.numero != null } == 1
+            s.itens.forEach { pi -> pi.numero?.let { n ->
+                val v = pi.valorLanceMinimo?.toDoubleOrNull()?.takeIf { it > 0 } ?: robo?.valorMinimo?.takeIf { umItem && it > 0 }
+                put(n, v?.let { fmtBR(it) } ?: "")
+            } }
         }
     }
     // Itens com nº (os únicos que entram em pisosItens). Monta a lista a partir do que o usuário digitou.
@@ -451,6 +456,9 @@ private fun semRepeticao(s: String): String {
     if (t.length >= 8 && t.length % 2 == 1 && t[meio] == ' ' && t.substring(0, meio) == t.substring(meio + 1)) return t.substring(0, meio)
     return t
 }
+
+/** 98700.0 → "98.700,00" (padrão brasileiro, sem "R$"). */
+private fun fmtBR(v: Double): String = String.format(java.util.Locale("pt", "BR"), "%,.2f", v)
 
 /** "1.500,00" (BR) ou "1500.5": com vírgula, ponto é milhar; sem vírgula, ponto é decimal. */
 private fun parseValor(s: String?): Double? {
