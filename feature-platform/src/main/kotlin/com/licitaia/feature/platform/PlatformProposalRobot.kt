@@ -42,8 +42,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -154,9 +156,12 @@ internal fun PropostaRoboDialog(
     onConfirm: (items: List<ProposalItemPlan>, declarations: PortalDeclarations, updateDifferent: Boolean) -> Unit,
 ) {
     val items = remember(candidatos) { mutableStateListOf<ProposalItemPlan>().apply { addAll(candidatos) } }
-    // Texto digitado do preço de cada item (permite vírgula e campo vazio enquanto digita).
+    // Valor de cada item em MÁSCARA DE DINHEIRO (como app de banco): só dígitos, os 2 últimos são os centavos
+    // → "1400000" vira "14.000,00". O cursor fica sempre no fim.
     val precos = remember(candidatos) {
-        mutableStateMapOf<Int, String>().apply { candidatos.forEach { put(it.itemNumber, if (it.unitPrice > 0) fmtPreco(it.unitPrice) else "") } }
+        mutableStateMapOf<Int, TextFieldValue>().apply {
+            candidatos.forEach { val t = if (it.unitPrice > 0) fmtPreco(it.unitPrice) else ""; put(it.itemNumber, TextFieldValue(t, TextRange(t.length))) }
+        }
     }
     var accept by remember { mutableStateOf(false) }
     var decl by remember { mutableStateOf(PortalDeclarations()) }
@@ -164,14 +169,13 @@ internal fun PropostaRoboDialog(
     val sel = RobotPlanRules.selection(items)
     val errors = RobotPlanRules.confirmationErrors(items, accept, decl)
 
-    fun setPreco(n: Int, txt: String) {
-        precos[n] = txt
+    fun setPreco(n: Int, input: TextFieldValue) {
+        val centavos = input.text.filter(Char::isDigit).trimStart('0').take(13).toLongOrNull() ?: 0L
+        val v = centavos / 100.0
+        val txt = if (centavos > 0) fmtPreco(v) else ""
+        precos[n] = TextFieldValue(txt, TextRange(txt.length))
         val idx = items.indexOfFirst { it.itemNumber == n }
         if (idx < 0) return
-        // "1.522,06" (BR) ou "1522.06": com vírgula, ponto é milhar; sem vírgula, ponto é decimal.
-        val t = txt.trim()
-        val normal = if (t.contains(',')) t.replace(".", "").replace(',', '.') else t
-        val v = normal.toDoubleOrNull()?.takeIf { it > 0 && it.isFinite() } ?: 0.0
         val cur = items[idx]
         items[idx] = cur.copy(unitPrice = v, selected = if (v > 0) cur.selected || cur.unitPrice <= 0 else false)
     }
@@ -239,9 +243,10 @@ internal fun PropostaRoboDialog(
                             }
                             Spacer(Modifier.width(8.dp))
                             OutlinedTextField(
-                                value = precos[i.itemNumber].orEmpty(), onValueChange = { setPreco(i.itemNumber, it) },
-                                label = { Text("Valor unit. (R$)") }, singleLine = true, modifier = Modifier.width(140.dp),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                value = precos[i.itemNumber] ?: TextFieldValue(""), onValueChange = { setPreco(i.itemNumber, it) },
+                                label = { Text("Valor unit. (R$)") }, placeholder = { Text("0,00") }, singleLine = true,
+                                modifier = Modifier.width(150.dp),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                             )
                         }
                     }
@@ -291,6 +296,7 @@ private fun Declaracao(label: String, value: Boolean?, onChange: (Boolean) -> Un
     }
 }
 
-private fun fmtPreco(v: Double): String = String.format(java.util.Locale.US, "%.2f", v).replace('.', ',')
+/** 14000.0 → "14.000,00" (padrão brasileiro, sem "R$"). */
+private fun fmtPreco(v: Double): String = String.format(java.util.Locale("pt", "BR"), "%,.2f", v)
 
 private fun fmtQtd(v: Double): String = if (v % 1.0 == 0.0) v.toLong().toString() else v.toString().replace('.', ',')
