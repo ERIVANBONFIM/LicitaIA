@@ -160,6 +160,16 @@ class SiteLocal @Inject constructor(
             if (m == "DELETE") prefs.edit().remove(K_DECL).apply()
             return Resp(200, declaracoesJson().toString())
         }
+        // Seta "Abrir no portal" de uma compra do Compras.gov: abre o Compras.gov DESTE celular já buscando a compra
+        if (p == "/__app/abrir/compra") {
+            val q = android.net.Uri.parse("https://x$full")
+            val uasg = q.getQueryParameter("uasg")?.filter(Char::isDigit)?.takeIf { it.isNotEmpty() }
+            val numero = q.getQueryParameter("numero")?.takeIf { Regex("""\d+/\d{4}""").matches(it) }
+            val url = q.getQueryParameter("url")?.takeIf { it.startsWith("https://") }
+            val rota = if (uasg != null && numero != null) Routes.portalWebTarget(Portal.COMPRAS_GOV, url, uasg, numero)
+                else Routes.portalWebTarget(Portal.COMPRAS_GOV, url)
+            return Resp(200, obj("ok" to true), abrir = rota)
+        }
         if (p.startsWith("/__app/abrir/")) {
             val rota = when (p.removePrefix("/__app/abrir/")) {
                 "ia" -> Routes.AI_SETTINGS
@@ -218,6 +228,12 @@ class SiteLocal @Inject constructor(
         }
         Regex("^/api/integracoes/portal/([^/]+)/(verificar-sessao|abrir-login|fechar)$").find(p)?.let { mm ->
             val nome = mm.groupValues[1].lowercase()
+            // PNCP é público (API aberta, sem login): "Abrir Login" abre o site do PNCP; sessão sempre disponível.
+            if (nome == "pncp") return when (mm.groupValues[2]) {
+                "abrir-login" -> Resp(200, obj("mensagem" to "Abri o PNCP. Ele é público: não precisa de login."), abrir = "externo:https://pncp.gov.br/app/editais")
+                "fechar" -> Resp(200, obj("mensagem" to "O PNCP é público: não há sessão para desconectar."))
+                else -> Resp(200, obj("ok" to true, "mensagem" to "PNCP: API pública, sempre disponível (não precisa de login)."))
+            }
             if (!("comprasnet" in nome || "compras" in nome)) return Resp(200, obj("ok" to false, "mensagem" to "Neste celular só o Compras.gov está ligado ao robô."))
             return when (mm.groupValues[2]) {
                 "abrir-login" -> Resp(200, obj("mensagem" to "Abri o Compras.gov neste celular: ele entra sozinho com o certificado."), abrir = Routes.portalWeb(Portal.COMPRAS_GOV))

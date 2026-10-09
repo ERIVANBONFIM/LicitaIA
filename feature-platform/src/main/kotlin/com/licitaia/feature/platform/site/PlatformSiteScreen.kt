@@ -91,7 +91,12 @@ fun PlatformSiteScreen(viewModel: PlatformSiteViewModel = hiltViewModel()) {
 
     // Telas nativas pedidas pelo site (Compras.gov deste celular, IA, Portais/certificado)
     val navigator = LocalAppNavigator.current
-    LaunchedEffect(Unit) { viewModel.abrir.collect { navigator.navigate(it) } }
+    val ctxAtual = LocalContext.current
+    LaunchedEffect(Unit) {
+        viewModel.abrir.collect {
+            if (it.startsWith("externo:")) abrirFora(ctxAtual, Uri.parse(it.removePrefix("externo:"))) else navigator.navigate(it)
+        }
+    }
 
     Box(
         Modifier

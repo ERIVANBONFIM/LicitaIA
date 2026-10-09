@@ -77,6 +77,15 @@ internal object PlatformSiteScript {
     };
   })();
 
+  // ---- seta "Abrir no portal" de compra do Compras.gov: abre o Compras.gov DESTE celular ja buscando a compra ----
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest && e.target.closest('a.lz-portal-seta');
+    if (!a || !window.LicitaApp || a.getAttribute('data-comprasnet') !== '1') return;
+    e.preventDefault(); e.stopPropagation();
+    lzApp('GET', '/__app/abrir/compra?uasg=' + encodeURIComponent(a.getAttribute('data-uasg') || '') +
+      '&numero=' + encodeURIComponent(a.getAttribute('data-numero') || '') + '&url=' + encodeURIComponent(a.getAttribute('href') || ''));
+  }, true);
+
   // ---- cartoes "deste celular" nas Configuracoes (padrao do site) ----
   var CARD = 'background:#fff;border:1px solid #e6eaf0;border-radius:14px;padding:14px 16px;margin:0 0 14px;font-family:Inter,system-ui,sans-serif';
   var BTN = 'display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:10px;font-weight:600;font-size:13px;padding:9px 14px;border:1px solid #00874a;background:#00874a;color:#fff;cursor:pointer';
