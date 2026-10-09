@@ -133,7 +133,7 @@ private fun AtivaCard(a: RoboAtivaDto, onOpen: () -> Unit) {
         }
         a.modoExecucao?.let {
             Spacer(Modifier.height(6.dp))
-            StatusBadge(if (it == "auto") "AUTO (lance real)" else "teste (dry_run)", if (it == "auto") Tone.DANGER else Tone.INFO)
+            StatusBadge(if (it == "auto") "Lance automático na NUVEM" else "Manual — você confirma", if (it == "auto") Tone.DANGER else Tone.INFO)
         }
         Spacer(Modifier.height(6.dp))
         a.valorMinimo?.let { InfoRow("Piso (valor mínimo)", PlatformFormat.currency(it)) }

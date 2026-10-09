@@ -105,7 +105,7 @@ private fun LiveRow(a: RoboAtivaDto, onOpen: () -> Unit) {
     LicitaCard(Modifier.fillMaxWidth().clickable(onClick = onOpen), accent = LicitaColors.Red) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(a.estrategia?.replaceFirstChar { it.uppercase() } ?: "Disputa", style = MaterialTheme.typography.titleSmall, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            a.modoExecucao?.let { StatusBadge(if (it == "auto") "AUTO" else "dry_run", if (it == "auto") Tone.DANGER else Tone.INFO) }
+            a.modoExecucao?.let { StatusBadge(if (it == "auto") "Automático (nuvem)" else "Manual", if (it == "auto") Tone.DANGER else Tone.INFO) }
         }
         Spacer(Modifier.height(6.dp))
         a.valorMinimo?.let { InfoRow("Piso", PlatformFormat.currency(it)) }

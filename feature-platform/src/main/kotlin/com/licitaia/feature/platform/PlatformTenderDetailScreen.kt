@@ -500,7 +500,7 @@ private fun simularLance(piso: Double, decremento: Double?, bestInput: String): 
     return if (proximo < piso) {
         "No piso: cobrir ${PlatformFormat.currency(best.toString())} exigiria ${PlatformFormat.currency(proximo.toString())}, abaixo do piso $pisoFmt. O robô PARARIA (não daria lance)."
     } else {
-        "O robô daria ${PlatformFormat.currency(proximo.toString())} (cobre ${PlatformFormat.currency(best.toString())}; decremento ${PlatformFormat.currency(dec.toString())}; piso $pisoFmt respeitado). dry_run: nada enviado ao portal."
+        "O robô daria ${PlatformFormat.currency(proximo.toString())} (cobre ${PlatformFormat.currency(best.toString())}; decremento ${PlatformFormat.currency(dec.toString())}; piso $pisoFmt respeitado). Só cálculo: nada é enviado ao portal."
     }
 }
 
