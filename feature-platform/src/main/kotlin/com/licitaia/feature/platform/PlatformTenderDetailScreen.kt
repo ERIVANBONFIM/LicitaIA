@@ -83,11 +83,17 @@ import com.licitaia.core.ui.theme.LicitaColors
 fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val roboRun by viewModel.roboRun.collectAsStateWithLifecycle()
+    val propostaRun by viewModel.propostaRun.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         viewModel.events.collect { navigator.showMessage(it) }
+    }
+    // O robô de proposta pediu a tela do portal (ou o usuário tocou "Ver no portal"): abre o Compras.gov.br
+    // no app, onde o usuário assiste o robô trabalhando — mesma tela do modo local.
+    LaunchedEffect(Unit) {
+        viewModel.abrirPortal.collect { navigator.navigate(Routes.portalWeb(com.licitaia.domain.model.Portal.COMPRAS_GOV)) }
     }
 
     LicitaScaffold(title = "Detalhe da licitação", subtitle = "Plataforma", showBack = true) { padding ->
@@ -115,6 +121,10 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     roboRun = roboRun,
                     onIniciarRoboLocal = viewModel::iniciarRoboLocal,
                     onPararRoboLocal = viewModel::pararRoboLocal,
+                    propostaRun = propostaRun,
+                    onCadastrarProposta = viewModel::abrirCadastroProposta,
+                    onPararProposta = viewModel::pararRoboProposta,
+                    onVerNoPortal = viewModel::verNoPortal,
                     onRegisterResult = viewModel::registrarResultado,
                     onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
                     onOpenLive = { navigator.navigate(Routes.platformLive(state.tender!!.id)) },
@@ -123,6 +133,18 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                             .onFailure { navigator.showMessage("Não foi possível abrir o portal.") }
                     },
                 )
+            }
+            val t = state.tender
+            state.propostaRoboItens?.let { candidatos ->
+                if (t != null) {
+                    PropostaRoboDialog(
+                        titulo = listOfNotNull(t.numero.takeIf { it.isNotBlank() }, t.orgao.takeIf { it.isNotBlank() }).joinToString(" · "),
+                        subtitulo = t.objeto,
+                        candidatos = candidatos, busy = state.propostaRoboBusy,
+                        onDismiss = viewModel::fecharCadastroProposta,
+                        onConfirm = viewModel::soltarRoboProposta,
+                    )
+                }
             }
         }
     }
@@ -531,6 +553,10 @@ private fun TenderDetail(
     roboRun: com.licitaia.feature.live.automation.RobotRun?,
     onIniciarRoboLocal: () -> Unit,
     onPararRoboLocal: () -> Unit,
+    propostaRun: com.licitaia.feature.live.automation.RobotRun?,
+    onCadastrarProposta: () -> Unit,
+    onPararProposta: () -> Unit,
+    onVerNoPortal: () -> Unit,
     onRegisterResult: (String) -> Unit,
     onOpenQa: () -> Unit,
     onOpenLive: () -> Unit,
@@ -730,6 +756,9 @@ private fun TenderDetail(
                 }
             }
         }
+
+        // Robô de PROPOSTA (no aparelho, mesmo motor do modo local): cadastra a proposta no Comprasnet.
+        PropostaRoboCard(s, propostaRun, onCadastrar = onCadastrarProposta, onParar = onPararProposta, onVerNoPortal = onVerNoPortal)
 
         // Robô de lance (config/arme via VPS + execução on-device em dry_run reusando o motor local)
         RoboCard(

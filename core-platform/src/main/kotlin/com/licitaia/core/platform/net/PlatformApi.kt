@@ -175,6 +175,9 @@ class PlatformApi(
                     unidade = it.str("unidade", "unidadeMedida", "unidadeFornecimento"),
                     valor = it.str("valorReferencia", "valorUnitario", "valorEstimado", "valorTotal"),
                     valorLanceMinimo = it.str("valorLanceMinimo", "lanceMinimo", "pisoItem"),
+                    valorProposto = it.str("valorProposto", "precoOfertado", "valorOfertado"),
+                    marca = it.str("marca", "marcaFabricante", "fabricante"),
+                    modelo = it.str("modelo", "modeloVersao", "versao"),
                 )
             }
 

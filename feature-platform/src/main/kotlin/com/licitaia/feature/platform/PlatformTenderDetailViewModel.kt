@@ -25,6 +25,7 @@ import com.licitaia.domain.model.BidStrategy
 import com.licitaia.domain.model.Company
 import com.licitaia.domain.model.Modality
 import com.licitaia.domain.model.Portal
+import com.licitaia.domain.model.PortalDeclarations
 import com.licitaia.domain.model.Tender
 import com.licitaia.domain.model.TenderAnalysis
 import com.licitaia.domain.model.TenderStatus
@@ -34,6 +35,7 @@ import com.licitaia.domain.portal.PortalMyTender
 import com.licitaia.domain.portal.PortalRobotPlan
 import com.licitaia.domain.portal.PortalRobotRepository
 import com.licitaia.domain.portal.PortalTenderMatching
+import com.licitaia.domain.portal.ProposalAuthorization
 import com.licitaia.domain.portal.ProposalItemPlan
 import com.licitaia.feature.live.automation.PortalRobotEngine
 import com.licitaia.feature.live.automation.RobotKind
@@ -85,6 +87,9 @@ data class PlatformDetailUi(
     val mensagens: List<MensagemDto> = emptyList(),
     val msgInput: String = "",
     val sendingMsg: Boolean = false,
+    /** Itens candidatos do robô de PROPOSTA; não-nulo = confirmação "Soltar robô — cadastrar proposta" aberta. */
+    val propostaRoboItens: List<ProposalItemPlan>? = null,
+    val propostaRoboBusy: Boolean = false,
 )
 
 @HiltViewModel
@@ -111,6 +116,15 @@ class PlatformTenderDetailViewModel @Inject constructor(
     val roboRun: StateFlow<RobotRun?> = combine(roboEngine.runs, _roboKey) { runs, key ->
         if (key == null) null else runs.values.firstOrNull { it.tenderKey == key && it.kind == RobotKind.LANCE && it.active }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Execução do robô de PROPOSTA desta licitação (a mais recente — continua visível depois de terminar). */
+    val propostaRun: StateFlow<RobotRun?> = combine(roboEngine.runs, _roboKey) { runs, key ->
+        if (key == null) null else runs.values.filter { it.tenderKey == key && it.kind == RobotKind.PROPOSTA }.maxByOrNull { it.startedAt }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    private val _abrirPortal = Channel<Unit>(Channel.BUFFERED)
+    /** Pede à tela que abra o portal (Compras.gov.br) para o usuário ASSISTIR o robô trabalhando. */
+    val abrirPortal = _abrirPortal.receiveAsFlow()
 
     init { load() }
 
@@ -362,6 +376,99 @@ class PlatformTenderDetailViewModel @Inject constructor(
             )
             _state.update { it.copy(roboBusy = false) }
         }
+    }
+
+    /**
+     * ROBÔ DE PROPOSTA no aparelho (mesmo motor do modo local, SEM alterá-lo): abre a confirmação com os itens da
+     * licitação vindos da plataforma, já com o preço ofertado salvo na VPS (valorProposto). Itens sem preço vêm
+     * desmarcados; o usuário digita o valor na confirmação.
+     */
+    fun abrirCadastroProposta() {
+        val dto = _state.value.tender ?: return
+        if (currentCompany() == null) { viewModelScope.launch { _events.send("Entre na plataforma.") }; return }
+        if (roboKeyOf(dto) == null) {
+            viewModelScope.launch { _events.send("Robô de proposta só para compras do Comprasnet com UASG/número/ano reconhecíveis.") }; return
+        }
+        val itens = _state.value.itens.filter { it.numero != null }
+        if (itens.isEmpty()) { viewModelScope.launch { _events.send("Sem itens carregados para esta licitação: não há o que cadastrar.") }; return }
+        val candidatos = itens.sortedBy { it.numero }.map { pi ->
+            val preco = pi.valorProposto?.toDoubleOrNull()?.takeIf { it > 0 } ?: 0.0
+            ProposalItemPlan(
+                itemNumber = pi.numero!!, description = pi.descricao.orEmpty(),
+                quantity = pi.quantidade?.toDoubleOrNull()?.takeIf { it > 0 } ?: 1.0,
+                unitPrice = preco, brand = pi.marca.orEmpty(), modelVersion = pi.modelo.orEmpty(),
+                floorUnitPrice = pi.valorLanceMinimo?.toDoubleOrNull()?.takeIf { it > 0 },
+                selected = preco > 0,
+            )
+        }
+        _state.update { it.copy(propostaRoboItens = candidatos) }
+    }
+
+    fun fecharCadastroProposta() = _state.update { it.copy(propostaRoboItens = null) }
+
+    /**
+     * "Soltar o robô" (o usuário confirmou na tela: itens, declarações e a autorização do termo). Importa a compra
+     * nos repositórios locais (escopo sintético da empresa da plataforma), grava os itens no plano e chama o
+     * startProposal EXISTENTE do motor local — o robô abre o Compras.gov.br, acha a compra pela UASG + número,
+     * confere, preenche e salva os itens selecionados. Depois abre a tela do portal para o usuário assistir.
+     */
+    fun soltarRoboProposta(items: List<ProposalItemPlan>, declarations: PortalDeclarations, updateDifferent: Boolean) {
+        if (_state.value.propostaRoboBusy) return
+        val dto = _state.value.tender ?: return
+        val company = currentCompany() ?: return
+        val key = roboKeyOf(dto) ?: return
+        val usuario = (repository.session.value as? PlatformSession.SignedIn)?.user?.nome?.takeIf { it.isNotBlank() } ?: "Operador"
+        _state.update { it.copy(propostaRoboBusy = true) }
+        viewModelScope.launch {
+            if (roboEngine.runsFor(company.id, key).any { it.active }) {
+                _events.send("Já há um robô rodando no aparelho para esta licitação. Pare-o antes de soltar outro.")
+                _state.update { it.copy(propostaRoboBusy = false) }; return@launch
+            }
+            val now = System.currentTimeMillis()
+            val resultado = runCatching {
+                importarMinhaLicitacao(dto, company.id, key, now)
+                val atual = roboRepo.getPlan(company.id, key) ?: PortalRobotPlan(companyId = company.id, tenderKey = key)
+                roboRepo.savePlan(atual.copy(items = items, sessionAt = parseIso(dto.dataAbertura).takeIf { it > 0 } ?: atual.sessionAt, updatedAt = now))
+                val auth = ProposalAuthorization(acceptTerms = true, declarations = declarations, authorizedBy = usuario, authorizedAt = now)
+                roboEngine.startProposal(company.id, key, auth, updateDifferent).getOrThrow()
+            }
+            resultado.fold(
+                onSuccess = {
+                    _state.update { it.copy(propostaRoboItens = null) }
+                    _events.send("Robô de proposta solto. Acompanhe na tela do portal.")
+                    _abrirPortal.send(Unit)
+                },
+                onFailure = { _events.send(it.message ?: "Não foi possível soltar o robô de proposta.") },
+            )
+            _state.update { it.copy(propostaRoboBusy = false) }
+        }
+    }
+
+    fun pararRoboProposta() {
+        val run = propostaRun.value?.takeIf { it.active } ?: return
+        roboEngine.stop(run.id, "Parado pelo usuário (modo plataforma).")
+        viewModelScope.launch { _events.send("Robô de proposta parado.") }
+    }
+
+    /** "Ver no portal": abre a tela do Compras.gov.br onde o robô trabalha. */
+    fun verNoPortal() { viewModelScope.launch { _abrirPortal.send(Unit) } }
+
+    /** Registra a compra da plataforma como "minha licitação" nos repositórios locais (escopo sintético). */
+    private suspend fun importarMinhaLicitacao(dto: TenderDto, companyId: Long, key: String, now: Long) {
+        val ref = resolveCompraRef(dto)
+        roboRepo.upsertMyTenders(
+            companyId,
+            listOf(
+                PortalMyTender(
+                    companyId = companyId, tenderKey = key, portal = Portal.COMPRAS_GOV,
+                    uasg = ref.uasg.orEmpty(), number = ref.number ?: "", year = ref.year ?: 0,
+                    modality = dto.modalidade ?: "", objectDescription = dto.objeto.ifBlank { dto.orgao },
+                    openingAt = parseIso(dto.dataAbertura).takeIf { it > 0 },
+                    situation = dto.fase ?: "", hasProposal = !dto.urlProposta.isNullOrBlank(),
+                    sources = setOf(PortalMyTender.SOURCE_PARTICIPACOES), firstSeenAt = now, updatedAt = now,
+                ),
+            ),
+        )
     }
 
     fun pararRoboLocal() {

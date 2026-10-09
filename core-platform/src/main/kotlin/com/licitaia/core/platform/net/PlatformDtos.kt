@@ -449,6 +449,11 @@ data class PlatformItem(
     val valor: String? = null,
     /** Piso (lance mínimo) já salvo para este item, quando houver (string decimal). */
     val valorLanceMinimo: String? = null,
+    /** Preço OFERTADO pela empresa (unitário) salvo na plataforma — usado pelo robô de proposta. */
+    val valorProposto: String? = null,
+    /** Marca/fabricante informada para o item (vai para o cadastro de proposta). */
+    val marca: String? = null,
+    val modelo: String? = null,
 )
 
 /** Arquivo/anexo da licitação (shape variável no backend; extraído de forma tolerante). */
