@@ -113,6 +113,13 @@ class PlatformRepository @Inject constructor(
         sessionManager.onSignedIn(resp.user)
     }
 
+    /**
+     * Token + user (JSON) para o SITE embutido no app (modelo B) entrar já logado — o mesmo que o site grava no
+     * localStorage ao fazer login (`licitapro_token` / `licitapro_user`). Null = sem sessão.
+     */
+    suspend fun siteAuth(): Pair<String, String?>? =
+        tokenStore.token()?.takeIf { it.isNotBlank() }?.let { it to tokenStore.userJson() }
+
     /** `POST /auth/logout` (best-effort) + limpa o cofre e o espelho local. */
     suspend fun logout() {
         val token = tokenStore.token()

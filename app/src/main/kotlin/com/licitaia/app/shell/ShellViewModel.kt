@@ -145,6 +145,8 @@ class ShellViewModel @Inject constructor(
                 if (s.biometricLock || _hasPin.value) _locked.value = true
             }
             val target = when {
+                // Modelo B: no modo plataforma o app abre o SITE da VPS (já logado), como o programa do PC.
+                _platformMode.value -> Routes.PLATFORM_SITE
                 // Sessão de plataforma OU local → abre o SHELL completo (dashboard/menu/barra).
                 platformSignedIn || restored != null -> Routes.DASHBOARD
                 // Sem sessão: tela de login unificada (abre com o modo PLATAFORMA já selecionado).

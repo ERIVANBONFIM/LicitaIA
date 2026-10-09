@@ -265,10 +265,17 @@ private fun MainShell(
     // Logout (ou sessão perdida) do modo LOCAL → volta ao login local limpando a pilha.
     // As rotas da plataforma (platform/...) não dependem da sessão local: não são redirecionadas aqui.
     LaunchedEffect(loggedIn, currentRoute) {
-        if (!loggedIn && currentRoute != null && currentRoute != Routes.LOGIN && !currentRoute.startsWith("platform")) {
+        // O site embutido (modelo B) depende da conta da plataforma: saiu dela → volta ao login também.
+        val dependeDeSessao = currentRoute != null && (!currentRoute.startsWith("platform") || currentRoute == Routes.PLATFORM_SITE)
+        if (!loggedIn && dependeDeSessao && currentRoute != Routes.LOGIN) {
             drawerState.close()
             nav.navigateClearingAll(Routes.LOGIN)
         }
+    }
+
+    // Modelo B: no modo plataforma o "início" é o SITE da VPS (ex.: logo após entrar com a conta da plataforma).
+    LaunchedEffect(platformMode, currentRoute) {
+        if (platformMode && currentRoute == Routes.DASHBOARD) nav.navigateClearingAll(Routes.PLATFORM_SITE)
     }
 
     // Toque em notificação do sistema → navega quando logado e desbloqueado.

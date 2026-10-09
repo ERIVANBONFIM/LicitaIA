@@ -93,6 +93,11 @@ object Routes {
     fun platformLive(id: String) = "platform/ao-vivo/$id"
     /** Estado gracioso para funções ainda sem endpoint de nuvem (em modo plataforma). */
     const val PLATFORM_SOON = "platform/em-breve"
+    /**
+     * O SITE da VPS dentro do app (modelo B: barra de atalhos embaixo), já logado com a conta da plataforma.
+     * Igual ao programa do PC: o que precisa do certificado roda no aparelho, nunca no robô da VPS.
+     */
+    const val PLATFORM_SITE = "platform/site"
 
     fun platformTender(id: String) = "platform/licitacao/$id"
 

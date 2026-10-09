@@ -29,6 +29,8 @@ fun NavGraphBuilder.platformGraph() {
         arguments = listOf(navArgument("platformId") { type = NavType.StringType }),
     ) { PlatformLiveScreen() }
     composable(Routes.PLATFORM_SOON) { PlatformSoonScreen() }
+    // Modelo B: o site da VPS dentro do app (tela principal do modo plataforma).
+    composable(Routes.PLATFORM_SITE) { com.licitaia.feature.platform.site.PlatformSiteScreen() }
     composable(
         Routes.PLATFORM_TENDER,
         arguments = listOf(navArgument("platformId") { type = NavType.StringType }),

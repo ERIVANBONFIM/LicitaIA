@@ -17,6 +17,8 @@ dependencies {
     implementation(project(":ai-provider-api"))
     // Motor do robô on-device (PortalRobotEngine) — REUSO sem alterar; ponte importa p/ os repos locais.
     implementation(project(":feature-live"))
+    // Site da VPS dentro do app (modelo B): script no início da página (login + barra embaixo).
+    implementation("androidx.webkit:webkit:1.11.0")
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.unit.test)

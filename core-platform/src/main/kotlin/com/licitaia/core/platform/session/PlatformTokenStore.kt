@@ -33,6 +33,9 @@ class PlatformTokenStore @Inject constructor(
         runCatching { json.decodeFromString(UserDto.serializer(), it) }.getOrNull()
     }
 
+    /** O `user` como foi gravado (JSON), para o site embutido no app entrar já logado. */
+    suspend fun userJson(): String? = secrets.get(KEY_USER)
+
     suspend fun hasSession(): Boolean = !token().isNullOrBlank()
 
     suspend fun clear() {
