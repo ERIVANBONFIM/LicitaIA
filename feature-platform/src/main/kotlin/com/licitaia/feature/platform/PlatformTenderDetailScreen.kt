@@ -340,11 +340,16 @@ private fun RoboCard(
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text("Estratégia", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ESTRATEGIAS.take(2).forEach { (v, l) -> androidx.compose.material3.FilterChip(selected = estrategia == v, onClick = { estrategia = v }, label = { Text(l) }) }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ESTRATEGIAS.drop(2).forEach { (v, l) -> androidx.compose.material3.FilterChip(selected = estrategia == v, onClick = { estrategia = v }, label = { Text(l) }) }
+                    // Grade 2×2, botões do mesmo tamanho e rótulo em uma linha só.
+                    ESTRATEGIAS.chunked(2).forEach { linha ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            linha.forEach { (v, l) ->
+                                androidx.compose.material3.FilterChip(
+                                    selected = estrategia == v, onClick = { estrategia = v }, modifier = Modifier.weight(1f),
+                                    label = { Text(l, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center) },
+                                )
+                            }
+                        }
                     }
                     Text(estrategiaDescricao(estrategia), style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted)
                     Spacer(Modifier.height(8.dp))
@@ -369,7 +374,7 @@ private fun RoboCard(
                         itensComNumero.forEach { pi ->
                             val num = pi.numero!!
                             Spacer(Modifier.height(10.dp))
-                            Text("Item $num" + (pi.descricao?.trim()?.takeIf { it.isNotBlank() }?.let { " · " + it.take(60) } ?: ""), style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text("Item $num" + (pi.descricao?.let { semRepeticao(it) }?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""), style = MaterialTheme.typography.labelMedium, color = LicitaColors.TextSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             val meta = listOfNotNull(
                                 pi.quantidade?.takeIf { it.isNotBlank() }?.let { "Qtd $it" },
                                 pi.unidade?.takeIf { it.isNotBlank() }?.let { "un: $it" },
@@ -437,6 +442,14 @@ private fun RoboCard(
 }
 
 private fun fmtNum(v: Double): String = if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
+
+/** "Acesso X Acesso X" (descrição duplicada pelo portal) → "Acesso X". */
+private fun semRepeticao(s: String): String {
+    val t = s.trim().replace(Regex("\\s+"), " ")
+    val meio = t.length / 2
+    if (t.length >= 8 && t.length % 2 == 1 && t[meio] == ' ' && t.substring(0, meio) == t.substring(meio + 1)) return t.substring(0, meio)
+    return t
+}
 
 /** "1.500,00" (BR) ou "1500.5": com vírgula, ponto é milhar; sem vírgula, ponto é decimal. */
 private fun parseValor(s: String?): Double? {
