@@ -1006,6 +1006,14 @@ class PortalRobotEngine @Inject constructor(
         var bidsSent = 0
         var finished = false
         var startedDispute = false
+        /** Lance enviado que ainda não apareceu na sala: bloqueia novo envio do item até confirmar (ou o usuário conferir). */
+        var pendingValue: Double? = null
+        var pendingSince: Long? = null
+        /** Bloqueio só deste item (leitura incerta, suspensa, piso/teto, rejeição): acompanha a sala, não sugere. */
+        var blockReason: String? = null
+        var blockNotifiedAt: Long? = null
+        /** Portal rejeitou o lance: não repete até o melhor valor mudar. */
+        var rejectedAtBest: Double? = null
     }
 
     private suspend fun bidRun(ctrl: Control, runId: String, companyId: Long, t: PortalMyTender, plan: PortalRobotPlan) {
@@ -1046,12 +1054,40 @@ class PortalRobotEngine @Inject constructor(
             val (state, _) = runner.pageState()
             val rows = driver.rows()
             val room = BidRoomParser.parse(rows)
+            // Disputa por GRUPO/LOTE: com UM item armado, "Grupo/Lote N" vale como esse item; com vários, bloqueia.
+            val groups = if (room.isEmpty()) BidRoomParser.parseGroups(rows) else emptyList()
             readChat(companyId, t, rows, seenChat, tracks.firstOrNull()?.sessionId)
             val now = System.currentTimeMillis()
             for (tr in tracks) {
                 if (tr.finished || ctrl.stop) continue
                 val ri = room.firstOrNull { it.itemNumber == tr.item.itemNumber }
+                    ?: groups.singleOrNull()?.takeIf { tracks.size == 1 }?.copy(itemNumber = tr.item.itemNumber)
                 if (ri == null && state == PageState.OK && now - enteredAt < ROOM_GRACE_MS) continue
+                if (ri == null && groups.isNotEmpty() && tracks.size > 1) {
+                    blockItem(runId, t, tr, "Disputa por grupo com vários itens: o robô não sugere aqui. Dê os lances pelo portal.", now)
+                    continue
+                }
+                // ENVIO PENDENTE: o lance enviado ainda não apareceu na sala → nenhum novo envio deste item.
+                val pv = tr.pendingValue
+                if (pv != null) {
+                    if (ri?.ourBid != null && kotlin.math.abs(ri.ourBid - pv) < 0.004) {
+                        log(runId, "Item ${tr.item.itemNumber}: lance ${Formatters.brl(pv)} confirmado na sala.")
+                        tr.pendingValue = null; tr.pendingSince = null
+                    } else if (now - (tr.pendingSince ?: now) > PENDING_VERIFY_MS) {
+                        val msg = "Item ${tr.item.itemNumber}: o lance de ${Formatters.brl(pv)} não apareceu na sala. Confira no portal se foi registrado e toque em Continuar."
+                        log(runId, msg)
+                        if (!awaitUser(ctrl, runId, msg)) break@loop
+                        tr.pendingValue = null; tr.pendingSince = null
+                        tr.lastOwnBidAt = System.currentTimeMillis()
+                    }
+                    if (tr.pendingValue != null) { clearSuggestion(runId, tr); continue }
+                }
+                // REJEITADO pelo portal: não repete até o melhor valor mudar.
+                val rb = tr.rejectedAtBest
+                if (rb != null) {
+                    if (ri?.bestBid != null && kotlin.math.abs(ri.bestBid - rb) > 0.004) tr.rejectedAtBest = null
+                    else { clearSuggestion(runId, tr); continue }
+                }
                 if (ri?.bestBid != null && ri.bestBid != tr.lastBest) {
                     tr.lastBest = ri.bestBid
                     tr.bestChangedAt = now
@@ -1074,6 +1110,12 @@ class PortalRobotEngine @Inject constructor(
                 val decision = AutoBidDecider.decide(
                     AutoBidDecider.Input(itemConfig, rule, state, ri, now, tr.lastOwnBidAt, tr.bestChangedAt, tr.bidsSent),
                 )
+                // Item volta a ser avaliado normalmente depois de um bloqueio.
+                if (tr.blockReason != null && (decision is AutoBidDecider.Decision.Suggest || decision is AutoBidDecider.Decision.Wait || decision is AutoBidDecider.Decision.Send)) {
+                    log(runId, "Item ${tr.item.itemNumber}: leitura normalizada, voltou a ser avaliado.")
+                    tr.blockReason = null; tr.blockNotifiedAt = null
+                    setStatus(runId, RunStatus.EXECUTANDO, null)
+                }
                 when (decision) {
                     is AutoBidDecider.Decision.Send -> sendBid(ctrl, runId, runner, driver, t, tr, decision.value, rule, ri?.bestBid, byUser = false)
                     is AutoBidDecider.Decision.Suggest -> {
@@ -1095,8 +1137,18 @@ class PortalRobotEngine @Inject constructor(
                     is AutoBidDecider.Decision.Stop -> {
                         if (decision.finished) {
                             tr.finished = true
-                            log(runId, decision.reason)
-                            finishItemSession(tr, ri)
+                            clearSuggestion(runId, tr)
+                            // Fim dos LANCES não é vitória: não marca resultado; o usuário registra quando o pregoeiro concluir.
+                            log(
+                                runId,
+                                "${decision.reason} Posição lida: ${ri?.position?.let { "${it}º" } ?: "não informada"}; " +
+                                    "último valor lido: ${(ri?.bestBid ?: ri?.ourBid)?.let { Formatters.brl(it) } ?: "—"}. " +
+                                    "1º lugar não é confirmação de vitória: registre o resultado quando o pregoeiro concluir.",
+                            )
+                            ri?.position?.let { p -> tr.sessionId?.let { sid -> safely { live.setPosition(sid, p) } } }
+                        } else if (!isHardStop(decision.reason)) {
+                            // Leitura incerta, suspensa, piso ou teto: bloqueia SÓ este item e continua acompanhando.
+                            blockItem(runId, t, tr, decision.reason, now)
                         } else {
                             log(runId, "PARADO: ${decision.reason}")
                             safely { notifier.notify(NotificationCategory.CRITICA, "Robô de lance parado", "${t.label}: ${decision.reason}", critical = true, route = Routes.portalWeb(Portal.COMPRAS_GOV), companyId = companyId) }
@@ -1109,12 +1161,42 @@ class PortalRobotEngine @Inject constructor(
                 }
             }
             if (tracks.all { it.finished }) {
-                setStatus(runId, RunStatus.CONCLUIDO, "Disputa encerrada para todos os itens armados.")
+                setStatus(runId, RunStatus.CONCLUIDO, "Lances encerrados para todos os itens armados. Registre o resultado quando o pregoeiro concluir.")
                 break
             }
             delay(LOOP_MS)
         }
         safely { audit.record(AuditAction.ROBO_ENCERRADO, origin = AuditOrigin.ROBO, portal = Portal.COMPRAS_GOV, tenderNumber = "${t.number}/${t.year}", details = "Robô de lance: ${tracks.sumOf { it.bidsSent }} lance(s) enviado(s)") }
+    }
+
+    /** Paradas que valem para o robô INTEIRO (sessão perdida, portal com erro, robô desligado). O resto bloqueia só o item. */
+    private fun isHardStop(reason: String): Boolean =
+        reason.startsWith("Sessão do Comprasnet perdida") || reason.startsWith("Portal com erro") || reason.startsWith("Robô de lance desligado")
+
+    /** Bloqueia só [tr]: limpa a sugestão, registra o motivo (uma vez) e avisa no máximo a cada 2 min. Segue acompanhando. */
+    private suspend fun blockItem(runId: String, t: PortalMyTender, tr: ItemTrack, reason: String, now: Long) {
+        clearSuggestion(runId, tr)
+        if (tr.blockReason != reason) {
+            tr.blockReason = reason
+            log(runId, "Item ${tr.item.itemNumber} sem sugestões: $reason (o robô continua acompanhando a sala e o chat).")
+            setStatus(runId, RunStatus.EXECUTANDO, "Item ${tr.item.itemNumber} sem sugestões: $reason")
+        }
+        if (tr.blockNotifiedAt == null || now - tr.blockNotifiedAt!! > BLOCK_NOTIFY_MS) {
+            tr.blockNotifiedAt = now
+            safely {
+                notifier.notify(
+                    NotificationCategory.SESSOES, "Robô de lance: item ${tr.item.itemNumber} sem sugestões",
+                    "${t.label}: $reason", route = Routes.portalWeb(Portal.COMPRAS_GOV), companyId = t.companyId,
+                )
+            }
+        }
+    }
+
+    /** Some com a sugestão do item (quando ele fica bloqueado, pendente ou encerrado). */
+    private fun clearSuggestion(runId: String, tr: ItemTrack) {
+        _runs.update { m ->
+            m[runId]?.takeIf { it.suggestion?.itemNumber == tr.item.itemNumber }?.let { r -> m + (runId to r.copy(suggestion = null)) } ?: m
+        }
     }
 
     private suspend fun sendBid(
@@ -1127,6 +1209,8 @@ class PortalRobotEngine @Inject constructor(
             log(runId, "Lance de ${Formatters.brl(value)} bloqueado: $reason"); return
         }
         val n = tr.item.itemNumber
+        // Avisos já presentes antes do envio (não contam como rejeição deste lance).
+        val rejectionBefore = runCatching { BidRoomParser.rejectionTexts(driver.rows()) }.getOrDefault(emptySet())
         val text = TextNorm.formatInputMoney(value)
         val filled = runner.fill(PortalTargets.bidInput(n), text, ValueMatch::number)
             .takeIf { it.ok } ?: runner.fill(PortalTargets.bidInput(n).inScope(null), text, ValueMatch::number)
@@ -1140,9 +1224,31 @@ class PortalRobotEngine @Inject constructor(
         tr.bidsSent++
         _runs.update { m -> m[runId]?.let { r -> m + (runId to r.copy(bidsSent = r.bidsSent + 1, suggestion = null)) } ?: m }
         delay(2_500)
-        val after = BidRoomParser.parse(driver.rows()).firstOrNull { it.itemNumber == n }
+        val afterRows = driver.rows()
+        val afterRoom = BidRoomParser.parse(afterRows)
+        val after = afterRoom.firstOrNull { it.itemNumber == n }
+            ?: afterRoom.takeIf { it.isEmpty() }?.let { BidRoomParser.parseGroups(afterRows).singleOrNull() }
         val confirmed = after?.ourBid?.let { kotlin.math.abs(it - value) < 0.004 } == true
-        log(runId, "Item $n: lance ${Formatters.brl(value)} enviado ${if (byUser) "(você tocou Enviar)" else "(automático)"}" + if (confirmed) " e confirmado na sala." else " — confirmação não lida na sala.")
+        val rejection = if (confirmed) null else BidRoomParser.rejection(rejectionBefore, afterRows)
+        when {
+            confirmed -> Unit
+            rejection != null -> {
+                // Rejeição explícita do portal: guarda o motivo e NÃO repete até o melhor valor mudar.
+                tr.rejectedAtBest = best ?: after?.bestBid
+                log(runId, "Item $n: o portal rejeitou o lance de ${Formatters.brl(value)}: $rejection. O robô não repete até o melhor valor mudar.")
+            }
+            else -> {
+                // Resultado incerto: NUNCA reenvia sozinho; bloqueia o item até o valor aparecer ou o usuário conferir.
+                tr.pendingValue = value
+                tr.pendingSince = System.currentTimeMillis()
+            }
+        }
+        log(
+            runId,
+            "Item $n: lance ${Formatters.brl(value)} enviado ${if (byUser) "(você tocou Enviar)" else "(automático)"}" +
+                when { confirmed -> " e confirmado na sala."; rejection != null -> " — REJEITADO pelo portal."; else -> " — envio pendente de verificação (não reenvia)." },
+        )
+        if (rejection != null) return
         tr.sessionId?.let { sid ->
             safely {
                 val r = live.recordOurBid(sid, value)
@@ -1219,6 +1325,10 @@ class PortalRobotEngine @Inject constructor(
 
     private companion object {
         const val LOOP_MS = 1_500L
+        /** Quanto esperar o lance enviado aparecer na sala antes de pedir que o usuário confira. */
+        const val PENDING_VERIFY_MS = 20_000L
+        /** Intervalo mínimo entre avisos de "item sem sugestões". */
+        const val BLOCK_NOTIFY_MS = 120_000L
         /** Tempo para a sala de disputa montar os itens antes de considerar a leitura ambígua. */
         const val ROOM_GRACE_MS = 90_000L
         /** Passo falho porque o WebView não está numa janela visível (app fechado / tela apagada). */

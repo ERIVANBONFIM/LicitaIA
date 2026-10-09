@@ -139,10 +139,31 @@ object BidRoomParser {
     private val ours = Regex("""(?:meu|seu|nosso)\s+(?:ultimo\s+)?(?:lance|valor)\s*[:\-|]?\s*$money""")
     private val position = Regex("""(?:posicao|classificacao|colocacao)\s*[:\-|]?\s*(\d{1,3})|(\d{1,3})\s*[ºo°]?\s*(?:lugar|colocad[oa])""")
 
-    fun parse(rows: List<String>): List<BidRoomItem> {
+    private val group = Regex("""(?i)\b(?:grupo|lote)\s*(?:n[º°o.]*\s*)?g?(\d{1,4})\b""")
+    private val rejected = Regex(
+        """(lance (?:nao (?:foi )?(?:aceito|registrado|permitido)|rejeitado|recusado|invalido)|""" +
+            """valor (?:do lance )?(?:invalido|nao permitido)|deve ser (?:inferior|menor) (?:ao|que)|""" +
+            """diferenca minima|intervalo minimo entre (?:os )?lances)[^|]{0,120}""",
+    )
+
+    /** Mesma leitura de [parse], mas por "Grupo/Lote N" (disputa por grupo). Só usado quando não há "Item N". */
+    fun parseGroups(rows: List<String>): List<BidRoomItem> = parse(rows, group)
+
+    /** Textos com cara de rejeição na página (normalizados). */
+    fun rejectionTexts(rows: List<String>): Set<String> = rows.mapNotNull { rejected.find(TextNorm.norm(it))?.value?.trim() }.toSet()
+
+    /**
+     * Rejeição explícita causada pelo ENVIO: só conta texto que NÃO estava na página antes (avisos fixos da sala,
+     * como "intervalo mínimo entre lances: R$ 10,00", não viram rejeição falsa). null = nenhuma.
+     */
+    fun rejection(before: Set<String>, afterRows: List<String>): String? = (rejectionTexts(afterRows) - before).firstOrNull()
+
+    fun parse(rows: List<String>): List<BidRoomItem> = parse(rows, item)
+
+    private fun parse(rows: List<String>, key: Regex): List<BidRoomItem> {
         val byItem = LinkedHashMap<Int, MutableList<BidRoomItem>>()
         for (row in rows) {
-            val n = item.find(row)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+            val n = key.find(row)?.groupValues?.get(1)?.toIntOrNull() ?: continue
             val t = TextNorm.norm(row)
             val bests = best.findAll(t).mapNotNull { TextNorm.parseMoney(it.groupValues[1]) }.distinct().toList()
             val our = ours.find(t)?.let { TextNorm.parseMoney(it.groupValues[1]) }

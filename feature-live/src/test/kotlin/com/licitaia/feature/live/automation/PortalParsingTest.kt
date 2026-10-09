@@ -48,6 +48,27 @@ class PortalParsingTest {
         assertEquals(DisputePhase.CLOSED, items.first { it.itemNumber == 3 }.phase)
     }
 
+    @Test fun bidRoomByGroupWhenNoItemRows() {
+        val rows = listOf("Grupo G1 | Link dedicado | Melhor lance: R$ 120.000,00 | Seu último lance: R$ 125.000,00 | 3º lugar | Em disputa")
+        assertTrue(BidRoomParser.parse(rows).isEmpty())
+        val g = BidRoomParser.parseGroups(rows).single()
+        assertEquals(1, g.itemNumber)
+        assertEquals(120000.0, g.bestBid!!, 1e-9)
+        assertEquals(125000.0, g.ourBid!!, 1e-9)
+        assertEquals(3, g.position)
+        assertEquals(DisputePhase.OPEN, g.phase)
+    }
+
+    @Test fun rejectionOnlyCountsNewText() {
+        val before = listOf("Intervalo mínimo entre lances: R$ 10,00", "Item 1 | Melhor lance: R$ 1.000,00 | Em disputa")
+        val fixed = BidRoomParser.rejectionTexts(before)
+        // Aviso fixo da sala não vira rejeição.
+        assertEquals(null, BidRoomParser.rejection(fixed, before))
+        // Mensagem nova depois do envio é rejeição.
+        val after = before + "Lance não aceito: o valor deve ser inferior ao seu último lance"
+        assertTrue(BidRoomParser.rejection(fixed, after)!!.startsWith("lance nao aceito"))
+    }
+
     @Test fun phaseClassification() {
         assertEquals(DisputePhase.SUSPENDED, PortalPageClassifier.phase("Sessão suspensa pelo pregoeiro"))
         assertEquals(DisputePhase.RANDOM, PortalPageClassifier.phase("Item em tempo aleatório"))
