@@ -332,6 +332,20 @@ class PlatformApi(
         postJson(url("mensagens"), payload, OkDto.serializer(), token)
     }
 
+    /** `POST /mensagens` de uma mensagem do PREGOEIRO lida no portal pelo robô do aparelho. */
+    suspend fun enviarMensagemPregoeiro(token: String, licitacaoId: String, conteudo: String, remetente: String, enviadaEm: Long) {
+        val payload = json.encodeToString(
+            MensagemRequest.serializer(),
+            MensagemRequest(licitacaoId, conteudo, tipo = "pregoeiro", remetente = remetente, enviadaEm = enviadaEm),
+        )
+        postJson(url("mensagens"), payload, OkDto.serializer(), token)
+    }
+
+    /** `POST /licitacoes/:id/robo-eventos` (lances/posição vistos pelo robô do aparelho). */
+    suspend fun enviarRoboEvento(token: String, licitacaoId: String, evento: RoboEventoRequest) {
+        postJson(url("licitacoes/$licitacaoId/robo-eventos"), json.encodeToString(RoboEventoRequest.serializer(), evento), OkDto.serializer(), token)
+    }
+
     /** `GET /mensagens?licitacaoId=` (filtro opcional por licitação). */
     suspend fun mensagens(token: String, licitacaoId: String? = null): List<MensagemDto> {
         val u = url("mensagens").newBuilder()

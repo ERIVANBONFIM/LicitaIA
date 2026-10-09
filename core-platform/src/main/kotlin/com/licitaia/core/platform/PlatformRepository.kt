@@ -221,6 +221,12 @@ class PlatformRepository @Inject constructor(
     /** `POST /mensagens` (envio; no detalhe passa o licitacaoId). */
     suspend fun enviarMensagem(conteudo: String, licitacaoId: String? = null): Result<Unit> = authedRead { api.enviarMensagem(it, licitacaoId, conteudo) }
 
+    suspend fun enviarMensagemPregoeiro(licitacaoId: String, conteudo: String, remetente: String, enviadaEm: Long): Result<Unit> =
+        authedRead { api.enviarMensagemPregoeiro(it, licitacaoId, conteudo, remetente, enviadaEm) }
+
+    suspend fun enviarRoboEvento(licitacaoId: String, evento: com.licitaia.core.platform.net.RoboEventoRequest): Result<Unit> =
+        authedRead { api.enviarRoboEvento(it, licitacaoId, evento) }
+
     /** `GET /certidoes`. */
     suspend fun certidoes(): Result<List<CertidaoDto>> = authedRead { api.certidoes(it) }
 

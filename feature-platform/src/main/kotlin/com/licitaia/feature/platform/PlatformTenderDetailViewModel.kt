@@ -101,6 +101,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
     private val gateway: AiGateway,
     private val roboEngine: PortalRobotEngine,
     private val roboRepo: PortalRobotRepository,
+    private val robotSync: PlatformRobotSync,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -372,6 +373,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
                     ),
                 )
                 // 3) Inicia o motor EXISTENTE (sem alterá-lo). Em MANUAL ele lê a sala e sugere; nunca envia sozinho.
+                registrarSync(dto, company.id)
                 roboEngine.startBid(company.id, key).getOrThrow()
             }
             resultado.fold(
@@ -410,9 +412,18 @@ class PlatformTenderDetailViewModel @Inject constructor(
 
     fun fecharCadastroProposta() = _state.update { it.copy(propostaRoboItens = null) }
 
+    /** Liga esta licitação ao sincronizador (mensagens do pregoeiro e lances do robô do aparelho → VPS). */
+    private fun registrarSync(dto: TenderDto, companyId: Long) {
+        val ref = resolveCompraRef(dto)
+        val n = ref.number ?: return
+        val y = ref.year ?: return
+        robotSync.register(companyId, "$n/$y", id)
+    }
+
     /** Lê do plano local o último status/log do robô de proposta desta licitação (para o card após reiniciar). */
     private fun carregarUltimoResultadoProposta(dto: TenderDto) {
         val company = currentCompany() ?: return
+        robotSync.ensureStarted(company.id)
         val key = roboKeyOf(dto) ?: return
         viewModelScope.launch {
             val plan = runCatching { roboRepo.getPlan(company.id, key) }.getOrNull() ?: return@launch
@@ -442,6 +453,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
             val now = System.currentTimeMillis()
             val resultado = runCatching {
                 importarMinhaLicitacao(dto, company.id, key, now)
+                registrarSync(dto, company.id)
                 val atual = roboRepo.getPlan(company.id, key) ?: PortalRobotPlan(companyId = company.id, tenderKey = key)
                 roboRepo.savePlan(atual.copy(items = items, sessionAt = parseIso(dto.dataAbertura).takeIf { it > 0 } ?: atual.sessionAt, updatedAt = now))
                 val auth = ProposalAuthorization(acceptTerms = true, declarations = declarations, authorizedBy = usuario, authorizedAt = now)

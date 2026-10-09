@@ -389,7 +389,33 @@ data class CertidaoDto(
 
 /** `POST /mensagens` body (envio no detalhe/menu). */
 @Serializable
-data class MensagemRequest(val licitacaoId: String? = null, val conteudo: String)
+data class MensagemRequest(
+    val licitacaoId: String? = null,
+    val conteudo: String,
+    /** "pregoeiro" quando a mensagem foi LIDA do chat do portal pelo robô; null = escrita pelo usuário. */
+    val tipo: String? = null,
+    val remetente: String? = null,
+    /** Momento original (epoch ms) da mensagem no portal. */
+    val enviadaEm: Long? = null,
+)
+
+/**
+ * `POST /licitacoes/:id/robo-eventos`: o que o robô do APARELHO viu/fez na disputa (lance nosso, melhor lance do
+ * portal, posição, início/fim), para a equipe acompanhar pelo site e pelo "Pregão ao vivo".
+ */
+@Serializable
+data class RoboEventoRequest(
+    val tipo: String,
+    val valor: Double? = null,
+    val ator: String,
+    val descricao: String,
+    val item: String? = null,
+    /** Momento do evento no aparelho (epoch ms). */
+    val momento: Long,
+    /** Id local do evento (evita duplicar no servidor se o envio for repetido). */
+    val idLocal: String,
+    val origem: String = "aparelho",
+)
 
 /** `POST /licitacoes/:id/analise-local` → grava o resultado da análise feita no aparelho (não usa IA no servidor). */
 @Serializable
