@@ -1,5 +1,6 @@
 package com.licitaia.feature.live.web
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,7 +11,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.licitaia.core.ui.components.LicitaCard
@@ -25,11 +28,27 @@ import com.licitaia.feature.live.automation.RobotAttention
  * "Tentar de novo", "Mapear esta tela" e "Continuar manualmente". PARAR sempre visível com robô ativo.
  */
 @Composable
-internal fun RobotAttentionBar(vm: PortalWebViewModel, companyId: Long) {
+internal fun RobotAttentionBar(vm: PortalWebViewModel, companyId: Long, compact: Boolean = false) {
     val runs by vm.robots.runs.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val active = runs.values.filter { it.companyId == companyId && it.active }.sortedByDescending { it.updatedAt }
     val run = active.firstOrNull() ?: return
+    // Tela cheia + robô trabalhando normalmente: UMA linha (o que ele faz + PARAR) para o portal ocupar a tela.
+    // Quando ele precisa do usuário, a faixa completa volta (com os botões de ação).
+    if (compact && !run.needsUser) {
+        Row(
+            Modifier.fillMaxWidth().background(LicitaColors.Surface).padding(start = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${run.kind.label}: ${run.message ?: run.step}",
+                style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextPrimary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { vm.robots.stop(run.id) }) { Text("PARAR", color = LicitaColors.Red) }
+        }
+        return
+    }
     LicitaCard(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), accent = if (run.needsUser) LicitaColors.Yellow else LicitaColors.Blue) {
         Row {
             Column(Modifier.weight(1f)) {

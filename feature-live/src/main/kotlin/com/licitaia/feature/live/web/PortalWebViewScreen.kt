@@ -44,6 +44,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.outlined.Fullscreen
+import androidx.compose.material.icons.outlined.FullscreenExit
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
@@ -165,6 +167,13 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
     val online by rememberUpdatedState(state.online)
     val autoBanner by vm.autoLoginBanner.collectAsStateWithLifecycle()
     val unstable by vm.unstable.collectAsStateWithLifecycle()
+    // TELA CHEIA (só visual): esconde barra de endereço, status da sessão, "Manter sessão ativa" e avisos fixos
+    // para o portal ocupar a tela. Entra sozinha quando um robô desta empresa começa a trabalhar; o usuário
+    // alterna quando quiser. Avisos que pedem ação (sem internet, login, robô aguardando) continuam visíveis.
+    val robotRuns by vm.robots.runs.collectAsStateWithLifecycle()
+    val robotActive = robotRuns.values.any { it.companyId == companyId && it.active }
+    var fullScreen by remember { mutableStateOf(false) }
+    LaunchedEffect(robotActive) { if (robotActive) fullScreen = true }
     // Login automático: no máximo UMA tentativa por abertura da tela (não repete após "Sair do portal").
     var autoArmed by remember { mutableStateOf(false) }
 
@@ -394,6 +403,22 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            if (fullScreen) {
+                // Linha fina no lugar dos controles: sair da tela cheia.
+                Row(
+                    Modifier.fillMaxWidth().background(LicitaColors.Surface).padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (robotActive) "Tela cheia · robô trabalhando" else "Tela cheia",
+                        style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary, modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = { pageError = null; webView?.reload() }) { Icon(Icons.Outlined.Refresh, contentDescription = "Recarregar") }
+                    IconButton(onClick = { fullScreen = false }) { Icon(Icons.Outlined.FullscreenExit, contentDescription = "Sair da tela cheia") }
+                }
+                if (loading) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth().height(3.dp))
+            }
+            if (!fullScreen) {
             // Barra de endereço: navegação, domínio + cadeado, recarregar.
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
@@ -421,6 +446,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                     )
                 }
                 IconButton(onClick = { pageError = null; webView?.reload() }) { Icon(Icons.Outlined.Refresh, contentDescription = "Recarregar") }
+                IconButton(onClick = { fullScreen = true }) { Icon(Icons.Outlined.Fullscreen, contentDescription = "Tela cheia") }
             }
             if (loading) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth().height(3.dp))
             else Spacer(Modifier.height(3.dp))
@@ -471,6 +497,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                     )
                 }
             }
+            } // fim dos controles escondidos na tela cheia
             when (val b = autoBanner) {
                 AutoLoginBanner.Running -> AlertBanner(
                     "Entrando com o certificado digital",
@@ -513,7 +540,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
                     Tone.WARNING, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
-            if (!isolatedProfile && state.requiresLogin) {
+            if (!fullScreen && !isolatedProfile && state.requiresLogin) {
                 Text(
                     "Este aparelho não separa cookies por empresa no navegador interno: ao trocar de empresa, saia do portal antes.",
                     style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
@@ -533,7 +560,7 @@ private fun PortalWebContent(portal: Portal, companyId: Long, state: PortalWebUi
             purchaseSearch?.let { text ->
                 AlertBanner("Abrir no portal", text, Tone.INFO, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), pulsing = true)
             }
-            if (portal == Portal.COMPRAS_GOV) RobotAttentionBar(vm, companyId)
+            if (portal == Portal.COMPRAS_GOV) RobotAttentionBar(vm, companyId, compact = fullScreen)
 
             Box(Modifier.fillMaxSize()) {
                 key(generation) {
