@@ -204,7 +204,7 @@ private fun criarWebView(
 /** A disputa de lances do site ainda não roda no celular: segura aqui (nunca vai ao robô da VPS). */
 internal object SiteGuard {
     private val REGRAS: List<Pair<String, Regex>> = listOf(
-        "POST" to Regex("^/api/robo-lances/(preparar|participar)(/.*)?$"),
+        "POST" to Regex("^/api/robo-lances/preparar(/.*)?$"),
     )
 
     fun bloqueio(method: String?, path: String): String? {

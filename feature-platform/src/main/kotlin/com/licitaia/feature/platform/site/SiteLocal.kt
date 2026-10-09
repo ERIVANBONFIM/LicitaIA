@@ -80,6 +80,7 @@ class SiteLocal @Inject constructor(
         "*" to Regex("^/api/ia/provedores(/.*)?$"),
         "*" to Regex("^/__app/.*$"),
         "GET" to Regex("^/api/notificacoes$"),
+        "POST" to Regex("^/api/robo-lances/participar/[\\w-]{8,64}$"),
     )
 
     // ---- avisos REAIS dos robôs do celular para o sino (VPS: POST /api/notificacoes/evento) ----
@@ -179,6 +180,17 @@ class SiteLocal @Inject constructor(
             return Resp(200, obj("ok" to true), abrir = rota)
         }
         if (p == "/__app/status") return Resp(200, statusCelular().toString())
+
+        // ---- Radar › "Participar": sai do Radar e vai para Minhas Licitações (Recebendo Proposta). No app o robô de
+        //      lance é o do celular: nada é agendado no robô da VPS. ----
+        Regex("^/api/robo-lances/participar/([\\w-]{8,64})$").find(p)?.let { mm ->
+            if (m != "POST") return@let
+            val id = mm.groupValues[1]
+            val (st, txt) = vps("PUT", "/api/licitacoes/$id", JSONObject().put("favorita", true).put("fase", "recebendo_proposta").toString())
+            return if (st in 200..299) Resp(200, obj("ok" to true, "roboAgendado" to false, "jaExistia" to true,
+                "mensagem" to "Licitação movida para Minhas Licitações › Recebendo Proposta."))
+            else Resp(st, txt)
+        }
 
         // ---- Registrar Proposta → robô de proposta do celular ----
         if (m == "POST" && p == "/api/executor/registrar-proposta") return registrarProposta(JSONObject(body.ifBlank { "{}" }))
