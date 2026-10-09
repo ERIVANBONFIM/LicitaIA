@@ -380,12 +380,31 @@ class PlatformTenderDetailViewModel @Inject constructor(
      * sem UASG), os componentes ficam nulos → a trava fica (correta).
      */
     private fun resolveCompraRef(dto: TenderDto): CompraRef {
+        // FONTE MAIS FORTE: o link do Comprasnet em urlProposta traz a "compra" com UASG+modalidade+número+ano
+        // (ex.: ?compra=92548305000072026). É o dado real, mesmo quando o campo uasg vem nulo e portalUrl é a
+        // publicação no PNCP.
+        parseCompraComprasnet(dto.urlProposta ?: dto.portalUrl)?.let { return it }
         val ref = PortalTenderMatching.refOf(dto.id, dto.numero, dto.orgao)
         val ny = PortalTenderMatching.parseNumberYear(dto.numero)
             ?: PortalTenderMatching.parseNumberYear(dto.objeto)
             ?: (ref.number?.let { n -> ref.year?.let { y -> n to y } })
         val uasg = dto.uasg?.takeIf { it.any(Char::isDigit) } ?: ref.uasg
         return CompraRef(uasg, ny?.first ?: ref.number, ny?.second ?: ref.year)
+    }
+
+    /**
+     * Extrai UASG/número/ano do número da "compra" do Comprasnet (17 dígitos: UASG[6]+modalidade[2]+
+     * sequencial[5]+ano[4]), presente no link ?compra=... do Comprasnet. Ex.: 92548305000072026 →
+     * UASG 925483, número 7, ano 2026. null se a URL não tiver esse formato.
+     */
+    private fun parseCompraComprasnet(url: String?): CompraRef? {
+        val c = Regex("""compra=(\d{17})""").find(url.orEmpty())?.groupValues?.get(1)
+            ?: Regex("""(?<!\d)(\d{17})(?!\d)""").find(url.orEmpty())?.groupValues?.get(1)
+            ?: return null
+        val uasg = c.substring(0, 6)
+        val numero = c.substring(8, 13).trimStart('0').ifEmpty { "0" }
+        val ano = c.substring(13, 17).toIntOrNull()?.takeIf { it in 1990..2100 } ?: return null
+        return CompraRef(uasg, numero, ano)
     }
 
     private fun roboKeyOf(dto: TenderDto): String? =
@@ -487,7 +506,7 @@ private fun TenderDto.toDomainTender(companyId: Long): Tender = Tender(
     id = 0,
     companyId = companyId,
     opportunityId = id,
-    portal = mapPortal(portal, portalUrl),
+    portal = mapPortal(portal),
     number = numero,
     agency = orgao,
     objectDescription = objeto,
@@ -516,19 +535,7 @@ private fun TenderAnalysis.toAnaliseLocal(): AnaliseLocalRequest {
     )
 }
 
-/**
- * Portal REAL da licitação. A URL manda mais que o rótulo: a VPS às vezes marca "Comprasnet" numa compra
- * cujo link abre no pncp.gov.br (ou vice-versa). Então, quando a URL identifica o portal, ela decide; o
- * rótulo [p] só é usado como fallback. Isso evita oferecer o robô on-device (Comprasnet) numa licitação do PNCP.
- */
-private fun mapPortal(p: String?, url: String? = null): Portal {
-    val u = url?.lowercase().orEmpty()
-    when {
-        u.contains("comprasnet.gov.br") || u.contains("compras.gov.br") || u.contains("gov.br/compras") -> return Portal.COMPRAS_GOV
-        u.contains("pncp.gov.br") -> return Portal.PNCP
-        u.contains("bll") -> return Portal.BLL
-        u.contains("licitanet") -> return Portal.LICITANET
-    }
+private fun mapPortal(p: String?): Portal {
     val s = p?.lowercase().orEmpty()
     return when {
         s.contains("compras") || s.contains("comprasnet") -> Portal.COMPRAS_GOV

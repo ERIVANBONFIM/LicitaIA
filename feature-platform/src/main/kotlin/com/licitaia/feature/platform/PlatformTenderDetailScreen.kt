@@ -359,22 +359,6 @@ private fun RoboCard(
 private fun fmtNum(v: Double): String = if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
 
 /**
- * Rótulo REAL do portal: a URL manda mais que o campo cru da VPS, que às vezes marca "Comprasnet" num link
- * que abre no pncp.gov.br. Quando a URL identifica o portal, ela decide; senão cai no rótulo da VPS.
- */
-private fun portalLabelReal(portal: String?, url: String?): String {
-    val u = url?.lowercase().orEmpty()
-    val pelaUrl = when {
-        u.contains("comprasnet.gov.br") || u.contains("compras.gov.br") || u.contains("gov.br/compras") -> "Compras.gov.br"
-        u.contains("pncp.gov.br") -> "PNCP"
-        u.contains("bll") -> "BLL"
-        u.contains("licitanet") -> "Licitanet"
-        else -> null
-    }
-    return pelaUrl ?: portal?.takeIf { it.isNotBlank() } ?: "—"
-}
-
-/**
  * Prévia (dry_run) do próximo lance, cálculo LOCAL e transparente: cobre o melhor lance pelo decremento,
  * NUNCA abaixo do piso. Não é o motor completo de estratégia e NADA é enviado ao portal — é só a decisão base.
  */
@@ -599,7 +583,9 @@ private fun TenderDetail(
                     onHide, Modifier.fillMaxWidth(), enabled = !acting, tone = Tone.NEUTRAL,
                     icon = Icons.Outlined.VisibilityOff,
                 )
-                t.portalUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                // Prefere o link OPERACIONAL do Comprasnet (urlProposta: abre a compra/proposta) e só cai na
+                // publicação do PNCP (portalUrl) se não houver — assim "Abrir no portal" leva ao lugar certo.
+                (t.urlProposta?.takeIf { it.isNotBlank() } ?: t.portalUrl?.takeIf { it.isNotBlank() })?.let { url ->
                     SecondaryButton("Abrir no portal", { onOpenPortal(url) }, Modifier.fillMaxWidth(), tone = Tone.INFO, icon = Icons.Outlined.OpenInNew)
                 }
             }
@@ -617,7 +603,7 @@ private fun TenderDetail(
             InfoRow("Encerramento", PlatformFormat.dateTime(t.dataEncerramento))
             t.uasg?.let { InfoRow("UASG", it) }
             InfoRow("Local", listOfNotNull(t.cidade, t.estado).joinToString("/").ifBlank { "—" })
-            InfoRow("Portal", portalLabelReal(t.portal, t.portalUrl))
+            t.portal?.let { InfoRow("Portal", it) }
             InfoRow("Participação", if (!t.urlProposta.isNullOrBlank()) "Proposta vinculada" else "Sem proposta vinculada")
         }
 
