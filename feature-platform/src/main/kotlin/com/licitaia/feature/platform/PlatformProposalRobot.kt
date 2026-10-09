@@ -108,6 +108,16 @@ internal fun PropostaRoboCard(
             }
         }
         Spacer(Modifier.height(8.dp))
+        // Pedido de lançamento da equipe ainda aberto (o último pedido é mais novo que o último "cadastrada").
+        pedidoPendente(s)?.let { pedido ->
+            com.licitaia.core.ui.components.AlertBanner(
+                "Pedido de lançamento da equipe",
+                pedido.displayBody.removePrefix(PlatformRobotSync.MARCA_PEDIDO).trim() +
+                    (pedido.createdAt?.let { " · " + PlatformFormat.dateTime(it) } ?: ""),
+                Tone.WARNING,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
         val ultimo = s.propostaUltimoStatus
         if (run == null && ultimo != null) {
             // App reiniciado: mostra o último resultado guardado no plano local.
@@ -285,6 +295,13 @@ internal fun PropostaRoboDialog(
             }
         }
     }
+}
+
+/** Último "pedido de lançamento" da licitação que ainda não foi seguido de "proposta cadastrada"; null = nenhum. */
+internal fun pedidoPendente(s: PlatformDetailUi): com.licitaia.core.platform.net.MensagemDto? {
+    val pedido = s.mensagens.filter { it.displayBody.contains(PlatformRobotSync.MARCA_PEDIDO) }.maxByOrNull { it.createdAt.orEmpty() } ?: return null
+    val feito = s.mensagens.filter { it.displayBody.contains(PlatformRobotSync.MARCA_CADASTRADA) }.maxByOrNull { it.createdAt.orEmpty() }
+    return if (feito == null || feito.createdAt.orEmpty() < pedido.createdAt.orEmpty()) pedido else null
 }
 
 @Composable

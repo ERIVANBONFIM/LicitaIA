@@ -5,6 +5,9 @@ import com.licitaia.core.platform.PlatformRepository
 import com.licitaia.core.platform.net.RoboEventoRequest
 import com.licitaia.domain.live.LiveSessionManager
 import com.licitaia.domain.repository.MessageRepository
+import com.licitaia.feature.live.automation.PortalRobotEngine
+import com.licitaia.feature.live.automation.RobotKind
+import com.licitaia.feature.live.automation.RunStatus
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +37,7 @@ class PlatformRobotSync @Inject constructor(
     private val repository: PlatformRepository,
     private val messages: MessageRepository,
     private val live: LiveSessionManager,
+    private val robots: PortalRobotEngine,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val prefs = context.getSharedPreferences("platform_robot_sync", Context.MODE_PRIVATE)
@@ -42,15 +46,28 @@ class PlatformRobotSync @Inject constructor(
     private val lock = Mutex()
 
     /** Liga o número da compra no portal ("7/2026") à licitação da plataforma, e começa a sincronizar a empresa. */
-    fun register(companyId: Long, tenderNumber: String, licitacaoId: String) {
+    fun register(companyId: Long, tenderNumber: String, licitacaoId: String, tenderKey: String? = null) {
         if (tenderNumber.isBlank() || licitacaoId.isBlank()) return
-        prefs.edit().putString(mapKey(companyId, tenderNumber), licitacaoId).apply()
+        prefs.edit().putString(mapKey(companyId, tenderNumber), licitacaoId)
+            .apply { tenderKey?.let { putString("key:$companyId:$it", licitacaoId) } }.apply()
         ensureStarted(companyId)
     }
 
     /** Começa (uma vez por empresa) a observar mensagens e lances locais. */
     fun ensureStarted(companyId: Long) {
         if (!started.add(companyId)) return
+        // Robô de PROPOSTA concluído → avisa a equipe na licitação (fecha o "pedido de lançamento").
+        scope.launch {
+            robots.runs.collect { runs ->
+                runs.values.filter { it.companyId == companyId && it.kind == RobotKind.PROPOSTA && it.status == RunStatus.CONCLUIDO }.forEach { r ->
+                    val lic = prefs.getString("key:$companyId:${r.tenderKey}", null) ?: return@forEach
+                    val k = "prop:${r.id}"
+                    if (jaEnviado(k)) return@forEach
+                    val texto = "$MARCA_CADASTRADA Robô do celular cadastrou a proposta no portal. ${r.message ?: r.step}".trim()
+                    repository.enviarMensagem(texto, lic).onSuccess { marcar(k) }
+                }
+            }
+        }
         scope.launch {
             combine(messages.observeMessages(companyId), ticker()) { list, _ -> list }.collect { list ->
                 list.sortedBy { it.receivedAt }.forEach { m ->
@@ -107,8 +124,12 @@ class PlatformRobotSync @Inject constructor(
     /** Re-tenta o que falhou a cada minuto. */
     private fun ticker(): Flow<Unit> = flow { while (true) { emit(Unit); delay(60_000) } }
 
-    private companion object {
-        const val SENT = "enviados"
-        const val MAX_SENT = 5_000
+    companion object {
+        private const val SENT = "enviados"
+        private const val MAX_SENT = 5_000
+        /** Marca da mensagem "equipe pede para lançar a proposta" (fica no histórico da licitação na VPS). */
+        const val MARCA_PEDIDO = "[PEDIDO DE LANÇAMENTO]"
+        /** Marca da mensagem automática "robô cadastrou a proposta" (fecha o pedido). */
+        const val MARCA_CADASTRADA = "[PROPOSTA CADASTRADA]"
     }
 }

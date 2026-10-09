@@ -417,7 +417,27 @@ class PlatformTenderDetailViewModel @Inject constructor(
         val ref = resolveCompraRef(dto)
         val n = ref.number ?: return
         val y = ref.year ?: return
-        robotSync.register(companyId, "$n/$y", id)
+        robotSync.register(companyId, "$n/$y", id, roboKeyOf(dto))
+    }
+
+    /**
+     * "Pedir para lançar": deixa no histórico da licitação (VPS — celular e site da equipe veem) um pedido para quem
+     * estiver com o celular soltar o robô de proposta. Fecha sozinho quando o robô cadastrar (mensagem automática).
+     */
+    fun pedirLancamento(p: PropostaDto) {
+        val usuario = (repository.session.value as? PlatformSession.SignedIn)?.user?.nome?.takeIf { it.isNotBlank() } ?: "a equipe"
+        val valor = p.valorTotal?.toDoubleOrNull()?.takeIf { it > 0 }?.let { PlatformFmt.money(it) } ?: "valor a conferir"
+        val texto = "${PlatformRobotSync.MARCA_PEDIDO} Proposta de $valor — pedido de $usuario. " +
+            "Quem estiver com o celular: abrir esta licitação e tocar em \"Robô cadastra proposta no portal\"."
+        viewModelScope.launch {
+            repository.enviarMensagem(texto, id).fold(
+                onSuccess = {
+                    _events.send("Pedido de lançamento enviado para a equipe.")
+                    _state.update { it.copy(mensagens = repository.mensagens(id).getOrDefault(it.mensagens)) }
+                },
+                onFailure = { _events.send(it.message ?: "Não foi possível enviar o pedido.") },
+            )
+        }
     }
 
     /** Lê do plano local o último status/log do robô de proposta desta licitação (para o card após reiniciar). */

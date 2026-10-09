@@ -126,6 +126,7 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     onCadastrarProposta = viewModel::abrirCadastroProposta,
                     onPararProposta = viewModel::pararRoboProposta,
                     onVerNoPortal = viewModel::verNoPortal,
+                    onPedirLancamento = viewModel::pedirLancamento,
                     onRegisterResult = viewModel::registrarResultado,
                     onOpenQa = { navigator.navigate(Routes.platformTenderQa(state.tender!!.id)) },
                     onOpenLive = { navigator.navigate(Routes.platformLive(state.tender!!.id)) },
@@ -510,6 +511,7 @@ private fun PropostaRow(
     onAprovar: () -> Unit,
     onExcluir: () -> Unit,
     onEditar: (String, Double?, String?) -> Unit,
+    onPedirLancamento: () -> Unit,
 ) {
     var editing by rememberSaveable(p.id) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth()) {
@@ -526,6 +528,8 @@ private fun PropostaRow(
             }
             SecondaryButton("Excluir", onExcluir, Modifier.weight(1f), enabled = enabled, tone = Tone.DANGER)
         }
+        Spacer(Modifier.height(6.dp))
+        SecondaryButton("Pedir para lançar", onPedirLancamento, Modifier.fillMaxWidth(), enabled = enabled, tone = Tone.WARNING)
     }
     if (editing) {
         PropostaEditDialog(p, onDismiss = { editing = false }, onSave = { v, st -> onEditar(p.id, v, st); editing = false })
@@ -664,6 +668,7 @@ private fun TenderDetail(
     onCadastrarProposta: () -> Unit,
     onPararProposta: () -> Unit,
     onVerNoPortal: () -> Unit,
+    onPedirLancamento: (com.licitaia.core.platform.net.PropostaDto) -> Unit,
     onRegisterResult: (String) -> Unit,
     onOpenQa: () -> Unit,
     onOpenLive: () -> Unit,
@@ -785,7 +790,10 @@ private fun TenderDetail(
             } else {
                 s.propostas.forEachIndexed { i, p ->
                     if (i == 0) Spacer(Modifier.height(8.dp)) else HorizontalDivider(Modifier.padding(vertical = 10.dp), color = LicitaColors.Outline)
-                    PropostaRow(p, enabled = !s.acting, onAprovar = { onAprovarProposta(p.id) }, onExcluir = { onExcluirProposta(p.id) }, onEditar = onEditarProposta)
+                    PropostaRow(
+                        p, enabled = !s.acting, onAprovar = { onAprovarProposta(p.id) }, onExcluir = { onExcluirProposta(p.id) },
+                        onEditar = onEditarProposta, onPedirLancamento = { onPedirLancamento(p) },
+                    )
                 }
             }
             if (s.generatingProposal) {
