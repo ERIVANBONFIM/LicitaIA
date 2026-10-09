@@ -35,5 +35,11 @@
 # Enums do domínio são persistidos pelo nome (Room TypeConverters / DataStore): não renomear.
 -keepclassmembers enum com.licitaia.domain.model.** { *; }
 
+# Ponte do site (modelo B) e WebViews dos portais: metodos chamados pelo JavaScript por nome (window.LicitaApp.*).
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keepattributes JavascriptInterface
+
 # pdfbox-android: decodificador JPEG2000 opcional (nao incluido)
 -dontwarn com.gemalto.jp2.**
