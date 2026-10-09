@@ -38,6 +38,91 @@ internal object PlatformSiteScript {
       .catch(function () {});
   } catch (e) {}
 
+  // ---- ponte: o que precisa do certificado roda NO CELULAR (window.LicitaApp), nunca no robo da VPS ----
+  var seq = 0, pend = {};
+  window.__lzResp = function (id, st, txt) { var f = pend[id]; delete pend[id]; if (f) f(st, txt); };
+  function doApp(m, p) { try { return !!(window.LicitaApp && LicitaApp.handles(m, p) === '1'); } catch (e) { return false; } }
+  function appReq(m, p, body, cb) { var id = ++seq; pend[id] = cb; LicitaApp.request(id, m, p, typeof body === 'string' ? body : ''); }
+  function caminho(u) { try { var x = new URL(u, location.href); return x.origin === location.origin ? x.pathname + x.search : null; } catch (e) { return null; } }
+  window.lzApp = function (m, p, body) { return new Promise(function (ok) { appReq(m, p, body ? JSON.stringify(body) : '', function (st, txt) { var d = null; try { d = JSON.parse(txt); } catch (e) {} ok({ status: st, data: d }); }); }); };
+  (function () {
+    var X = XMLHttpRequest.prototype, oOpen = X.open, oSend = X.send;
+    X.open = function (m, u) {
+      this.__lz = null; var p = caminho(u), mm = String(m || 'GET').toUpperCase();
+      if (p && doApp(mm, p.split('?')[0])) this.__lz = { m: mm, p: p };
+      return oOpen.apply(this, arguments);
+    };
+    X.send = function (body) {
+      if (!this.__lz) return oSend.apply(this, arguments);
+      var xhr = this, lz = this.__lz;
+      appReq(lz.m, lz.p, body, function (st, txt) {
+        var def = function (k, v) { try { Object.defineProperty(xhr, k, { configurable: true, get: function () { return v; } }); } catch (e) {} };
+        var parsed = txt; if (xhr.responseType === 'json') { try { parsed = JSON.parse(txt); } catch (e) { parsed = null; } }
+        def('readyState', 4); def('status', st); def('statusText', st >= 200 && st < 300 ? 'OK' : 'Erro');
+        def('responseText', txt); def('response', parsed); def('responseURL', location.origin + lz.p);
+        xhr.getAllResponseHeaders = function () { return 'content-type: application/json; charset=utf-8\r\n'; };
+        xhr.getResponseHeader = function (h) { return /content-type/i.test(h) ? 'application/json; charset=utf-8' : null; };
+        ['readystatechange', 'load', 'loadend'].forEach(function (t) { try { xhr.dispatchEvent(new ProgressEvent(t)); } catch (e) {} });
+      });
+    };
+    var oFetch = window.fetch;
+    window.fetch = function (input, init) {
+      var u = typeof input === 'string' ? input : (input && input.url), m = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      var p = caminho(u);
+      if (p && doApp(m, p.split('?')[0])) {
+        var body = init && typeof init.body === 'string' ? init.body : '';
+        return new Promise(function (ok) { appReq(m, p, body, function (st, txt) { ok(new Response(txt, { status: st, headers: { 'content-type': 'application/json; charset=utf-8' } })); }); });
+      }
+      return oFetch.apply(this, arguments);
+    };
+  })();
+
+  // ---- cartoes "deste celular" nas Configuracoes (padrao do site) ----
+  var CARD = 'background:#fff;border:1px solid #e6eaf0;border-radius:14px;padding:14px 16px;margin:0 0 14px;font-family:Inter,system-ui,sans-serif';
+  var BTN = 'display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:10px;font-weight:600;font-size:13px;padding:9px 14px;border:1px solid #00874a;background:#00874a;color:#fff;cursor:pointer';
+  function cartao(id, alvo, antes, html) {
+    if (!alvo || document.getElementById(id)) return null;
+    var d = document.createElement('div'); d.id = id; d.setAttribute('style', CARD); d.innerHTML = html;
+    if (antes && antes.parentNode) antes.parentNode.insertBefore(d, antes); else alvo.insertBefore(d, alvo.firstChild);
+    return d;
+  }
+  function selo(ok, sim, nao) { return '<span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;white-space:nowrap;' + (ok ? 'background:#e0f0e7;color:#066b3d' : 'background:#faebdb;color:#c2691a') + '">' + (ok ? sim : nao) + '</span>'; }
+  function cabec(t, s, ok, sim, nao) { return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><div style="font-weight:700;font-size:15px;color:#0f172a">' + t + '</div><div style="color:#64748b;font-size:12.5px;margin-top:2px">' + s + '</div></div>' + selo(ok, sim, nao) + '</div>'; }
+  var estado = null, estadoEm = 0;
+  function comEstado(cb) { if (estado && Date.now() - estadoEm < 8000) return cb(estado); lzApp('GET', '/__app/status').then(function (r) { estado = r.data || {}; estadoEm = Date.now(); cb(estado); }); }
+  function cartoesCelular() {
+    if (!window.LicitaApp) return;
+    var ia = document.querySelector('.aba-provedores-ia');
+    if (ia && !document.getElementById('lz-ia')) comEstado(function (s) {
+      var c = cartao('lz-ia', ia, null, cabec('Inteligência Artificial deste celular', 'A IA do app roda no próprio celular, com a sua conta ou chave. Nada vai para a VPS.', s.ia, 'EM USO: ' + (s.iaNome || ''), 'NÃO CONFIGURADA') +
+        '<div style="margin-top:12px"><button type="button" id="lz-ia-b" style="' + BTN + '">Abrir a IA do celular</button></div>');
+      if (c) document.getElementById('lz-ia-b').onclick = function () { lzApp('GET', '/__app/abrir/ia'); };
+    });
+    var cert = document.querySelector('.cert-head') || document.querySelector('[class*="certificado"]');
+    if (cert && /certific/i.test(document.body.innerText.slice(0, 4000)) && !document.getElementById('lz-cert') && location.pathname.indexOf('/configuracoes') === 0) comEstado(function (s) {
+      var c = cartao('lz-cert', cert.parentNode || cert, cert, cabec('Certificado A1 deste celular', 'Fica no Android do celular (Configurações › Segurança › Instalar certificado). O robô usa ele para entrar sozinho no Compras.gov. Nada sobe para a VPS.', s.certificado, 'ESCOLHIDO', 'NÃO ESCOLHIDO') +
+        '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" id="lz-cert-b" style="' + BTN + '">Ver passo a passo</button><button type="button" id="lz-cert-p" style="' + BTN + ';background:#fff;color:#15211b;border-color:#d7dcd9">Entrar no Compras.gov</button></div>');
+      if (c) { document.getElementById('lz-cert-b').onclick = function () { lzApp('GET', '/__app/abrir/certificado'); }; document.getElementById('lz-cert-p').onclick = function () { lzApp('GET', '/__app/abrir/portal'); }; }
+    });
+    var rr = document.querySelector('.rr-wrap');
+    if (rr && !document.getElementById('lz-decl')) comEstado(function (s) {
+      var d = s.declaracoes || {};
+      var KS = [['meEpp', 'Declaração para fornecedores ME/EPP e equiparados'], ['genderEquity', 'Equidade entre mulheres e homens (art. 60, III)'], ['integrity', 'Programa de integridade (art. 60, IV)']];
+      var tem = KS.every(function (k) { return d[k[0]] === true || d[k[0]] === false; });
+      var linhas = KS.map(function (k) {
+        var op = function (v, t) { var on = (v === 'sim' && d[k[0]] === true) || (v === 'nao' && d[k[0]] === false);
+          return '<button type="button" data-k="' + k[0] + '" data-v="' + v + '" style="flex:0 0 auto;font-size:12.5px;font-weight:600;padding:6px 14px;border-radius:999px;border:1px solid ' + (on ? '#00874a;background:#00874a;color:#fff' : '#d7dcd9;background:#fff;color:#334155') + '">' + t + '</button>'; };
+        return '<div style="border-top:1px solid #f0f2f1;padding:9px 0"><div style="font-size:13px;font-weight:600;color:#1e293b;margin-bottom:6px">' + k[1] + '</div><div style="display:flex;gap:6px">' + op('sim', 'Sim') + op('nao', 'Não') + '</div></div>';
+      }).join('');
+      var c = cartao('lz-decl', rr, rr.querySelector('.rr-head') ? rr.querySelector('.rr-head').nextSibling : null,
+        cabec('Declarações da empresa (neste celular)', 'O robô de proposta do celular usa estas respostas no cadastro da proposta.', tem, 'SALVAS', 'DEFINA') + '<div style="margin-top:8px">' + linhas + '</div>');
+      if (!c) return;
+      c.querySelectorAll('button[data-k]').forEach(function (b) {
+        b.onclick = function () { d[b.dataset.k] = b.dataset.v === 'sim'; lzApp('POST', '/__app/declaracoes', d).then(function () { estado = null; c.remove(); cartoesCelular(); }); };
+      });
+    });
+  }
+
   var CSS = [
     '#lz-bar{position:fixed;left:0;right:0;bottom:0;height:62px;background:#fff;border-top:1px solid #e5e7eb;',
     'display:grid;grid-template-columns:repeat(5,1fr);z-index:998;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;',
@@ -225,6 +310,7 @@ internal object PlatformSiteScript {
 
   function montar() {
     if (!document.body) return;
+    try { cartoesCelular(); } catch (e) {}
     var logado = !!document.querySelector('.layout-sidebar');
     var bar = document.getElementById('lz-bar');
     if (!logado) { if (bar) bar.remove(); return; }
