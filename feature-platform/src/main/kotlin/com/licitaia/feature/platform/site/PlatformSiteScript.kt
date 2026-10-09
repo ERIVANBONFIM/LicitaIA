@@ -87,7 +87,7 @@ internal object PlatformSiteScript {
     return d;
   }
   function selo(ok, sim, nao) { return '<span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;white-space:nowrap;' + (ok ? 'background:#e0f0e7;color:#066b3d' : 'background:#faebdb;color:#c2691a') + '">' + (ok ? sim : nao) + '</span>'; }
-  function cabec(t, s, ok, sim, nao) { return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><div style="font-weight:700;font-size:15px;color:#0f172a">' + t + '</div><div style="color:#64748b;font-size:12.5px;margin-top:2px">' + s + '</div></div>' + selo(ok, sim, nao) + '</div>'; }
+  function cabec(t, s, ok, sim, nao) { return '<div style="display:flex;flex-direction:column;gap:6px"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap"><div style="font-weight:700;font-size:15px;color:#0f172a;flex:1 1 180px;min-width:0">' + t + '</div>' + selo(ok, sim, nao) + '</div><div style="color:#64748b;font-size:12.5px;line-height:1.45">' + s + '</div></div>'; }
   var estado = null, estadoEm = 0;
   function comEstado(cb) { if (estado && Date.now() - estadoEm < 8000) return cb(estado); lzApp('GET', '/__app/status').then(function (r) { estado = r.data || {}; estadoEm = Date.now(); cb(estado); }); }
   function cartoesCelular() {
@@ -279,6 +279,8 @@ internal object PlatformSiteScript {
     // textos longos (avisos tecnicos, codigos) quebram dentro do cartao
     '.layout-content pre,.layout-content code{white-space:pre-wrap !important;word-break:break-word}',
     '.layout-content [class*="aviso"],.layout-content [class*="alert"],.layout-content [class*="motivo"]{overflow-wrap:anywhere;min-width:0}',
+    // IA: no app vale so a IA DESTE celular (o cartao Claude e o cadastro do site configuram a IA da VPS)
+    '.aba-provedores-ia > *:not(#lz-ia){display:none !important}',
     // selos/etiquetas nao quebram no meio da palavra ("ATIV / O")
     '[class*="badge"],[class*="-tag"],[class*="pill"],[class*="status-badge"]{white-space:nowrap !important;word-break:normal !important;flex:0 0 auto}',
     // caixa de marcar ao lado do texto ("Somente recebendo proposta")

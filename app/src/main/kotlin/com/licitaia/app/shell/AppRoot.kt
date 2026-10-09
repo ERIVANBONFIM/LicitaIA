@@ -273,6 +273,9 @@ private fun MainShell(
         }
     }
 
+    // Modelo B: no modo plataforma as telas do celular usam as cores do site (claro); no modo local, dark.
+    LaunchedEffect(platformMode) { com.licitaia.core.ui.theme.LicitaColors.claro = platformMode }
+
     // Modelo B: no modo plataforma o "início" é o SITE da VPS (ex.: logo após entrar com a conta da plataforma).
     LaunchedEffect(platformMode, currentRoute) {
         if (platformMode && currentRoute == Routes.DASHBOARD) nav.navigateClearingAll(Routes.PLATFORM_SITE)

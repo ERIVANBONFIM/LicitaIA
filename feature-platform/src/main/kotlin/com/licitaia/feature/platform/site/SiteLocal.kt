@@ -283,7 +283,8 @@ class SiteLocal @Inject constructor(
     private suspend fun iaAtiva(): Pair<Boolean, String> {
         val cfgs = withTimeoutOrNull(3000) { ai.observeConfigs().first() }.orEmpty()
         val ativo = withTimeoutOrNull(3000) { ai.observeEffective().first() }
-        val cfg = cfgs.firstOrNull { it.provider == ativo && it.isConfigured }
+        // "IA Demonstração" (MOCK) = nenhuma IA de verdade configurada
+        val cfg = cfgs.firstOrNull { it.provider == ativo && it.isConfigured && it.provider.name != "MOCK" }
         return (cfg != null) to (cfg?.provider?.label ?: "nenhuma")
     }
 
