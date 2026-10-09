@@ -153,12 +153,18 @@ class ShellViewModel @Inject constructor(
             _startRoute.value = target
 
             // Reflete login/logout de plataforma em tempo real na sessão sintética do holder.
+            var wasSignedIn = platformSignedIn
             platformRepository.session.collect { plat ->
+                val justSignedIn = plat is PlatformSession.SignedIn && !wasSignedIn
+                wasSignedIn = plat is PlatformSession.SignedIn
                 when {
                     plat is PlatformSession.SignedIn && _platformMode.value ->
                         sessionHolder.set(PlatformIdentity.session(plat.user)) // mantém sincronizada
-                    plat is PlatformSession.SignedIn && sessionHolder.current == null -> {
-                        sessionHolder.set(PlatformIdentity.session(plat.user))
+                    // Login de PLATAFORMA acabou de acontecer (inclusive o 1º login num app recém-instalado, quando
+                    // outra parte já montou uma sessão no holder): entra no modo plataforma. Login local não gera
+                    // PlatformSession.SignedIn, então não cai aqui.
+                    justSignedIn || (plat is PlatformSession.SignedIn && sessionHolder.current == null) -> {
+                        sessionHolder.set(PlatformIdentity.session((plat as PlatformSession.SignedIn).user))
                         _platformMode.value = true
                     }
                     plat !is PlatformSession.SignedIn && _platformMode.value -> {

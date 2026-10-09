@@ -152,7 +152,7 @@ class PlatformStrategyViewModel @Inject constructor(
                 ),
             )
             r.fold(
-                onSuccess = { _events.send("Estratégia salva (dry_run).") },
+                onSuccess = { _events.send("Estratégia salva.") },
                 onFailure = { _events.send(it.message ?: "Não foi possível salvar a estratégia.") },
             )
             // Recarrega para refletir o estado salvo e liberar o botão.
@@ -178,7 +178,7 @@ fun PlatformStrategyScreen(viewModel: PlatformStrategyViewModel = hiltViewModel(
                 state.ativas.isEmpty() -> EmptyState(
                     title = "Nenhum robô ativo",
                     message = "Arme o robô numa licitação (detalhe › Robô de lance) para ajustar a estratégia aqui. " +
-                        "As mudanças valem em dry_run; o lance real continua protegido pela confirmação do detalhe.",
+                        "No dia, o robô do celular sugere cada lance e você confirma o envio.",
                 )
                 else -> LazyColumn(
                     Modifier.fillMaxSize(),
@@ -191,7 +191,7 @@ fun PlatformStrategyScreen(viewModel: PlatformStrategyViewModel = hiltViewModel(
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 "Ajuste a estratégia, o piso, o decremento e o intervalo de cada robô ativo. O robô nunca envia " +
-                                    "lance abaixo do piso, e aqui tudo é salvo em modo de teste (dry_run) — sem lance real.",
+                                    "lance abaixo do piso. No celular ele sugere cada lance e você toca Enviar.",
                                 style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary,
                             )
                         }
@@ -222,8 +222,8 @@ private fun StrategyConfigCard(
     onSave: (estrategia: String, piso: Double, decremento: Double, intervalo: Int?) -> Unit,
 ) {
     var estrategia by remember(ativa.id) { mutableStateOf(presetValueFor(ativa.estrategia)) }
-    var piso by remember(ativa.id) { mutableStateOf(ativa.valorMinimo?.toDoubleOrNull()?.takeIf { it > 0 }?.let { plain(it) } ?: "") }
-    var decremento by remember(ativa.id) { mutableStateOf(ativa.decremento?.toDoubleOrNull()?.takeIf { it > 0 }?.let { plain(it) } ?: "") }
+    var piso by remember(ativa.id) { mutableStateOf(ativa.valorMinimo?.toDoubleOrNull()?.takeIf { it > 0 }?.let { fmtBR(it) } ?: "") }
+    var decremento by remember(ativa.id) { mutableStateOf(ativa.decremento?.toDoubleOrNull()?.takeIf { it > 0 }?.let { fmtBR(it) } ?: "") }
     var intervalo by remember(ativa.id) { mutableStateOf(ativa.intervaloSegundos?.toString() ?: "30") }
 
     val accent = if (ativa.ativo) LicitaColors.Green else LicitaColors.Yellow
@@ -240,7 +240,7 @@ private fun StrategyConfigCard(
         }
         ativa.modoExecucao?.let {
             Spacer(Modifier.height(6.dp))
-            StatusBadge(if (it == "auto") "AUTO (lance real)" else "teste (dry_run)", if (it == "auto") Tone.DANGER else Tone.INFO)
+            StatusBadge(if (it == "auto") "Lance automático na NUVEM" else "Manual — você confirma", if (it == "auto") Tone.DANGER else Tone.INFO)
         }
         ativa.status?.takeIf { it.isNotBlank() }?.let { InfoRow("Situação", it.replace('_', ' ')) }
         ativa.ultimoLanceValor?.takeIf { it.isNotBlank() }?.let { InfoRow("Último lance", PlatformFormat.currency(it)) }
@@ -273,21 +273,21 @@ private fun StrategyConfigCard(
 
         Spacer(Modifier.height(12.dp))
         AlertBanner(
-            "Modo de teste (dry_run)",
-            "Salvar aqui mantém o robô em teste: decide e registra, sem enviar lance real. O lance real só é ativado " +
-                "pela confirmação no detalhe da licitação.",
+            "Modo manual no aparelho",
+            "Salvar aqui guarda piso, decremento e intervalo. No dia, o robô do celular sugere cada lance e você toca Enviar. " +
+                "O lance automático da nuvem só é ligado no detalhe da licitação (Robô na nuvem).",
             Tone.INFO,
         )
         Spacer(Modifier.height(10.dp))
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             PrimaryButton(
                 "Salvar estratégia", {
-                    val p = piso.trim().toDoubleOrNull()
-                    val d = decremento.trim().toDoubleOrNull()?.takeIf { it > 0 } ?: 0.01
+                    val p = parseValorBR(piso)
+                    val d = parseValorBR(decremento)?.takeIf { it > 0 } ?: 0.01
                     if (p != null && p > 0) onSave(estrategia, p, d, intervalo.trim().toIntOrNull())
                 },
                 Modifier.fillMaxWidth(),
-                enabled = !saving && piso.trim().toDoubleOrNull()?.let { it > 0 } == true,
+                enabled = !saving && parseValorBR(piso)?.let { it > 0 } == true,
                 loading = saving, icon = Icons.Outlined.Save,
             )
             SecondaryButton("Abrir licitação", onOpen, Modifier.fillMaxWidth(), tone = Tone.NEUTRAL, icon = Icons.Outlined.OpenInNew)
@@ -299,7 +299,7 @@ private fun StrategyConfigCard(
 private fun NumberField(label: String, value: String, supporting: String?, integer: Boolean = false, onChange: (String) -> Unit) {
     OutlinedTextField(
         value = value,
-        onValueChange = { text -> onChange(text.filter { it.isDigit() || (!integer && it == '.') }.take(12)) },
+        onValueChange = { text -> onChange(text.filter { it.isDigit() || (!integer && (it == '.' || it == ',')) }.take(15)) },
         label = { Text(label) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = if (integer) KeyboardType.Number else KeyboardType.Decimal),
@@ -308,5 +308,13 @@ private fun NumberField(label: String, value: String, supporting: String?, integ
     )
 }
 
-/** Double → texto simples (sem ".0" quando inteiro). */
-private fun plain(v: Double): String = if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
+/** 3358.8 → "3.358,80" (padrão brasileiro, sem "R$"). */
+private fun fmtBR(v: Double): String = String.format(java.util.Locale("pt", "BR"), "%,.2f", v)
+
+/** "3.358,80" (BR) ou "3358.8": com vírgula, ponto é milhar; sem vírgula, ponto é decimal. */
+private fun parseValorBR(s: String): Double? {
+    val t = s.trim()
+    if (t.isEmpty()) return null
+    val n = if (t.contains(',')) t.replace(".", "").replace(',', '.') else t
+    return n.toDoubleOrNull()?.takeIf { it.isFinite() }
+}
