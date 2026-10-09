@@ -188,7 +188,8 @@ private fun RoboCard(
     fun decrementoVal(): Double = parseValor(decremento)?.takeIf { it > 0 } ?: 0.01
     var showNuvem by rememberSaveable { mutableStateOf(false) }
 
-    val armed = robo?.ativo == true && (robo.valorMinimo ?: 0.0) > 0
+    // Robô do APARELHO está armado quando há piso salvo (o "ativo" da VPS é do robô da nuvem).
+    val armed = (robo?.valorMinimo ?: 0.0) > 0
     val roboAccent = if (armed) LicitaColors.Green else if (robo != null) LicitaColors.Yellow else null
     LicitaCard(Modifier.fillMaxWidth(), accent = roboAccent) {
         // Cabeçalho no mesmo formato do robô local (bolha de ícone + título + status pulsante).

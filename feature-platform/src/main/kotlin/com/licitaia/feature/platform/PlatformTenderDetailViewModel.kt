@@ -273,7 +273,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
      * O PISO (valorMinimo) é sempre enviado. A disputa on-device (motor local) é a próxima etapa.
      */
     fun armarRobo(piso: Double, decremento: Double, estrategia: String?, intervalo: Int?, pisosItens: List<PisoItemRequest>, auto: Boolean) = roboOp(
-        if (auto) "Robô armado em modo AUTO (lance real)." else "Robô armado em modo de teste (dry_run).",
+        if (auto) "Lance automático da NUVEM ligado." else "Robô armado: no dia, ele sugere e você confirma cada lance.",
     ) {
         repository.armarRobo(
             id,
@@ -285,7 +285,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
         )
     }
 
-    fun participarRobo() = roboOp("Participação registrada (robô em dry_run).") { repository.roboParticipar(id) }
+    fun participarRobo() = roboOp("Robô da nuvem colocado na disputa.") { repository.roboParticipar(id) }
     fun prepararRobo() = roboOp("Preparação disparada.") { repository.roboPreparar(id) }
 
     /**
@@ -371,7 +371,7 @@ class PlatformTenderDetailViewModel @Inject constructor(
                 roboEngine.startBid(company.id, key).getOrThrow()
             }
             resultado.fold(
-                onSuccess = { _events.send("Robô iniciado no aparelho em dry_run (sugere e registra; NÃO envia lance).") },
+                onSuccess = { _events.send("Robô iniciado no aparelho: ele sugere cada lance e você toca Enviar.") },
                 onFailure = { _events.send(it.message ?: "Não foi possível iniciar o robô no aparelho.") },
             )
             _state.update { it.copy(roboBusy = false) }
