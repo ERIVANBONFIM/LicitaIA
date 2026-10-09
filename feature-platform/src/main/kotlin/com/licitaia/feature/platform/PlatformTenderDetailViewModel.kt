@@ -471,6 +471,16 @@ class PlatformTenderDetailViewModel @Inject constructor(
         )
     }
 
+    /**
+     * Modo MANUAL: o usuário toca "Enviar" na sugestão atual do robô de lance. O motor só envia se a sugestão ainda
+     * for a mesma e passa pelas travas (piso, intervalos, teto) — mesmo botão do modo local.
+     */
+    fun enviarSugestao() {
+        val run = roboRun.value?.takeIf { it.active && it.suggestion != null } ?: return
+        roboEngine.sendSuggestion(run.id)
+        viewModelScope.launch { _events.send("Enviando o lance sugerido (passa pelas travas de piso e intervalo).") }
+    }
+
     fun pararRoboLocal() {
         val run = roboRun.value ?: return
         roboEngine.stop(run.id, "Parado pelo usuário (modo plataforma).")

@@ -21,6 +21,7 @@ import com.licitaia.core.ui.components.StatusBadge
 import com.licitaia.core.ui.components.Tone
 import com.licitaia.core.ui.nav.LocalAppNavigator
 import com.licitaia.core.ui.theme.LicitaColors
+import com.licitaia.domain.util.Formatters
 import com.licitaia.feature.live.automation.RobotAttention
 
 /**
@@ -47,6 +48,7 @@ internal fun RobotAttentionBar(vm: PortalWebViewModel, companyId: Long, compact:
             )
             TextButton(onClick = { vm.robots.stop(run.id) }) { Text("PARAR", color = LicitaColors.Red) }
         }
+        SuggestionRow(vm, run)
         return
     }
     LicitaCard(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), accent = if (run.needsUser) LicitaColors.Yellow else LicitaColors.Blue) {
@@ -60,6 +62,7 @@ internal fun RobotAttentionBar(vm: PortalWebViewModel, companyId: Long, compact:
             }
             StatusBadge(run.status.label, if (run.needsUser) Tone.WARNING else Tone.INFO, pulsing = !run.needsUser)
         }
+        SuggestionRow(vm, run)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             if (run.needsUser) {
                 val declarations = run.attention == RobotAttention.DECLARATIONS
@@ -75,5 +78,24 @@ internal fun RobotAttentionBar(vm: PortalWebViewModel, companyId: Long, compact:
                 TextButton(onClick = { vm.robots.stop(run.id) }) { Text("PARAR", color = LicitaColors.Red) }
             }
         }
+    }
+}
+
+/**
+ * Robô de lance em modo MANUAL: a sugestão atual com "Enviar" direto na tela do portal (o mesmo botão do plano do
+ * robô). O motor só envia se a sugestão ainda for a mesma e passa pelas travas de piso/intervalo.
+ */
+@Composable
+private fun SuggestionRow(vm: PortalWebViewModel, run: com.licitaia.feature.live.automation.RobotRun) {
+    val s = run.suggestion?.takeIf { run.active } ?: return
+    Row(
+        Modifier.fillMaxWidth().background(LicitaColors.Blue.copy(alpha = 0.14f)).padding(start = 12.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Sugestão — item ${s.itemNumber}: ${Formatters.brl(s.value)}", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary)
+            Text(s.reason, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        TextButton(onClick = { vm.robots.sendSuggestion(run.id) }) { Text("Enviar", color = LicitaColors.Blue) }
     }
 }

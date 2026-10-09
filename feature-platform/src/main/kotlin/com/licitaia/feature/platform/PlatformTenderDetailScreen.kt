@@ -121,6 +121,7 @@ fun PlatformTenderDetailScreen(viewModel: PlatformTenderDetailViewModel = hiltVi
                     roboRun = roboRun,
                     onIniciarRoboLocal = viewModel::iniciarRoboLocal,
                     onPararRoboLocal = viewModel::pararRoboLocal,
+                    onEnviarSugestao = viewModel::enviarSugestao,
                     propostaRun = propostaRun,
                     onCadastrarProposta = viewModel::abrirCadastroProposta,
                     onPararProposta = viewModel::pararRoboProposta,
@@ -159,6 +160,7 @@ private fun RoboCard(
     roboRun: com.licitaia.feature.live.automation.RobotRun?,
     onIniciarRoboLocal: () -> Unit,
     onPararRoboLocal: () -> Unit,
+    onEnviarSugestao: () -> Unit,
 ) {
     val robo = s.roboConfig
     var showConfig by rememberSaveable { mutableStateOf(false) }
@@ -253,9 +255,10 @@ private fun RoboCard(
             }
         }
 
-        // Execução ON-DEVICE (dry_run): roda o motor local reusado; lê a sala e SUGERE, nunca envia sozinho.
+        // Execução ON-DEVICE (modo MANUAL): roda o motor local reusado; lê a sala e SUGERE. Só envia quando o
+        // usuário toca "Enviar" na sugestão (mesmas travas de piso/intervalo do modo local). Nunca envia sozinho.
         HorizontalDivider(Modifier.padding(vertical = 12.dp), color = LicitaColors.Outline)
-        Text("Rodar no aparelho (dry_run)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+        Text("Rodar no aparelho (modo manual)", style = MaterialTheme.typography.labelLarge, color = LicitaColors.TextPrimary, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         if (roboRun != null) {
             StatusBadge(roboRun.status.name.lowercase().replace('_', ' '), Tone.INFO)
@@ -269,20 +272,28 @@ private fun RoboCard(
             roboRun.step?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = LicitaColors.TextSecondary) }
             roboRun.message?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
             roboRun.log.takeLast(4).forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted) }
+            // Sugestão atual (modo manual): o lance só sai quando o usuário toca "Enviar".
+            roboRun.suggestion?.takeIf { roboRun.active }?.let { sug ->
+                Spacer(Modifier.height(8.dp))
+                AlertBanner(
+                    "Sugestão — item ${sug.itemNumber}: ${PlatformFormat.currency(sug.value.toString())}", sug.reason, Tone.INFO,
+                    actionLabel = "Enviar", onAction = onEnviarSugestao,
+                )
+            }
             Spacer(Modifier.height(8.dp))
             SecondaryButton("Parar robô", onPararRoboLocal, Modifier.fillMaxWidth(), tone = Tone.DANGER)
         } else {
             Text(
-                "Inicia a disputa NO APARELHO com o seu certificado local, em dry_run: o robô lê a sala e registra o lance " +
-                    "que daria, SEM enviar. (Precisa da sessão do Comprasnet logada em Portais; se faltar, o robô pede.)",
+                "Inicia a disputa NO APARELHO com o seu certificado local: o robô lê a sala e SUGERE o lance (respeitando o piso); " +
+                    "o lance só é enviado quando você toca \"Enviar\" na sugestão. (Precisa da sessão do Comprasnet logada em Portais; se faltar, o robô pede.)",
                 style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
             )
             Spacer(Modifier.height(8.dp))
-            SecondaryButton("Iniciar robô no aparelho (dry_run)", onIniciarRoboLocal, Modifier.fillMaxWidth(), enabled = !s.roboBusy, tone = Tone.SUCCESS)
+            SecondaryButton("Iniciar robô no aparelho (manual)", onIniciarRoboLocal, Modifier.fillMaxWidth(), enabled = !s.roboBusy, tone = Tone.SUCCESS)
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "O envio de lance REAL (auto) não é liberado por aqui nesta etapa — só dry_run. O certificado nunca sai do aparelho.",
+            "Lance automático (sem você tocar) não é liberado aqui: no aparelho o robô sugere e você decide cada envio. O certificado nunca sai do aparelho.",
             style = MaterialTheme.typography.labelSmall, color = LicitaColors.TextMuted,
         )
     }
@@ -553,6 +564,7 @@ private fun TenderDetail(
     roboRun: com.licitaia.feature.live.automation.RobotRun?,
     onIniciarRoboLocal: () -> Unit,
     onPararRoboLocal: () -> Unit,
+    onEnviarSugestao: () -> Unit,
     propostaRun: com.licitaia.feature.live.automation.RobotRun?,
     onCadastrarProposta: () -> Unit,
     onPararProposta: () -> Unit,
@@ -764,6 +776,7 @@ private fun TenderDetail(
         RoboCard(
             s, onArmarRobo = onArmarRobo, onParticiparRobo = onParticiparRobo, onPrepararRobo = onPrepararRobo,
             roboRun = roboRun, onIniciarRoboLocal = onIniciarRoboLocal, onPararRoboLocal = onPararRoboLocal,
+            onEnviarSugestao = onEnviarSugestao,
         )
 
         // Resultado do pregão
